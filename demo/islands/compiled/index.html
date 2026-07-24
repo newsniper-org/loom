@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>loom Task #25 — compiler-generated Islands (ComponentGraph)</title>
+</head>
+<body>
+  <!--
+    Task #25 acceptance page — this markup was produced ONCE by
+    `cargo run -p loom-island-compiled --bin print_ssr` (real loomc
+    SSR output, GraphMode::Islands), pasted in exactly like
+    demo/resume/index.html already does for Phase 2's resumability demo.
+    Unlike demo/islands/index.html (still hand-authored, standing in for
+    what SSR would produce), everything inside #app below — every
+    data-loom-island*/data-loom-lref/data-loom-id attribute — was actually
+    emitted by codegen.rs, not written by hand.
+
+    Scope note (stated, not hidden): this fixture does not include
+    CartBadge/shared-store (`cartCount`) — that's RQ4's concern, reachable
+    today only via hand-written FFI (`sharedSignal()`'s authoring surface
+    is Task #28-a, not yet implemented). This page proves exactly what
+    Task #25 is responsible for: nested Island composition, `client:load`/
+    `client:visible` activation, opaque-boundary DOM scoping, and compiled
+    click dispatch — see demo/islands/index.html for the RQ4 cross-widget
+    scenario, still hand-coded pending #28-a.
+
+    Second scope note: `data-loom-chunk="product_card"` and
+    `data-loom-chunk="widget"` name two chunk files
+    (demo/islands/chunks/product_card.js, demo/islands/chunks/widget.js —
+    registry.js's own import path is relative to itself, not to this
+    page), each produced by a SEPARATE `wasm-pack build --out-name`
+    invocation of the exact same `loom-island-compiled` crate/source —
+    genuinely two working, independently-instantiable wasm modules, but
+    both containing BOTH `ProductCardIsland` and `WidgetIsland` (whichever
+    one registry.js doesn't construct from a given module just goes
+    unused). Per-Island *separate compiled units* (so only the code an
+    Island actually needs ships) is explicitly out of Task #25's scope —
+    a build-tooling problem (which .tsx components end up in which cargo
+    crate/wasm-pack invocation), not an IR/codegen one; `island_tag_for`'s
+    per-component chunk-name derivation is already correct and
+    independent, this is purely about what the *build* actually produces
+    per name today. Stated honestly rather than silently worked around.
+  -->
+  <div style="height: 1200px;">(scroll down for the product card)</div>
+
+  <div id="app"><div><div data-loom-island="" data-loom-island-id="product-card" data-loom-activation="visible" data-loom-chunk="product_card" data-loom-ctor="ProductCardIsland"><button data-loom-lref="ProductCard_chunk|Action0|">show details</button><p data-loom-id="details"></p><div data-loom-island="" data-loom-island-id="widget" data-loom-activation="load" data-loom-chunk="widget" data-loom-ctor="WidgetIsland"><button data-loom-lref="Widget_chunk|Action0|count:0">+</button><span data-loom-id="count">0</span></div></div></div></div>
+
+  <button id="remove-card">remove product card</button>
+  <script>
+    document.getElementById("remove-card").addEventListener("click", () => {
+      window.__loomRegistry.detachAndRemove("product-card");
+    });
+  </script>
+
+  <!-- Same JS glue demo/islands/index.html uses, completely unmodified —
+       registry.js only reads data-loom-island*/data-loom-chunk attribute
+       conventions, which codegen.rs now emits identically to the
+       hand-authored markup. -->
+  <script src="../../resume/registry.js"></script>
+</body>
+</html>

@@ -92,3 +92,37 @@ pass만 새로 작성하는 게 맞음.
   (예: 로그인 사용자별 카운터 시작값)을 지원하게 되면, 이 폴백 안전성이
   깨지고 최소 캡처 계산을 다시 봐야 함(`codegen.rs`의 해당 함수 문서에 상세
   기술). 이 두 조건 중 하나라도 바뀌면 RQ로 승격해 재검토할 것.
+- ~~컴파일러 Island 통합 (Phase 3 증분 4)~~ → **해소됨(2026-07-24, Task #25)**:
+  `ir.rs`에 `ComponentGraph`/`IslandActivation`/`PropLiteral`/
+  `JsxNode::ComponentRef` 추가, `lower.rs`가 이제 모듈 안의 모든 top-level
+  함수를 스캔(기존엔 첫 export만 쓰고 나머지를 진단 없이 버리는 실제 버그가
+  있었음 — 이번에 같이 고침)하고 `client:load`/`client:visible`(SWC가 이미
+  `JSXNamespacedName`으로 올바르게 파싱하던 것을 lower.rs가 그동안 무조건
+  거부하고 있었을 뿐)을 파싱. `codegen.rs`의 `generate_islands`가 Island로
+  지정된 각 컴포넌트를 `pub mod <name>_generated { ... }`로 네임스페이싱하고
+  (컴파일러가 내는 모든 식별자가 원래 전역 스코프였다는, 문서에 없던 진짜
+  블로커였음 — 루트 컴포넌트는 하위호환 위해 계속 무네임스페이스), 호스트
+  엘리먼트에 `data-loom-island`/`-island-id`/`-activation`/`-chunk`/`-ctor`
+  5개 속성을 방출하며, Island 진입점(`#[wasm_bindgen(constructor)]`)은
+  기존 `Action`/`apply_action`/`resume_action_by_symbol`/`resume` 범용
+  디스패치 기계를 그대로 재사용(손코딩 Island처럼 별도 클로저 배선 방식을
+  새로 만들지 않음)하되 DOM 탐색은 `loom_runtime::web::own_tagged_descendants`
+  (opaque `[data-loom-island]` 경계 존중, `ResumedComponent::new`의 페이지
+  전역 쿼리 버그를 재생산하지 않음)로 스코프를 좁힘. 실제 컴파일 중 발견한
+  두 개의 진짜 버그: (1) 2단계 이상 중첩된 Island 참조는 `super::` 경로
+  접두사가 필요함(모든 Island 모듈이 JSX 중첩 깊이와 무관하게 flat sibling
+  이라서) — `CodegenCtx::wrapped_in_own_module`로 해결. (2) 액션이 0개인
+  컴포넌트(`ComponentRef`만 있는 루트처럼)의 `enum Action {}`에 대해
+  `match action {}`이 Rust에서 예외적으로 exhaustive로 인정 안 됨("references
+  are always considered inhabited") — `_ => {}` 폴백 arm 추가로 해결.
+  `demo/islands/product-card.tsx` + `crates/loom-island-compiled` +
+  `demo/islands/compiled/index.html`로 실제 컴파일러 산출물이 기존
+  손코딩 데모(`demo/islands/index.html`)와 동일한 시나리오(중첩 Island
+  활성화, opaque 스코핑, 클릭 디스패치, detach)를 Playwright로 재현함을
+  확인. **의도적으로 남긴 범위**: `GraphMode::Flatten`(H-Qwik 반사실
+  모양, Task #26 몫)은 시그니처만 있고 미구현, Island당 별도 `.wasm` 산출물
+  빌드 툴링(여전히 build.rs 수준 문제, 이번 라운드는 크레이트 하나에 여러
+  Island를 한꺼번에 컴파일), props 실제 resolve(`specialize_component_refs`)
+  는 파싱/검증만 되고 구현은 스트레치로 남김(인수 조건 픽스처가 props 없이도
+  충족됨). 상세: `research-questions/RQ6-verification-plan.md`/
+  `roadmap/PHASES.md` Phase 3 절.

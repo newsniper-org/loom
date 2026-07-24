@@ -4,41 +4,18 @@
 //! inside `loom-island-quantitypicker`'s instance is structurally unable to
 //! reach this one.
 
-use loom_runtime::web::BrowserDom;
+use loom_runtime::web::{find_own, BrowserDom};
 use loom_runtime::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-/// See `crates/loom-island-demo`'s identical helper for the full doc
-/// comment — duplicated per-crate on purpose (this crate's entire point is
-/// being a separate compilation unit), see `loom-island-quantitypicker`'s
-/// copy for why that duplication is accepted here.
-fn own_tagged_descendants(host: &web_sys::Element) -> Vec<web_sys::Element> {
-    let mut found = Vec::new();
-    let children = host.children();
-    for i in 0..children.length() {
-        let Some(child) = children.item(i) else { continue };
-        if child.has_attribute("data-loom-island") {
-            continue;
-        }
-        if child.has_attribute("data-loom-id") {
-            found.push(child.clone());
-        }
-        found.extend(own_tagged_descendants(&child));
-    }
-    found
-}
-
-fn find_own(host: &web_sys::Element, name: &str) -> web_sys::Element {
-    own_tagged_descendants(host)
-        .into_iter()
-        .find(|el| el.get_attribute("data-loom-id").as_deref() == Some(name))
-        .unwrap_or_else(|| {
-            panic!("loom-island-productcard: no own-scope element tagged data-loom-id=\"{name}\" under this host")
-        })
-}
+// `own_tagged_descendants`/`find_own` used to be duplicated by hand in this
+// crate (its entire point being a separate wasm compilation unit — see
+// `loom-island-quantitypicker`'s doc comment) — promoted to
+// `loom_runtime::web` (2026-07-24, Task #25) since sharing a *dependency
+// crate* doesn't compromise that separation, only sharing a *binary* would.
 
 fn product_details_reconcile_system(
     mut q: bevy_ecs::prelude::Query<

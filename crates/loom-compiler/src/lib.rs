@@ -2,6 +2,8 @@ mod codegen;
 mod ir;
 mod lower;
 
+pub use codegen::GraphMode;
+
 use swc_common::sync::Lrc;
 use swc_common::{FileName, SourceFile, SourceMap};
 use swc_ecma_ast::Module;
@@ -23,12 +25,28 @@ pub fn parse_tsx(source: &str) -> Module {
 }
 
 /// docs/02's whole compile pipeline in one call: real SWC parse → IR lower
-/// → Rust codegen. See `lower.rs` for the exact (intentionally narrow)
-/// Phase 1 authoring-surface subset this supports.
+/// → Rust codegen. Single-component only (compiles just the module's one
+/// exported root component, ignoring any Island-referenced helper
+/// components — see `compile_tsx_to_rust_graph` for the 증분 4 multi-
+/// component path) — kept exactly as-is for backward compatibility with
+/// every existing `build.rs` call site (`loom-demo`, `loom-resume-demo`,
+/// `loom-fic`, `loom-bench`), none of which need to change. See `lower.rs`
+/// for the exact (intentionally narrow) authoring-surface subset this
+/// supports.
 pub fn compile_tsx_to_rust(source: &str) -> String {
     let module = parse_tsx(source);
-    let component = lower::lower_module(&module);
-    codegen::generate(&component)
+    let graph = lower::lower_module(&module);
+    codegen::generate(graph.root_component())
+}
+
+/// 증분 4 (Task #25) multi-component path — compiles the module's full
+/// `ComponentGraph` (root + every Island-referenced helper component) in the
+/// given `GraphMode`. See `codegen::GraphMode`'s doc comment for the two
+/// modes' shapes.
+pub fn compile_tsx_to_rust_graph(source: &str, mode: GraphMode) -> String {
+    let module = parse_tsx(source);
+    let graph = lower::lower_module(&module);
+    codegen::generate_graph(&graph, mode)
 }
 
 #[cfg(test)]
@@ -62,7 +80,8 @@ mod tests {
     #[test]
     fn lowers_demo_source_without_panicking() {
         let module = parse_tsx(DEMO_SOURCE);
-        let component = lower::lower_module(&module);
+        let graph = lower::lower_module(&module);
+        let component = graph.root_component();
         assert_eq!(component.name, "App");
         assert_eq!(component.signals.len(), 2);
     }
@@ -204,8 +223,8 @@ mod tests {
             }
         "#;
         let module = parse_tsx(source);
-        let component = lower::lower_module(&module);
-        codegen::generate(&component);
+        let graph = lower::lower_module(&module);
+        codegen::generate(graph.root_component());
     }
 
     mod conditional {
@@ -320,8 +339,8 @@ mod tests {
                 }
             "#;
             let module = parse_tsx(source);
-            let component = lower::lower_module(&module);
-            codegen::generate(&component);
+            let graph = lower::lower_module(&module);
+            codegen::generate(graph.root_component());
         }
     }
 
@@ -447,6 +466,187 @@ mod tests {
             "#;
             let module = parse_tsx(source);
             lower::lower_module(&module);
+        }
+    }
+
+    /// Task #25 — compiler Island integration (증분 4): `ComponentGraph`/
+    /// `IslandActivation`/`ComponentRef` multi-component support.
+    mod islands {
+        use super::*;
+
+        const ISLAND_SOURCE: &str = r#"
+            import { signal } from "loom";
+
+            function Widget() {
+              const count = signal(0);
+              return <button onClick={() => count.increment()}>{count()}</button>;
+            }
+
+            export function App() {
+              return (
+                <div>
+                  <Widget client:load />
+                </div>
+              );
+            }
+        "#;
+
+        #[test]
+        fn multi_component_graph_has_both_components_with_correct_root() {
+            let module = parse_tsx(ISLAND_SOURCE);
+            let graph = lower::lower_module(&module);
+            assert_eq!(graph.root, "App");
+            assert_eq!(graph.components.len(), 2);
+            assert!(graph.components.iter().any(|c| c.name == "Widget"));
+            assert_eq!(graph.activation_for("Widget"), Some(ir::IslandActivation::Load));
+            assert_eq!(graph.activation_for("App"), None);
+        }
+
+        #[test]
+        fn client_visible_parses_to_the_visible_activation() {
+            let source = ISLAND_SOURCE.replace("client:load", "client:visible");
+            let module = parse_tsx(&source);
+            let graph = lower::lower_module(&module);
+            assert_eq!(graph.activation_for("Widget"), Some(ir::IslandActivation::Visible));
+        }
+
+        #[test]
+        fn single_component_graph_mode_islands_matches_legacy_compile_tsx_to_rust() {
+            // Regression gate (Task #25 plan step 4): a graph with no
+            // `ComponentRef` at all must compile byte-identically under
+            // `GraphMode::Islands` to the pre-existing single-component
+            // `compile_tsx_to_rust` path — no existing build.rs call site
+            // should ever observe a behavior change from this task.
+            let legacy = compile_tsx_to_rust(DEMO_SOURCE);
+            let graph_mode = compile_tsx_to_rust_graph(DEMO_SOURCE, GraphMode::Islands);
+            assert_eq!(legacy, graph_mode);
+        }
+
+        #[test]
+        fn generate_islands_wraps_the_helper_component_and_emits_island_attributes() {
+            let out = compile_tsx_to_rust_graph(ISLAND_SOURCE, GraphMode::Islands);
+            assert!(out.contains("pub mod widget_generated {"), "{out}");
+            assert!(out.contains("dom.set_attribute(node_0, \"data-loom-island\", \"\");"), "{out}");
+            assert!(out.contains("\"data-loom-activation\", \"load\""), "{out}");
+            assert!(out.contains("\"data-loom-chunk\", \"widget\""), "{out}");
+            assert!(out.contains("\"data-loom-ctor\", \"WidgetIsland\""), "{out}");
+            assert!(out.contains("pub struct WidgetIsland"), "{out}");
+            assert!(out.contains("wasm_bindgen(constructor)"), "{out}");
+            // The root component (App) is still emitted unqualified, exactly
+            // like today's `generate()` — the parent's own `setup()` calls
+            // into the Island's namespaced module rather than inlining it.
+            assert!(out.contains("let _ = widget_generated::setup(app, dom,"), "{out}");
+        }
+
+        #[test]
+        fn two_level_nested_island_reference_uses_a_super_path_not_a_bare_one() {
+            // Regression test for a real bug found while building the
+            // acceptance fixture: `ProductCard` (non-root, wrapped in its
+            // own `pub mod`) referencing `Widget` (also non-root, a FLAT
+            // sibling module, never nested inside ProductCard's own module —
+            // see `generate_islands`) must escape its own wrapping module
+            // with `super::`, unlike App's (the root's, unqualified) own
+            // reference to a directly-owned Island, which needs no prefix.
+            let source = r#"
+                function Widget() {
+                  const count = signal(0);
+                  return <button onClick={() => count.increment()}>{count()}</button>;
+                }
+                function ProductCard() {
+                  const details = signal(false);
+                  return (
+                    <div>
+                      <button onClick={() => details.toggle()}>show details</button>
+                      {details() && <p>Free shipping on orders over $50.</p>}
+                      <Widget client:load />
+                    </div>
+                  );
+                }
+                export function App() {
+                  return <div><ProductCard client:visible /></div>;
+                }
+            "#;
+            let out = compile_tsx_to_rust_graph(source, GraphMode::Islands);
+            assert!(out.contains("pub mod product_card_generated {"), "{out}");
+            assert!(out.contains("pub mod widget_generated {"), "{out}");
+            // App (root, unqualified) -> ProductCard: no prefix needed, both
+            // sit at the same top level.
+            assert!(out.contains("let _ = product_card_generated::setup(app, dom,"), "{out}");
+            // ProductCard (wrapped) -> Widget: must escape via `super::`,
+            // since `widget_generated` is ProductCard's sibling, not its
+            // child.
+            assert!(out.contains("let _ = super::widget_generated::setup(app, dom,"), "{out}");
+        }
+
+        #[test]
+        #[should_panic(expected = "no `client:load`/`client:visible` directive")]
+        fn bare_component_ref_without_activation_panics() {
+            let source = r#"
+                function Widget() {
+                  const count = signal(0);
+                  return <span>{count()}</span>;
+                }
+                export function App() {
+                  return <div><Widget /></div>;
+                }
+            "#;
+            let module = parse_tsx(source);
+            lower::lower_module(&module);
+        }
+
+        #[test]
+        #[should_panic(expected = "unsupported `client:idle` directive")]
+        fn unsupported_client_directive_panics() {
+            let source = ISLAND_SOURCE.replace("client:load", "client:idle");
+            let module = parse_tsx(&source);
+            lower::lower_module(&module);
+        }
+
+        #[test]
+        #[should_panic(expected = "unsupported attribute namespace `data:`")]
+        fn non_client_namespace_panics() {
+            let source = r#"
+                function Widget() {
+                  const count = signal(0);
+                  return <span>{count()}</span>;
+                }
+                export function App() {
+                  return <div><Widget data:foo="bar" /></div>;
+                }
+            "#;
+            let module = parse_tsx(source);
+            lower::lower_module(&module);
+        }
+
+        #[test]
+        #[should_panic(expected = "no `function Foo()` is declared in this module")]
+        fn unresolved_component_reference_panics_with_clear_message() {
+            let source = r#"
+                export function App() {
+                  return <div><Foo client:load /></div>;
+                }
+            "#;
+            let module = parse_tsx(source);
+            lower::lower_module(&module);
+        }
+
+        #[test]
+        fn component_ref_with_prop_literals_lowers_without_panicking() {
+            let source = r#"
+                function Widget(props) {
+                  const count = signal(0);
+                  return <button onClick={() => count.increment()}>{count()}</button>;
+                }
+                export function App() {
+                  return (
+                    <div>
+                      <Widget client:load initial={5} label="hi" active={true} />
+                    </div>
+                  );
+                }
+            "#;
+            let module = parse_tsx(source);
+            lower::lower_module(&module); // must not panic
         }
     }
 }

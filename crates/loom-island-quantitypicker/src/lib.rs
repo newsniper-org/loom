@@ -8,43 +8,20 @@
 //! roadmap/PHASES.md RQ6 §3.2 절 참고). `panic_now`는 이 관찰을 위한 fault-injection
 //! 전용 메서드 — 실제 QuantityPicker 로직에는 없는, 이 스파이크만을 위한 진입점.
 
-use loom_runtime::web::BrowserDom;
+use loom_runtime::web::{find_own, BrowserDom};
 use loom_runtime::{LoomApp, Signal};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-/// See `crates/loom-island-demo`'s identical helper for the full doc
-/// comment (opaque-boundary DOM walk) — duplicated here rather than shared,
-/// since this crate's entire point is to be a *separate compilation unit*
-/// from ProductCard's; sharing a dependency crate (`loom-runtime`) is fine
-/// (that's not wasm-instance-crossing), but factoring this helper into a
-/// third shared crate would be overkill for ~15 lines.
-fn own_tagged_descendants(host: &web_sys::Element) -> Vec<web_sys::Element> {
-    let mut found = Vec::new();
-    let children = host.children();
-    for i in 0..children.length() {
-        let Some(child) = children.item(i) else { continue };
-        if child.has_attribute("data-loom-island") {
-            continue;
-        }
-        if child.has_attribute("data-loom-id") {
-            found.push(child.clone());
-        }
-        found.extend(own_tagged_descendants(&child));
-    }
-    found
-}
-
-fn find_own(host: &web_sys::Element, name: &str) -> web_sys::Element {
-    own_tagged_descendants(host)
-        .into_iter()
-        .find(|el| el.get_attribute("data-loom-id").as_deref() == Some(name))
-        .unwrap_or_else(|| {
-            panic!("loom-island-quantitypicker: no own-scope element tagged data-loom-id=\"{name}\" under this host")
-        })
-}
+// `own_tagged_descendants`/`find_own` (opaque-boundary DOM walk) used to be
+// duplicated by hand in this crate — sharing a *dependency* crate
+// (`loom-runtime`, already a dependency of both this crate and
+// `loom-island-productcard`) doesn't cross the wasm-instance boundary that
+// this crate's whole point is to keep separate, only sharing a *binary*
+// would — so the duplication was removed (2026-07-24, Task #25) in favor of
+// `loom_runtime::web::find_own`.
 
 struct QuantityState {
     app: LoomApp,

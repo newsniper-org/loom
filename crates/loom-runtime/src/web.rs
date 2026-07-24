@@ -28,6 +28,91 @@ fn move_before(
     Ok(())
 }
 
+/// Walks `host`'s descendants collecting every `[data-loom-id]` element,
+/// **without recursing past a nested `[data-loom-island]` boundary** — RQ3's
+/// opaque-boundary rule (docs/06, RQ3's "DOM 소유권" clause) applied at
+/// DOM-query time. Without this, a parent Island's own query would also pick
+/// up a nested child Island's tagged elements, since the child's host is
+/// physically nested inside the parent's — the same bug class
+/// `ResumedComponent::new`'s page-global query has (see codegen.rs's module
+/// doc and roadmap/PHASES.md's "resume 시점 DOM 쿼리" finding).
+///
+/// Promoted here (2026-07-24, Task #25) from three independent, byte-for-byte
+/// duplicated copies of this exact function
+/// (`loom-island-demo`/`loom-island-productcard`/`loom-island-quantitypicker`,
+/// each of which duplicated it deliberately at the time since each crate's
+/// entire point was being a separate wasm compilation unit — see those
+/// crates' own doc comments). A *shared dependency crate* (as opposed to
+/// shared wasm-instance state) doesn't compromise that separation — only
+/// duplicated **behavior**, not a duplicated **binary**, was the actual
+/// requirement — so hoisting this into `loom-runtime` (already a shared
+/// dependency of all three) removes the duplication without weakening
+/// anything condition B's fault-isolation spike depends on.
+pub fn own_tagged_descendants(host: &web_sys::Element) -> Vec<web_sys::Element> {
+    let mut found = Vec::new();
+    let children = host.children();
+    for i in 0..children.length() {
+        let Some(child) = children.item(i) else { continue };
+        if child.has_attribute("data-loom-island") {
+            continue; // opaque — a nested Island's own DOM, not ours to touch.
+        }
+        if child.has_attribute("data-loom-id") {
+            found.push(child.clone());
+        }
+        found.extend(own_tagged_descendants(&child));
+    }
+    found
+}
+
+/// Same opaque-boundary walk as `own_tagged_descendants`, but collecting
+/// `[data-loom-lref]` elements instead of `[data-loom-id]` ones — the shape
+/// a compiler-generated Island entry point needs to find its own action
+/// dispatch sites (see codegen.rs's `generate_island_entry`), as opposed to
+/// its own signal-bearing text/input nodes.
+pub fn own_tagged_lref_descendants(host: &web_sys::Element) -> Vec<web_sys::Element> {
+    let mut found = Vec::new();
+    let children = host.children();
+    for i in 0..children.length() {
+        let Some(child) = children.item(i) else { continue };
+        if child.has_attribute("data-loom-island") {
+            continue;
+        }
+        if child.has_attribute("data-loom-lref") {
+            found.push(child.clone());
+        }
+        found.extend(own_tagged_lref_descendants(&child));
+    }
+    found
+}
+
+/// `own_tagged_descendants`, pre-indexed by name — the shape most callers
+/// (both the hand-coded Island demos and codegen's generated `find_node`
+/// closures) actually want, rather than a linear `Vec` scanned once per name.
+pub fn index_own_tagged_descendants(
+    host: &web_sys::Element,
+) -> std::collections::HashMap<String, web_sys::Element> {
+    own_tagged_descendants(host)
+        .into_iter()
+        .filter_map(|el| {
+            let name = el.get_attribute("data-loom-id")?;
+            Some((name, el))
+        })
+        .collect()
+}
+
+/// Looks up one `[data-loom-id]`-tagged element by name within `host`'s own
+/// (opaque-boundary-respecting) scope — panics if absent, matching this
+/// project's "narrow explicit subset, panic on anything unsupported"
+/// convention (same message shape the three original hand-coded copies used).
+pub fn find_own(host: &web_sys::Element, name: &str) -> web_sys::Element {
+    own_tagged_descendants(host)
+        .into_iter()
+        .find(|el| el.get_attribute("data-loom-id").as_deref() == Some(name))
+        .unwrap_or_else(|| {
+            panic!("loom_runtime::web::find_own: no own-scope element tagged data-loom-id=\"{name}\" under this host")
+        })
+}
+
 /// Nodes are addressed by the same integer `NodeHandle` scheme
 /// loom-runtime's Components use — the actual `web_sys::Node` lives only in
 /// this side table, never inside an ECS Component (CLAUDE.md 금지 4).

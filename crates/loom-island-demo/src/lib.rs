@@ -24,7 +24,7 @@
 //! roadmap/PHASES.md Phase 3's RQ4 section for why that absence is the
 //! actual point being proven, not an oversight.
 
-use loom_runtime::web::BrowserDom;
+use loom_runtime::web::{find_own, BrowserDom};
 use loom_runtime::{LoomApp, Signal};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -35,40 +35,6 @@ use wasm_bindgen::JsCast;
 extern "C" {
     #[wasm_bindgen(js_namespace = ["window", "__loomShared"])]
     fn set(key: &str, value: i32);
-}
-
-/// Walks `host`'s descendants collecting every `[data-loom-id]` element,
-/// **without recursing past a nested `[data-loom-island]` boundary** — RQ3's
-/// opaque-boundary rule (docs/06, RQ3's "DOM 소유권" clause) applied at
-/// DOM-query time (see roadmap/PHASES.md Phase 3's "resume 시점 DOM 쿼리"
-/// finding). Without this, ProductCard's own query would also pick up
-/// QuantityPicker's tagged elements, since QuantityPicker's host is
-/// physically nested inside ProductCard's — the same bug class
-/// `ResumedComponent::new`'s page-global query has (see codegen.rs), just
-/// exercised here for real instead of only documented as a risk.
-fn own_tagged_descendants(host: &web_sys::Element) -> Vec<web_sys::Element> {
-    let mut found = Vec::new();
-    let children = host.children();
-    for i in 0..children.length() {
-        let Some(child) = children.item(i) else { continue };
-        if child.has_attribute("data-loom-island") {
-            continue; // opaque — a nested Island's own DOM, not ours to touch.
-        }
-        if child.has_attribute("data-loom-id") {
-            found.push(child.clone());
-        }
-        found.extend(own_tagged_descendants(&child));
-    }
-    found
-}
-
-fn find_own(host: &web_sys::Element, name: &str) -> web_sys::Element {
-    own_tagged_descendants(host)
-        .into_iter()
-        .find(|el| el.get_attribute("data-loom-id").as_deref() == Some(name))
-        .unwrap_or_else(|| {
-            panic!("loom-island-demo: no own-scope element tagged data-loom-id=\"{name}\" under this host")
-        })
 }
 
 struct QuantityState {

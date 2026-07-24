@@ -9,6 +9,7 @@ members = [
     "crates/loom-island-demo",
     "crates/loom-island-productcard",
     "crates/loom-island-quantitypicker",
+    "crates/loom-island-compiled",
     "crates/loom-fic",
 ]
 

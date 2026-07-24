@@ -483,15 +483,78 @@ subtree가 실제로 사라짐(2단계 detach 실증) / CartBadge(자기 Island 
    여전히 목표 상태이지 현실이 아님 — 이번 Playwright 검증도 이 사실 때문에 "청크 요청
    안 됨"이 아니라 "registry 상태가 dormant로 남음"으로 Q1을 확인(더 정확한 방법으로 대체,
    숨기지 않고 이유 기록).
-2. 컴파일러 통합(증분 4) — `ir.rs`/`lower.rs`/`codegen.rs`에 `ComponentGraph`/
-   `IslandActivation`/`ComponentRef` 추가는 미착수. 계획 문서가 이미 "증분 0~3만으로 Phase 3
-   종료 조건 충족, 컴파일러 통합은 별도 날짜로 추적"이라 명시했으므로 종료 조건 자체는
-   충족됨.
+2. ~~컴파일러 통합(증분 4)~~ → **해소됨(2026-07-24, Task #25)** — 아래 "Task #25
+   실행 상태" 절 참고.
 3. `sharedSignal()` 저작 표면(증분 5, 스트레치) — 미착수.
 4. crash 통지 채널(RQ4로 이관된 요구) — 값 공유만 구현, 상태 변화 통지는 미착수.
 5. 비동기 정리(구조적 동시성 취소)의 실제 타임아웃 의미론 — 이번 `begin_detach`/
    `finish_detach`는 동기 즉시 호출(RQ3의 "알려진 약점" #5, 미결로 남김).
 6. 리스트 row 안의 Island N개 인스턴스, 크로스 임베드 DOM 중첩 — 계획대로 범위 밖.
+
+## Task #25 실행 상태 (2026-07-24) — 컴파일러 Island 통합 (증분 4)
+
+`ir.rs`에 `ComponentGraph`/`IslandActivation`/`PropLiteral`/`JsxNode::ComponentRef`
+추가. `lower.rs`가 이제 모듈 안의 모든 top-level 함수를 스캔(기존엔 첫 export만 쓰고
+나머지를 진단 없이 버리는 실제 버그가 있었음 — 이번에 같이 고침)하고
+`client:load`/`client:visible`(SWC가 이미 `JSXNamespacedName`으로 올바르게 파싱하던
+것을 `lower.rs`가 그동안 무조건 거부하고 있었을 뿐 — 파서 문제가 아니었음)을 파싱.
+`codegen.rs`의 `generate_islands`가 Island로 지정된 각 컴포넌트를
+`pub mod <name>_generated { ... }`로 네임스페이싱(컴파일러가 내는 모든 식별자가
+원래 전역 스코프였다는, 문서에 없던 진짜 블로커였음 — 루트 컴포넌트는 하위호환 위해
+계속 무네임스페이스), 호스트 엘리먼트에 `data-loom-island`/`-island-id`/`-activation`
+/`-chunk`/`-ctor` 5개 속성 방출. Island 진입점(`#[wasm_bindgen(constructor)]`)은
+기존 `Action`/`apply_action`/`resume_action_by_symbol`/`resume` 범용 디스패치
+기계를 그대로 재사용(손코딩 Island처럼 별도 클로저 배선 방식을 새로 만들지 않음)하되
+DOM 탐색은 (새로 `loom-runtime::web`으로 승격한) `own_tagged_descendants`/`find_own`
+/`index_own_tagged_descendants`/`own_tagged_lref_descendants`로 opaque
+`[data-loom-island]` 경계를 존중하도록 스코프를 좁힘 — `ResumedComponent::new`의
+페이지 전역 쿼리 버그를 재생산하지 않음.
+
+**실제 컴파일 중 발견한 진짜 버그 세 개(가정 아님)**:
+1. 2단계 이상 중첩된 Island 참조(예: App → ProductCard → Widget)는 부모의 참조
+   호출에 `super::` 경로 접두사가 필요함 — 모든 Island 모듈이 JSX 중첩 깊이와
+   무관하게 flat sibling으로 생성되기 때문(`generate_islands`가 `ComponentGraph::
+   components`를 평평하게 순회). 첫 시도(단일 레벨 중첩)에서는 안 드러나고, 2단계
+   중첩 회귀 테스트를 직접 추가해서야 발견됨 — `CodegenCtx::wrapped_in_own_module`
+   플래그로 해결.
+2. 액션이 0개인 컴포넌트(`ComponentRef`만 있는 루트처럼)의 `enum Action {}`에 대해
+   `match action {}`이 Rust에서 예외적으로 exhaustive로 인정 안 됨(rustc 자체 진단:
+   "references are always considered inhabited") — 이전까지 모든 컴파일 대상
+   컴포넌트가 액션을 최소 1개씩 가져서 한 번도 안 걸렸던, Island가 처음으로 드러낸
+   기존 `apply_action` 생성 로직의 진짜 갭. `_ => {}` 폴백 arm 추가로 해결.
+3. Island 진입점의 `find_node` 클로저가 `dom.adopt(...)`를 지연 호출하도록 짰더니
+   `resume(&mut app, &mut dom, &mut find_node, ...)` 호출에서 `dom`이 이중 가변
+   차용되는 진짜 borrow 오류 — `ResumedComponent::new`처럼 태그된 엘리먼트를
+   `NodeHandle`로 미리(eagerly) 전부 adopt해두고 클로저는 그 결과만 불변 참조하도록
+   고쳐 해결.
+
+**실제 end-to-end 검증**: `demo/islands/product-card.tsx`(ProductCard `client:visible`
+가 Widget `client:load`를 중첩) + 신규 크레이트 `crates/loom-island-compiled`(build.rs가
+`loom_compiler::compile_tsx_to_rust_graph(..., GraphMode::Islands)` 호출) +
+`demo/islands/compiled/index.html`(기존 `demo/islands/index.html`과 나란히, 대체
+아님) — 기존 손코딩 데모의 시나리오 체크리스트(로드 시 활성화, 화면 밖에서 dormant
+유지, 스크롤 시 활성화, opaque 스코핑, "show details" 실제 정적 콘텐츠, detach 후
+DOM 제거)를 Playwright로 전부 재현 확인(8/8 통과), 3개 회귀 스크립트(원본 Island
+데모, condition B 스파이크) 전부 무회귀 재확인, `cargo test --workspace` 전체 통과.
+
+**의도적으로 남긴 범위(숨기지 않음)**:
+- `GraphMode::Flatten`(H-Qwik 반사실 모양, RQ6 §8 item4) — 시그니처만 있고 미구현,
+  실제 구현은 Task #26 몫.
+- Island당 별도 `.wasm` 산출물 빌드 툴링 — 여전히 미해결. 이번 acceptance 크레이트도
+  ProductCard/Widget 둘 다 같은 크레이트에서 나오므로, `demo/islands/compiled/
+  index.html`에서 두 `data-loom-chunk` 값(`product_card`/`widget`)은 **같은 크레이트를
+  두 번 `wasm-pack build --out-name`한 결과**(내용은 완전히 같은 두 개의 진짜로 동작하는
+  wasm 모듈, 각각 안 쓰는 쪽 Island 구조체도 딸려 들어감) — 진짜 "1 Island = 1 빌드
+  산출물"은 여전히 아님.
+- `PropLiteral` 실제 resolve(`specialize_component_refs`, 인스턴스별 특수화)는 파싱/
+  검증(활성화 지시어 필수, 알 수 없는 `client:` 값 거부 등)만 되고 실제 override
+  구현은 스트레치로 남김 — 인수 조건 픽스처가 props 없이도 충족되므로.
+- `sharedSignal()`/RQ4 cross-widget(`cartCount`) — Task #28-a 몫, 이번 acceptance
+  픽스처는 이 부분을 의도적으로 뺐음(`demo/islands/compiled/index.html`의 스코프
+  노트 참고).
+
+`docs/02-compiler-design.md`(미해결 절), `docs/07-naming-and-terminology.md`
+("ComponentRef" 용어 충돌 정리)도 같이 갱신함.
 
 ## RQ6 §3.2 — "Phase 3 완료, 첫 정면 대결" 실측 (2026-07-24)
 

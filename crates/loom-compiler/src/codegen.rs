@@ -106,10 +106,260 @@
 //! other action ignores it, `SetString` uses it (see that function's doc
 //! comment).
 
-use crate::ir::{ClickAction, Component, JsxNode, SignalInit};
+use crate::ir::{ClickAction, Component, ComponentGraph, IslandActivation, JsxNode, SignalInit};
 use std::fmt::Write as _;
 
+/// Which physical Island chunk/constructor a compiled unit corresponds to —
+/// derived deterministically from the component's own name. **Known,
+/// documented gap (Task #25 scope cut)**: multiple simultaneous instances of
+/// the *same* authored component on one page would collide on these derived
+/// values (same `island_id`/`chunk`/`ctor` for each) — not solved this
+/// round.
+struct IslandTag {
+    island_id: String,
+    chunk: String,
+    ctor: String,
+    activation: IslandActivation,
+}
+
+/// Two ways a `ComponentGraph` can be compiled — see each variant's doc
+/// comment.
+pub enum GraphMode {
+    /// Every Island-activation-bearing component gets its own namespaced
+    /// `pub mod <name>_generated { ... }` plus its own generated Island
+    /// entry point (`generate_island_entry_body`). The graph's root is
+    /// emitted unqualified, exactly as today's `generate()` does —
+    /// **required** for backward compatibility with
+    /// `loom-demo`/`loom-resume-demo`/`loom-fic`'s existing `mod generated {
+    /// include!(...) }` call sites (none of them need to change).
+    Islands,
+    /// RQ6 §8's H-Qwik counterfactual target shape — every component in the
+    /// graph, Island-activated or not, becomes a sibling top-level entity
+    /// set under ONE shared `LoomApp`/`World`/`Signals`, no per-component
+    /// module boundary, no Island host attributes, one LRef payload. Makes
+    /// Task #26's "정체성 통제" fixture derivable from the *same* JSX source
+    /// that produces `Islands` mode's output, differing only in which
+    /// `GraphMode` compiles it. **Designed, not implemented this round** —
+    /// building the actual fixture is Task #26's job
+    /// (RQ6-verification-plan.md §8 item 4).
+    Flatten,
+}
+
+pub fn generate_graph(graph: &ComponentGraph, mode: GraphMode) -> String {
+    match mode {
+        GraphMode::Islands => generate_islands(graph),
+        GraphMode::Flatten => panic!(
+            "loomc: GraphMode::Flatten is designed but not yet implemented — see Task #26 / RQ6-verification-plan.md §8 item 4"
+        ),
+    }
+}
+
+/// PascalCase component name -> snake_case Rust module name (`ProductCard`
+/// -> `product_card`). Component names are already valid Rust-identifier-
+/// shaped strings (SWC only accepts valid JS identifiers as function names,
+/// which overlap with valid Rust identifiers for every case this compiler's
+/// narrow subset allows).
+fn sanitize_mod_name(component_name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in component_name.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn island_tag_for(component: &Component, activation: IslandActivation) -> IslandTag {
+    let base = sanitize_mod_name(&component.name);
+    IslandTag {
+        island_id: base.replace('_', "-"),
+        chunk: base,
+        ctor: format!("{}Island", component.name),
+        activation,
+    }
+}
+
+/// Compiles every component in `graph` — the root unqualified (backward
+/// compatible with `generate()`), every other (Island-activated —
+/// `ComponentRef`'s doc comment states 증분 4 requires this) component
+/// namespaced into its own `pub mod <name>_generated { ... }` plus a
+/// generated `#[wasm_bindgen(constructor)]` Island entry point inside that
+/// same module.
+fn generate_islands(graph: &ComponentGraph) -> String {
+    let mut out = String::new();
+    for component in &graph.components {
+        if component.name == graph.root {
+            out.push_str(&generate_component(component, None));
+            continue;
+        }
+        let activation = graph.activation_for(&component.name).unwrap_or_else(|| {
+            panic!(
+                "loomc: component `{}` is declared but never referenced via a `client:load`/`client:visible` reference — 증분 4 scope: every non-root component in `GraphMode::Islands` must be Island-activated",
+                component.name
+            )
+        });
+        let has_input_binding = collect_actions(&component.root)
+            .iter()
+            .any(|a| matches!(a, ClickAction::SetString { .. }));
+        if has_input_binding {
+            panic!(
+                "loomc: component `{}` is Island-activated but contains an <input> two-way binding — 증분 4 scope: compiled Island entry points wire `click` listeners only (see generate_island_entry_body's doc comment); not yet supported",
+                component.name
+            );
+        }
+        let tag = island_tag_for(component, activation);
+        let mod_name = sanitize_mod_name(&component.name);
+        writeln!(out, "pub mod {mod_name}_generated {{").unwrap();
+        writeln!(out, "    use ::wasm_bindgen::JsCast as _;").unwrap();
+        out.push_str(&generate_component(component, Some(&tag)));
+        out.push_str(&generate_island_entry_body(&tag));
+        writeln!(out, "}}").unwrap();
+    }
+    out
+}
+
+/// Generated *inside* an Island component's own `pub mod <name>_generated {
+/// ... }` block (so it can refer to `Signals`/`setup`/`resume`/`apply_action`
+/// /`resume_action_by_symbol` unqualified). The compiler-generated
+/// replacement for `loom-island-demo`'s hand-written
+/// `QuantityPickerIsland`/`ProductCardIsland` structs. Reuses the *same*
+/// generic `Action`/`apply_action`/`resume_action_by_symbol`/`resume`
+/// dispatch machinery every non-Island resumed component already uses
+/// (design-fork decision, Task #25 plan §3.4) — the only real difference
+/// from `ResumedComponent` is *where* DOM discovery happens (host-scoped via
+/// `loom_runtime::web::index_own_tagged_descendants`/
+/// `own_tagged_lref_descendants` — RQ3's opaque-boundary rule — **not**
+/// `ResumedComponent::new`'s page-global `query_selector_all` bug) and *when*
+/// listeners get wired (proactively at construction time, matching Islands'
+/// load/visible activation model, not lazily on first click the way
+/// `bootstrap.js`'s page-global delegation works).
+///
+/// **Scope cut (stated, not hidden)**: wires `click` listeners only —
+/// `generate_islands` panics before calling this if the component contains
+/// an `<input>` binding. Unlike `bootstrap.js`'s runtime event-type guessing
+/// (`click` vs `input`, decided per dispatched element at dispatch time),
+/// every LRef site an Island entry point wires is statically known (at
+/// codegen time) to be `click`-only within this scope cut — so there is
+/// nothing left to guess at runtime, a real (if narrow) correctness
+/// improvement over the page-global delegation path, not just parity with
+/// it.
+fn generate_island_entry_body(tag: &IslandTag) -> String {
+    let struct_name = &tag.ctor;
+    let mut out = String::new();
+    writeln!(
+        out,
+        "struct IslandState {{ app: ::loom_runtime::LoomApp, dom: ::loom_runtime::web::BrowserDom, signals: Signals }}"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "#[::wasm_bindgen::prelude::wasm_bindgen]").unwrap();
+    writeln!(
+        out,
+        "pub struct {struct_name} {{ state: ::std::rc::Rc<::std::cell::RefCell<IslandState>> }}"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "#[::wasm_bindgen::prelude::wasm_bindgen]").unwrap();
+    writeln!(out, "impl {struct_name} {{").unwrap();
+    writeln!(out, "    #[::wasm_bindgen::prelude::wasm_bindgen(constructor)]").unwrap();
+    writeln!(out, "    pub fn new(host: ::web_sys::Element) -> {struct_name} {{").unwrap();
+    writeln!(out, "        ::console_error_panic_hook::set_once();").unwrap();
+    writeln!(
+        out,
+        "        let document = ::web_sys::window().expect(\"no `window`\").document().expect(\"no `document`\");"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        let mut dom = ::loom_runtime::web::BrowserDom::new_for_resume(document);"
+    )
+    .unwrap();
+    writeln!(out, "        let mut app = ::loom_runtime::LoomApp::new();").unwrap();
+    // Adopt every own-scope tagged element into a `NodeHandle` *eagerly*,
+    // up front — matching `ResumedComponent::new`'s exact pattern (see
+    // that struct's own doc comment). This is not just style parity: if
+    // `find_node` instead called `dom.adopt(...)` *lazily* inside its own
+    // closure body, the closure would capture `dom` by mutable reference,
+    // and the very next line's `resume(&mut app, &mut dom, &mut find_node,
+    // ...)` would then try to borrow `dom` mutably *again* while that
+    // capture is still live — a real double-mutable-borrow rustc rejects
+    // (found by actually compiling this fixture, not assumed). Adopting up
+    // front means `find_node` only ever reads an already-built `HashMap`,
+    // an immutable capture, so no such conflict exists.
+    writeln!(
+        out,
+        "        let by_name: ::std::collections::HashMap<String, ::loom_runtime::NodeHandle> = ::loom_runtime::web::index_own_tagged_descendants(&host).into_iter().map(|(name, el)| (name, dom.adopt(el.unchecked_into()))).collect();"
+    )
+    .unwrap();
+    writeln!(out, "        let mut find_node = |name: &str| -> ::loom_runtime::NodeHandle {{").unwrap();
+    writeln!(
+        out,
+        "            *by_name.get(name).unwrap_or_else(|| panic!(\"loomc generated Island entry: no own-scope element tagged data-loom-id={{:?}}\", name))"
+    )
+    .unwrap();
+    writeln!(out, "        }};").unwrap();
+    writeln!(out, "        let signals = resume(&mut app, &mut dom, &mut find_node, &[]);").unwrap();
+    writeln!(
+        out,
+        "        let state = ::std::rc::Rc::new(::std::cell::RefCell::new(IslandState {{ app, dom, signals }}));"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        for lref_el in ::loom_runtime::web::own_tagged_lref_descendants(&host) {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "            let lref = lref_el.get_attribute(\"data-loom-lref\").unwrap_or_default();"
+    )
+    .unwrap();
+    writeln!(out, "            let mut parts = lref.splitn(3, '|');").unwrap();
+    writeln!(out, "            let _chunk = parts.next();").unwrap();
+    writeln!(out, "            let symbol = parts.next().unwrap_or_default().to_string();").unwrap();
+    writeln!(out, "            let state_for_closure = state.clone();").unwrap();
+    writeln!(
+        out,
+        "            let closure = ::wasm_bindgen::prelude::Closure::<dyn FnMut(::web_sys::MouseEvent)>::new(move |_e: ::web_sys::MouseEvent| {{"
+    )
+    .unwrap();
+    writeln!(out, "                let action = resume_action_by_symbol(&symbol, \"\");").unwrap();
+    writeln!(out, "                let mut s = state_for_closure.borrow_mut();").unwrap();
+    writeln!(out, "                let IslandState {{ app, dom, signals }} = &mut *s;").unwrap();
+    writeln!(out, "                apply_action(app, signals, &action);").unwrap();
+    writeln!(out, "                app.tick(dom);").unwrap();
+    writeln!(out, "            }});").unwrap();
+    writeln!(
+        out,
+        "            lref_el.add_event_listener_with_callback(\"click\", closure.as_ref().unchecked_ref()).expect(\"add_event_listener_with_callback failed\");"
+    )
+    .unwrap();
+    writeln!(out, "            closure.forget();").unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "        {struct_name} {{ state }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "    /// RQ3's synchronous detach notification (`IslandInstance::begin_detach`'s contract)."
+    )
+    .unwrap();
+    writeln!(out, "    pub fn begin_detach(&mut self) {{}}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+    out
+}
+
 pub fn generate(component: &Component) -> String {
+    generate_component(component, None)
+}
+
+fn generate_component(component: &Component, island: Option<&IslandTag>) -> String {
     let mut out = String::new();
     writeln!(out, "// GENERATED by loomc from {}() — do not edit by hand.", component.name).unwrap();
     writeln!(out).unwrap();
@@ -196,6 +446,19 @@ pub fn generate(component: &Component) -> String {
             }
         }
     }
+    if actions.is_empty() {
+        // A component with zero actions of its own is a real, new shape
+        // 증분 4 introduces: a `ComponentRef`-only tree (e.g. `App`'s root
+        // being just a wrapper around an Island reference) contributes
+        // nothing to `collect_actions`, so `enum Action {}` has zero
+        // variants. `match action {}` on a zero-variant enum is *not*
+        // treated as exhaustive by rustc when matching through a reference
+        // ("references are always considered inhabited", rustc's own
+        // E0004 diagnostic wording) — a genuine, pre-existing gap in this
+        // function surfaced for the first time by Islands (every compiled
+        // component before this had at least one action).
+        writeln!(out, "        _ => {{}}").unwrap();
+    }
     writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -234,6 +497,13 @@ pub fn generate(component: &Component) -> String {
     )
     .unwrap();
 
+    if island.is_some() && try_render_fully_static(&component.root).is_some() {
+        panic!(
+            "loomc: component `{}` is Island-activated but has no dynamic content at all — a fully static subtree collapses into one `append_static_html` call with no addressable root node to tag with `data-loom-island*` attributes (see try_render_fully_static's doc comment); remove the `client:` directive if this component is meant to be pure static markup",
+            component.name
+        );
+    }
+
     let mut ctx = CodegenCtx {
         node_counter: 0,
         signal_entities: Vec::new(),
@@ -241,8 +511,31 @@ pub fn generate(component: &Component) -> String {
         cond_site_index: 0,
         cond_site_fns: String::new(),
         cond_site_fn_names: Vec::new(),
+        wrapped_in_own_module: island.is_some(),
     };
     lower_node(&mut out, &component.root, "mount", component, &mut ctx);
+
+    if let Some(tag) = island {
+        // `node_0` is guaranteed to be the component's own root element's
+        // handle: `ctx.node_counter` starts at 0, and the guard above already
+        // ruled out the one way the root could avoid calling
+        // `ctx.fresh_node_var()` at all (a whole-subtree static collapse).
+        writeln!(out, "    dom.set_attribute(node_0, \"data-loom-island\", \"\");").unwrap();
+        writeln!(
+            out,
+            "    dom.set_attribute(node_0, \"data-loom-island-id\", {:?});",
+            tag.island_id
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "    dom.set_attribute(node_0, \"data-loom-activation\", {:?});",
+            tag.activation.as_attr_value()
+        )
+        .unwrap();
+        writeln!(out, "    dom.set_attribute(node_0, \"data-loom-chunk\", {:?});", tag.chunk).unwrap();
+        writeln!(out, "    dom.set_attribute(node_0, \"data-loom-ctor\", {:?});", tag.ctor).unwrap();
+    }
 
     writeln!(out, "    let signals = Signals {{").unwrap();
     for s in &component.signals {
@@ -568,6 +861,11 @@ fn collect_binding_shapes(node: &JsxNode) -> Vec<BindingShape> {
             // so there's no single shared System to add here the way
             // `list_reconcile_k_system` is for every `ListBinding`).
             JsxNode::CondBinding { .. } => {}
+            // A referenced component's own patch systems are registered by
+            // *its own* generated `setup()`, called via the emitted
+            // `<mod>_generated::setup(...)` line — contributes nothing to
+            // *this* component's own binding shapes.
+            JsxNode::ComponentRef { .. } => {}
             JsxNode::StaticText(_) | JsxNode::RowItemText => {}
         }
     }
@@ -624,6 +922,21 @@ struct CodegenCtx {
     /// not the generic `cond_reconcile_f_system` (which doesn't know this
     /// site's actual static content) — see `generate_resume`'s `Bool` arm.
     cond_site_fn_names: Vec<(String, String)>,
+    /// `true` while generating a non-root Island component (wrapped in its
+    /// own `pub mod <name>_generated { ... }` by `generate_islands`). Every
+    /// other Island's own generated module is a **flat sibling** at that
+    /// same one level of `pub mod` nesting, regardless of how deeply nested
+    /// its `<ComponentRef/>` usage is in the *JSX* tree (`generate_islands`
+    /// iterates `ComponentGraph::components` — a flat list — emitting one
+    /// `pub mod` per non-root component, never nesting one inside another).
+    /// So a `ComponentRef` arm generated *while wrapped* must escape its own
+    /// module with exactly one `super::` hop to reach a sibling; a
+    /// `ComponentRef` arm generated for the *unqualified root* component
+    /// needs no prefix at all, since the root's own code and every Island
+    /// module already sit at the same top level. Exactly one `super::` hop
+    /// is correct at any JSX nesting depth for this reason — not just for
+    /// one level of nesting.
+    wrapped_in_own_module: bool,
 }
 
 impl CodegenCtx {
@@ -1002,6 +1315,30 @@ fn lower_node(
             for child in children {
                 lower_node(out, child, &node_var, component, ctx);
             }
+        }
+        // Calls the referenced component's own generated `setup()` (in its
+        // namespaced `pub mod <name>_generated { ... }` — see
+        // `generate_islands`) to build *its* markup as a child of this
+        // component's tree, using the *same* `app`/`dom` (one `LoomApp`/
+        // `World` for the whole page's SSR pass — see `ir::ComponentGraph`'s
+        // doc comment). Contributes zero entries to *this* component's own
+        // `Signals`/`Action` (see `collect_actions`/`collect_binding_shapes`'
+        // matching empty arms) — the referenced component resumes/dispatches
+        // entirely independently later, via its own generated Island entry
+        // point, never through this component's own `resume()`.
+        JsxNode::ComponentRef { component: ref_name, .. } => {
+            let sub_mod = sanitize_mod_name(ref_name);
+            // See `CodegenCtx::wrapped_in_own_module`'s doc comment — every
+            // Island module is a flat sibling regardless of JSX nesting
+            // depth, so a reference generated *from inside* another
+            // Island's own wrapped module needs exactly one `super::` hop;
+            // a reference generated for the unqualified root needs none.
+            let path_prefix = if ctx.wrapped_in_own_module { "super::" } else { "" };
+            writeln!(
+                out,
+                "    let _ = {path_prefix}{sub_mod}_generated::setup(app, dom, {parent_var});"
+            )
+            .unwrap();
         }
     }
 }
