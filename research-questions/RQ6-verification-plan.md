@@ -1091,24 +1091,89 @@ N-스케일링·원본 앱 규모 축은 컴파일러 통합(증분 4) 이후로
 전혀 없고, LRef 청크 이름이 `ProductCard_chunk`/`Widget_chunk` 둘로 나뉘던 것이
 `App_chunk` 하나로 합쳐짐(단일 payload 요구사항의 직접적 반영).
 
-**의도적으로 축소한 범위(숨기지 않음)**:
-1. §4.2가 원래 요구한 5-컴포넌트 위젯-임베드 픽스처(CartBadge + ProductCard +
-   QuantityPicker + CheckoutForm + MiniDashboard)를 이번엔 만들지 않음 — Task #25의
-   2-컴포넌트 픽스처(ProductCard/Widget)를 그대로 재사용해 `GraphMode::Flatten`
-   자체의 정확성만 먼저 확정. CartBadge의 cross-widget(`cartCount`) 요구는 애초에
-   `sharedSignal()`(Task #28-a, 미착수) 없이는 어느 팔에서도 저작 불가능하므로
-   포함 못 함. CheckoutForm/MiniDashboard(§9-6/§6 M8 이름 충돌용)는 Task #27이
-   전체 M1-M10 배터리를 실제로 돌릴 때 마저 짓는 것으로 미룸.
-2. 시그널 이름 전역 유일성 요구(`flatten_graph`가 충돌 시 명확히 panic) — 자동
-   네임스페이싱/리네이밍은 구현 안 함(이 픽스처가 그럴 필요가 없으므로).
-3. "서로 다른 anchor marker" 요구는 새 IR 필드 대신 기존 `data-loom-id`/
+**정정(같은 날 발견): 위 축소는 병익님 승인 없이 제가 임의로 결정한 것이었음**
+— 처음엔 Task #25의 2-컴포넌트 픽스처(ProductCard/Widget)로 `GraphMode::Flatten`
+자체의 정확성만 확정하고 CartBadge/CheckoutForm/MiniDashboard는 Task #27로
+미루려 했으나, 병익님이 "왜 네 멋대로 축소했냐"고 지적함 — §4.2가 이미
+사전등록한 5-컴포넌트 전체 픽스처를 이번에 실제로 완성했다(아래).
+
+**§4.2 5-컴포넌트 위젯-임베드 픽스처 완성**: `demo/widget-embed.tsx` (신규,
+`crates/loom-widget-embed`가 `GraphMode::Islands`/`GraphMode::Flatten` 양쪽으로
+컴파일):
+- **CartBadge**: 별도 함수가 아니라 `App` 자신의 정적 마크업에 인라인된
+  `{sharedValue("cartCount", 0)}` — 원본 손코딩 데모와 동일하게 "자기 청크가
+  없는" 구독자.
+- **QuantityPicker** (`client:load`): `sharedSignal("cartCount", 0)`의 유일한
+  writer.
+- **ProductCard** (`client:visible`): QuantityPicker를 중첩.
+- **CheckoutForm** (`client:load`, §9-6 "고위험 위젯"): Bool 시그널 3개(shipping/
+  gift/confirmed) — `<input>` 없이 구성(컴파일된 Island 진입점은 이번 라운드에
+  click만 지원하는 제약, Task #25에서 이미 확정).
+- **MiniDashboard** (`client:load`): 카운터+리스트 조합 재사용.
+
+**`sharedSignal()`/`sharedValue()`를 Task #28-a에서 이번으로 앞당겨 구현**
+(CartBadge가 실제로 동작하려면 필요했음): `ir.rs`에 `SharedBinding`/
+`JsxNode::SharedValueBinding` 추가, `loom_runtime::SharedStore` 트레잇(+
+`JsSharedStore`/`InMemorySharedStore`), `setup`/`apply_action`/`resume`은
+컴포넌트가 직접 `sharedSignal`을 쓸 때만 조건부로 `shared` 파라미터를 받음.
+Island 모드에서 `ComponentRef`가 shared-바인딩을 쓰는 대상을 호출할 땐 **매번
+새 throwaway `InMemorySharedStore`를 그 자리에서 생성**해 넘김(부모 체인 전체에
+파라미터를 전파하지 않음) — `setup()`은 SSR 시점에 딱 한 번만 실행되고 그때
+store에 쓴 값은 아무도 다시 안 읽으므로 안전하다는 근거(코드 주석 참고).
+
+**실제 컴파일 중 발견한 진짜 버그 두 개(가정 아님, CheckoutForm의 3-conditional
+구성이 처음으로 노출시킴 — 이전까지 한 컴포넌트에 conditional이 2개 이상인
+픽스처가 없었음)**:
+1. **조건부 3개 이상이 한 컴포넌트에 있으면 서로 크로스와이어됨**: 각
+   `cond_reconcile_site_N`이 정확히 같은 쿼리 모양(`Signal<bool>`+`CondBlock`+
+   `DomTarget`, 구분자 없음)을 썼는데, `Changed<Signal<bool>>`은 System이 아니라
+   Entity 단위로 추적되므로, 아무 조건부 하나만 바뀌어도 **모든** 사이트의
+   System이 그 Entity를 매치해 각자 자기 하드코딩된 정적 텍스트를 엉뚱한 곳에
+   적용함(실측: shipping 토글 시 "Gift wrap selected."가 표시됨). 각 사이트에
+   전용 `CondSiteN` 마커 Component를 부여하고 쿼리에 `With<CondSiteN>` 필터를
+   추가해 해결.
+2. **위 수정의 1차 시도 자체가 또 다른 버그**: 마커 struct를 `setup()` 함수
+   본문 안에 로컬로 선언했더니 블록 스코프라 `resume()`이나 최상위
+   `cond_reconcile_site_N` 함수에서 안 보임 — `ctx.cond_site_fns`(기존에 리컨실
+   함수를 최상위로 스플라이스하던 버퍼)에 마커 선언도 같이 흘려보내 최상위
+   스코프로 옮겨 해결. `generate_resume`의 Bool arm도 스폰 시 같은 마커를
+   부착하도록 수정(안 하면 재개된 엔티티가 마커가 없어 자기 자신의 리컨실
+   System에도 안 잡힘).
+
+두 버그 모두 loom-compiler 유닛 테스트로 회귀 방지 고정(`multiple_conditionals_in_one_component_get_distinct_site_markers`
+— setup()/resume() 양쪽에서 마커가 있는지 확인).
+
+**Playwright 검증 (실제 브라우저, 16개 시나리오 전부 통과)**: `demo/widget-embed/index.html`
+— 4개 Island 전부 올바른 시점에 활성화, ProductCard 화면 밖에서 dormant 유지,
+**RQ4 cross-widget 실측 성공**(QuantityPicker 증가 → CartBadge가 반영, ProductCard
+자신은 아직 활성화 안 된 상태에서도), opaque 스코핑(ProductCard 활성화 후에도
+QuantityPicker 계속 동작), CheckoutForm 3개 독립 토글 전부 정확한 텍스트,
+MiniDashboard 카운터+리스트 추가 동작. `demo/islands/compiled/index.html`
+(Task #25) 기존 8개 시나리오도 무회귀. `cargo test --workspace` 전체 통과
+(35 loom-compiler 테스트 포함).
+
+**여전히 남은 것(숨기지 않음)**:
+1. 시그널 이름 전역 유일성 요구(`flatten_graph`가 충돌 시 명확히 panic) — 자동
+   네임스페이싱/리네이밍은 구현 안 함. §6 M8의 "이름 충돌" 시나리오 자체는
+   실제 픽스처가 아니라 별도 컴파일러 유닛 테스트
+   (`graph_mode_flatten_rejects_colliding_signal_names_across_components`)로
+   검증 — 이것 자체가 하나의 실측 결과: **Island 아키텍처는 같은 이름의
+   위젯 두 개를 공짜로 허용하지만(각자 격리된 DOM 쿼리 스코프), H-Qwik/Flatten
+   방식은 전역 시그널 네임스페이스가 하나뿐이라 구조적으로 충돌한다** — 향후
+   M1/M5(복잡도 비용) 축에 등재할 만한 발견.
+2. "서로 다른 anchor marker" 요구는 새 IR 필드 대신 기존 `data-loom-id`/
    `data-loom-lref` 마커로 loosely 충족 — Task #27의 실제 측정에서 이걸로
    불충분하다고 판명되면 그때 전용 `anchor_id` 필드를 추가.
-4. M1(번들 크기)/M6(장애 격리)/M8/M9 등 §6 표의 실제 정량 재측정은 이번엔 안 함(SSR
-   내용 비교로 정합성만 native 테스트 수준에서 확인) — Task #27의 몫.
-
-Playwright 검증: `demo/islands/compiled/index.html`(Island 팔)의 기존 8개 시나리오
-전부 무회귀 재확인. `cargo test --workspace` 전체 통과.
+3. M1(번들 크기)/M6(장애 격리)/M9(정량) 등 §6 표의 실제 정량 재측정(반복시행
+   기반 통계)은 이번엔 안 함(SSR 내용 비교 + Playwright 기능 검증까지만) —
+   Task #27의 몫.
+4. **빌드 툴링 gap(재확인)**: `demo/islands/chunks/product_card.js`라는 청크
+   이름이 Task #25(`crates/loom-island-compiled`)와 Task #26(`crates/
+   loom-widget-embed`) 양쪽 모두에서 우연히 같은 컴포넌트 이름("ProductCard")
+   때문에 발생 — 두 픽스처를 동시에 서빙할 수 없고, 어느 데모 페이지를
+   보려면 그 페이지에 해당하는 크레이트로 청크를 다시 빌드해야 함(이미
+   Task #25 문서에 기록된 "1 Island = 1 빌드 산출물이 아직 실제가 아님" 갭의
+   연장).
 
 **상세**: `crates/loom-compiler/src/codegen.rs`의 `flatten_graph`/`generate_flatten`
 독 코멘트, `crates/loom-island-compiled/src/lib.rs`의 `render_html_flat`/그 테스트,

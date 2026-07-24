@@ -3,9 +3,36 @@
 //! `browser` cargo feature (wasm-bindgen/web-sys aren't needed for the
 //! native `Changed<T>`/reconciliation tests in `tests/`).
 
-use crate::{DomOps, NodeHandle};
+use crate::{DomOps, NodeHandle, SharedStore};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["window", "__loomShared"])]
+    fn set(key: &str, value: i32);
+    #[wasm_bindgen(js_namespace = ["window", "__loomShared"])]
+    fn get(key: &str) -> JsValue;
+}
+
+/// Real `window.__loomShared` (`demo/resume/shared-store.js`) binding —
+/// generated code (`setup`/`apply_action`/`resume`, when a component
+/// authors `sharedSignal(...)`) calls this through the `SharedStore` trait,
+/// same "host-agnostic generated code, host adapter implements the trait"
+/// shape `DomOps`/`BrowserDom` already established. Replaces what used to
+/// be a hand-written `#[wasm_bindgen] extern "C" { ... }` block duplicated
+/// per Island crate (`crates/loom-island-demo`, before Task #26).
+pub struct JsSharedStore;
+
+impl SharedStore for JsSharedStore {
+    fn set(&mut self, key: &str, value: i32) {
+        set(key, value);
+    }
+
+    fn get(&mut self, key: &str) -> Option<i32> {
+        get(key).as_f64().map(|v| v as i32)
+    }
+}
 
 /// `Element.moveBefore` isn't in web-sys yet (it's a very recent WHATWG
 /// addition — Chrome/Edge 133+, RQ1-benchmark-protocol.md's candidate E

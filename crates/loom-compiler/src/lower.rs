@@ -33,7 +33,8 @@
 //! — this is a real, narrow compiler front end, not a fuzzy best-effort one.
 
 use crate::ir::{
-    ClickAction, Component, ComponentGraph, IslandActivation, JsxNode, PropLiteral, SignalDecl, SignalInit,
+    ClickAction, Component, ComponentGraph, IslandActivation, JsxNode, PropLiteral, SharedBinding, SignalDecl,
+    SignalInit,
 };
 use std::collections::HashSet;
 use swc_ecma_ast::*;
@@ -104,16 +105,20 @@ fn lower_component_fn(fn_decl: &FnDecl, known_components: &HashSet<String>) -> C
         .unwrap_or_else(|| panic!("loomc: component function has no body"));
 
     let mut signals = Vec::new();
+    let mut shared_bindings = Vec::new();
     let mut root = None;
 
     for stmt in &body.stmts {
         match stmt {
             Stmt::Decl(Decl::Var(var_decl)) => {
                 for decl in &var_decl.decls {
-                    if let Some(signal) = try_lower_signal_decl(decl) {
+                    if let Some((signal, shared)) = try_lower_shared_signal_decl(decl) {
+                        signals.push(signal);
+                        shared_bindings.push(shared);
+                    } else if let Some(signal) = try_lower_signal_decl(decl) {
                         signals.push(signal);
                     } else {
-                        panic!("loomc: unsupported `const` declaration in component body (only `const x = signal(...)` is supported): {decl:?}");
+                        panic!("loomc: unsupported `const` declaration in component body (only `const x = signal(...)`/`const x = sharedSignal(\"key\", ...)` is supported): {decl:?}");
                     }
                 }
             }
@@ -131,8 +136,56 @@ fn lower_component_fn(fn_decl: &FnDecl, known_components: &HashSet<String>) -> C
     Component {
         name: fn_decl.ident.sym.to_string(),
         signals,
+        shared_bindings,
         root: root.unwrap_or_else(|| panic!("loomc: component has no `return` statement")),
     }
+}
+
+/// `const cartCount = sharedSignal("cartCount", 0)` — tried *before*
+/// `try_lower_signal_decl` (matches the callee name `sharedSignal` instead
+/// of `signal`), producing both a normal `SignalDecl` (the writer role
+/// reuses every existing local-signal codegen path unchanged) and a
+/// `SharedBinding` recording that this signal should also be published to
+/// `__loomShared`. `None` (not a panic) if the callee isn't `sharedSignal`
+/// at all, so `lower_component_fn` can fall through to the ordinary
+/// `signal(...)` case.
+fn try_lower_shared_signal_decl(decl: &VarDeclarator) -> Option<(SignalDecl, SharedBinding)> {
+    let Pat::Ident(BindingIdent { id, .. }) = &decl.name else {
+        return None;
+    };
+    let init = decl.init.as_deref()?;
+    let Expr::Call(CallExpr {
+        callee: Callee::Expr(callee),
+        args,
+        ..
+    }) = init
+    else {
+        return None;
+    };
+    let Expr::Ident(Ident { sym, .. }) = callee.as_ref() else {
+        return None;
+    };
+    if sym != "sharedSignal" {
+        return None;
+    }
+    let [key_arg, initial_arg] = args.as_slice() else {
+        panic!("loomc: sharedSignal() requires exactly two arguments, e.g. sharedSignal(\"cartCount\", 0)");
+    };
+    let Expr::Lit(Lit::Str(key)) = unwrap_paren(&key_arg.expr) else {
+        panic!("loomc: sharedSignal() requires a string key and an integer initial value, e.g. sharedSignal(\"cartCount\", 0)");
+    };
+    let Expr::Lit(Lit::Num(Number { value, .. })) = unwrap_paren(&initial_arg.expr) else {
+        panic!("loomc: sharedSignal() requires a string key and an integer initial value, e.g. sharedSignal(\"cartCount\", 0)");
+    };
+    let name = id.sym.to_string();
+    let key = key.value.to_string_lossy().into_owned();
+    Some((
+        SignalDecl {
+            name: name.clone(),
+            init: SignalInit::I32(*value as i32),
+        },
+        SharedBinding { signal: name, key },
+    ))
 }
 
 fn unwrap_paren(expr: &Expr) -> &Expr {
@@ -624,6 +677,30 @@ fn lower_expr_container(
     match unwrap_paren(expr) {
         // `{item}` inside a list row template.
         Expr::Ident(Ident { sym, .. }) if row_var == Some(sym.as_ref()) => JsxNode::RowItemText,
+
+        // `{sharedValue("cartCount", 0)}` — read-only cross-widget display,
+        // no local signal lookup at all (unlike every other binding here) —
+        // that absence is itself the point (see `JsxNode::SharedValueBinding`'s
+        // doc comment).
+        Expr::Call(CallExpr {
+            callee: Callee::Expr(callee),
+            args,
+            ..
+        }) if matches!(callee.as_ref(), Expr::Ident(Ident { sym, .. }) if sym == "sharedValue") => {
+            let [key_arg, initial_arg] = args.as_slice() else {
+                panic!("loomc: sharedValue() requires exactly two arguments, e.g. sharedValue(\"cartCount\", 0)");
+            };
+            let Expr::Lit(Lit::Str(key)) = unwrap_paren(&key_arg.expr) else {
+                panic!("loomc: sharedValue() requires a string key and an integer initial value, e.g. sharedValue(\"cartCount\", 0)");
+            };
+            let Expr::Lit(Lit::Num(Number { value, .. })) = unwrap_paren(&initial_arg.expr) else {
+                panic!("loomc: sharedValue() requires a string key and an integer initial value, e.g. sharedValue(\"cartCount\", 0)");
+            };
+            JsxNode::SharedValueBinding {
+                key: key.value.to_string_lossy().into_owned(),
+                initial: *value as i32,
+            }
+        }
 
         // `{cond() && <tag>...</tag>}` — compiles to RQ1 Track T candidate F.
         Expr::Bin(BinExpr {

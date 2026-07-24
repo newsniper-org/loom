@@ -556,20 +556,38 @@ DOM 제거)를 Playwright로 전부 재현 확인(8/8 통과), 3개 회귀 스�
 `docs/02-compiler-design.md`(미해결 절), `docs/07-naming-and-terminology.md`
 ("ComponentRef" 용어 충돌 정리)도 같이 갱신함.
 
-## Task #26 실행 상태 (2026-07-24) — H-Qwik 위젯-임베드 반사실 픽스처 (부분)
+## Task #26 실행 상태 (2026-07-24) — H-Qwik 위젯-임베드 반사실 픽스처
 
 `codegen.rs`에 `GraphMode::Flatten`을 실제로 구현(`flatten_graph` — JSX 트리 레벨
 에서 모든 `ComponentRef`를 재귀적으로 인라인해 그래프 전체를 하나의 `Component`로
-합침, 임의 중첩 깊이 자동 처리). `crates/loom-island-compiled`의 build.rs가 **같은**
-`demo/islands/product-card.tsx`를 `GraphMode::Islands`/`GraphMode::Flatten` 양쪽으로
-컴파일 — RQ6 §4.1 "정체성 통제" 원칙을 문자 그대로 충족(별도 손코딩 아님). 상세는
-`research-questions/RQ6-verification-plan.md`의 "§3.4 실행" 절.
+합침, 임의 중첩 깊이 자동 처리). §4.2가 사전등록한 **5-컴포넌트 전체 위젯-임베드
+픽스처**(`demo/widget-embed.tsx`: CartBadge/QuantityPicker/ProductCard/
+CheckoutForm/MiniDashboard)를 `crates/loom-widget-embed`가 `GraphMode::Islands`/
+`GraphMode::Flatten` 양쪽으로 컴파일 — RQ6 §4.1 "정체성 통제" 원칙을 문자 그대로
+충족(별도 손코딩 아님). CartBadge를 동작시키기 위해 `sharedSignal()`/
+`sharedValue()`(원래 Task #28-a 몫)를 이번에 앞당겨 구현.
 
-**의도적으로 축소한 범위(§3.4에 상세, 숨기지 않음)**: 5-컴포넌트 전체 픽스처
-(CartBadge/CheckoutForm/MiniDashboard 포함)는 미착수 — 이번엔 Task #25의
-ProductCard/Widget 2-컴포넌트 픽스처로 `GraphMode::Flatten` 자체의 정확성만 확정.
-M1/M6/M8/M9의 실제 정량 재측정도 미착수(Task #27 몫) — 이번엔 SSR 출력 비교로
-정합성만 native 테스트 수준에서 확인.
+**최초엔 5-컴포넌트 중 2개(ProductCard/Widget)만 재사용하고 나머지를 Task #27로
+미루려 했으나, 이는 승인 없이 임의로 축소한 것이었음 — 병익님 지적 후 정정,
+5-컴포넌트 전체를 이번에 완성함.** 상세는
+`research-questions/RQ6-verification-plan.md`의 "§3.4 실행" 절(정정 내용 포함).
+
+**실제 컴파일 중 발견한 진짜 버그 두 개**(CheckoutForm의 3-conditional 구성이
+처음으로 노출시킴): (1) 한 컴포넌트에 조건부가 2개 이상이면 `cond_reconcile_
+site_N`들이 구분자 없는 동일 쿼리 모양을 공유해 서로 크로스와이어됨(하나만
+토글해도 모든 사이트가 반응) — 사이트별 `CondSiteN` 마커 Component +
+`With<CondSiteN>` 쿼리 필터로 해결. (2) 그 수정의 1차 시도 자체가 마커를
+`setup()` 로컬 스코프에 선언해 `resume()`/최상위 리컨실 함수에서 안 보이는
+버그였음 — 최상위 스코프로 옮기고 `generate_resume`의 Bool arm도 같은 마커를
+붙이도록 수정. 둘 다 유닛 테스트로 회귀 고정.
+
+Playwright 실브라우저 검증(16개 시나리오 전부 통과, RQ4 cross-widget 포함),
+Task #25 기존 8개 시나리오 무회귀, `cargo test --workspace` 전체 통과.
+
+**여전히 남은 것**: 시그널 이름 전역 유일성 요구(Island는 이름 충돌을 허용하지만
+Flatten은 구조적으로 불가 — 별도 유닛 테스트로 확인된 실제 발견), anchor marker는
+`data-loom-id`로 loosely 충족, M1/M6/M9의 실제 정량 재측정(Task #27 몫), 청크
+디렉토리 공유로 인한 Task #25/#26 데모 페이지 간 빌드 순서 의존성.
 
 ## RQ6 §3.2 — "Phase 3 완료, 첫 정면 대결" 실측 (2026-07-24)
 

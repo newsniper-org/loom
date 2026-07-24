@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>loom Task #26 — RQ6 §4.2 위젯-임베드 픽스처 (Island 팔)</title>
+</head>
+<body>
+  <!--
+    Task #26 acceptance page — RQ6 §4.2's widget-embed fixture, Island arm
+    (GraphMode::Islands). This markup was produced ONCE by
+    `cargo run -p loom-widget-embed --bin print_ssr`, pasted in exactly
+    like demo/resume/index.html and demo/islands/compiled/index.html
+    already do. Every data-loom-* attribute below was actually emitted by
+    codegen.rs from demo/widget-embed.tsx — the SAME source
+    demo/widget-embed/flat/index.html (below) derives its H-Qwik
+    counterfactual arm from (GraphMode::Flatten), satisfying RQ6 §4.1's
+    "정체성 통제" principle literally.
+
+    Four Islands: ProductCard (client:visible) nesting QuantityPicker
+    (client:load, the sole sharedSignal("cartCount") writer), CheckoutForm
+    (client:load, 3-field Bool state — §9-6's "고위험 위젯"), MiniDashboard
+    (client:load, counter+list). CartBadge is NOT an Island — it's the
+    plain `data-loom-shared-subscriber="cartCount"` span below, patched
+    directly by shared-store.js, exactly like the original hand-coded
+    demo/islands/index.html's CartBadge.
+
+    Build-tooling note (stated, not hidden): this page's four chunk files
+    (demo/islands/chunks/{product_card,quantity_picker,checkout_form,
+    mini_dashboard}.js) share the same directory Task #25's
+    demo/islands/compiled/index.html chunks live in (registry.js's import
+    path is fixed relative to itself) — and this fixture's own "ProductCard"
+    component name happens to collide with Task #25's smaller fixture's
+    "ProductCard". Visiting this page requires rebuilding these four chunks
+    from crates/loom-widget-embed first if Task #25's page was tested more
+    recently (whichever fixture's crate last ran `wasm-pack build` for a
+    given chunk basename is the one currently served) — genuinely no
+    proper per-page build pipeline exists yet (same "1 Island = 1 build
+    artifact, not yet real" gap already flagged in Task #25's page).
+  -->
+  <div style="height: 1200px;">(scroll down for the product card)</div>
+
+  <div id="app"><div><span>cart:<span data-loom-shared-subscriber="cartCount">0</span></span><div data-loom-island="" data-loom-island-id="product-card" data-loom-activation="visible" data-loom-chunk="product_card" data-loom-ctor="ProductCardIsland"><button data-loom-lref="ProductCard_chunk|Action0|">show details</button><p data-loom-id="details"></p><div data-loom-island="" data-loom-island-id="quantity-picker" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland"><button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button><span data-loom-id="cart_count">0</span></div></div><div data-loom-island="" data-loom-island-id="checkout-form" data-loom-activation="load" data-loom-chunk="checkout_form" data-loom-ctor="CheckoutFormIsland"><button data-loom-lref="CheckoutForm_chunk|Action0|">toggle express shipping</button><p data-loom-id="shipping"></p><button data-loom-lref="CheckoutForm_chunk|Action1|">toggle gift wrap</button><p data-loom-id="gift"></p><button data-loom-lref="CheckoutForm_chunk|Action2|">submit order</button><p data-loom-id="confirmed"></p></div><div data-loom-island="" data-loom-island-id="mini-dashboard" data-loom-activation="load" data-loom-chunk="mini_dashboard" data-loom-ctor="MiniDashboardIsland"><button data-loom-lref="MiniDashboard_chunk|Action0|visits:0">+1 visit</button><span data-loom-id="visits">0</span><ul data-loom-id="tags"><li>news</li><li>sale</li></ul><button data-loom-lref="MiniDashboard_chunk|Action1|">add tag</button></div></div></div>
+
+  <script src="../resume/shared-store.js"></script>
+  <script src="../resume/registry.js"></script>
+</body>
+</html>

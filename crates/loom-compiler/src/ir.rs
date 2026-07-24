@@ -111,6 +111,43 @@ pub enum JsxNode {
         activation: IslandActivation,
         props: Vec<(String, PropLiteral)>,
     },
+    /// `{sharedValue("cartCount", 0)}` — read-only display of *another*
+    /// component's `sharedSignal` (RQ4's cross-widget mechanism, pulled
+    /// forward from Task #28-a to unblock Task #26's CartBadge scenario).
+    /// Has no local `Signal`/`Entity`/patch system and needs no `resume()`
+    /// capture at all: value changes arrive purely via `__loomShared`'s own
+    /// DOM-marker patch (`demo/resume/shared-store.js`), independent of
+    /// whatever component compiled this markup (same finding the
+    /// hand-authored `demo/islands/index.html` CartBadge already
+    /// demonstrated). `initial` is an explicit SSR-time fallback literal,
+    /// not a hidden default — cross-widget values are frozen at SSR time
+    /// regardless (RQ3 Q2's "SSR prop 스냅샷 동결" limitation applies here
+    /// too). Read-only: no `.increment()`/`.set()` exist on this node — a
+    /// component that needs to *write* the same key declares its own
+    /// `sharedSignal(...)` (`SharedBinding`, below) instead.
+    SharedValueBinding { key: String, initial: i32 },
+}
+
+/// `const cartCount = sharedSignal("cartCount", 0)` — RQ4's cross-island
+/// shared store (`demo/resume/shared-store.js`'s `window.__loomShared`),
+/// authored instead of a hand-written `#[wasm_bindgen] extern "C" { ... }`
+/// block. Phase 1 scope: I32 only (matches `__loomShared.set(key: &str,
+/// value: i32)`'s existing signature) — narrower than local `signal()`,
+/// not wider; extend only when a real use case needs it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedBinding {
+    /// Name of the *local* `SignalDecl` this mirrors — always resolves to
+    /// a `SignalInit::I32` entry in `Component.signals` (the writer role
+    /// reuses the ordinary local-signal machinery unchanged; this is a
+    /// side-table marking "also publish this one to the shared store,"
+    /// not a new signal kind).
+    pub signal: String,
+    /// The `__loomShared` key string. Modeled as a field distinct from
+    /// `signal` (even though `sharedSignal("cartCount", 0)`'s one
+    /// supported authoring shape always sets them equal) because RQ4's
+    /// shared store keys its own namespace independently of any one
+    /// component's local signal names.
+    pub key: String,
 }
 
 /// `client:load` / `client:visible` — Astro's client-directive *concept*
@@ -153,6 +190,9 @@ pub enum PropLiteral {
 pub struct Component {
     pub name: String,
     pub signals: Vec<SignalDecl>,
+    /// Empty unless this component authors `sharedSignal(...)` — see
+    /// `SharedBinding`'s doc comment.
+    pub shared_bindings: Vec<SharedBinding>,
     pub root: JsxNode,
 }
 
@@ -178,6 +218,7 @@ impl Component {
                 JsxNode::ListBinding { row, .. } => walk(row, out),
                 JsxNode::CondBinding { then_branch, .. } => walk(then_branch, out),
                 JsxNode::ComponentRef { .. } => {} // a different component's own action sites, not this one's.
+                JsxNode::SharedValueBinding { .. } => {} // read-only, no action possible.
                 JsxNode::StaticText(_) | JsxNode::TextBinding { .. } | JsxNode::RowItemText => {}
             }
         }

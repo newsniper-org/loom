@@ -106,7 +106,10 @@
 //! other action ignores it, `SetString` uses it (see that function's doc
 //! comment).
 
-use crate::ir::{ClickAction, Component, ComponentGraph, IslandActivation, JsxNode, SignalDecl, SignalInit};
+use crate::ir::{
+    ClickAction, Component, ComponentGraph, IslandActivation, JsxNode, SharedBinding, SignalDecl, SignalInit,
+};
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 /// Which physical Island chunk/constructor a compiled unit corresponds to —
@@ -147,7 +150,15 @@ pub enum GraphMode {
 pub fn generate_graph(graph: &ComponentGraph, mode: GraphMode) -> String {
     match mode {
         GraphMode::Islands => generate_islands(graph),
-        GraphMode::Flatten => generate_component(&flatten_graph(graph), None),
+        GraphMode::Flatten => {
+            let flattened = flatten_graph(graph);
+            let has_shared = !flattened.shared_bindings.is_empty();
+            // No `ComponentRef` nodes survive `flatten_graph` (all inlined),
+            // so `lower_node`'s `ComponentRef` arm never runs for this mode
+            // — the shared-component-names set is irrelevant here, but
+            // still required by `generate_component`'s signature.
+            generate_component(&flattened, None, has_shared, &HashSet::new())
+        }
     }
 }
 
@@ -183,15 +194,22 @@ pub fn generate_graph(graph: &ComponentGraph, mode: GraphMode) -> String {
 fn flatten_graph(graph: &ComponentGraph) -> Component {
     let root = graph.root_component();
     let mut signals = root.signals.clone();
-    let flattened_root = flatten_node(&root.root, graph, &mut signals);
+    let mut shared_bindings = root.shared_bindings.clone();
+    let flattened_root = flatten_node(&root.root, graph, &mut signals, &mut shared_bindings);
     Component {
         name: root.name.clone(),
         signals,
+        shared_bindings,
         root: flattened_root,
     }
 }
 
-fn flatten_node(node: &JsxNode, graph: &ComponentGraph, signals: &mut Vec<SignalDecl>) -> JsxNode {
+fn flatten_node(
+    node: &JsxNode,
+    graph: &ComponentGraph,
+    signals: &mut Vec<SignalDecl>,
+    shared_bindings: &mut Vec<SharedBinding>,
+) -> JsxNode {
     match node {
         JsxNode::Element {
             tag,
@@ -202,16 +220,19 @@ fn flatten_node(node: &JsxNode, graph: &ComponentGraph, signals: &mut Vec<Signal
             tag: tag.clone(),
             class: class.clone(),
             action: action.clone(),
-            children: children.iter().map(|c| flatten_node(c, graph, signals)).collect(),
+            children: children
+                .iter()
+                .map(|c| flatten_node(c, graph, signals, shared_bindings))
+                .collect(),
         },
         JsxNode::ListBinding { signal, row_var, row } => JsxNode::ListBinding {
             signal: signal.clone(),
             row_var: row_var.clone(),
-            row: Box::new(flatten_node(row, graph, signals)),
+            row: Box::new(flatten_node(row, graph, signals, shared_bindings)),
         },
         JsxNode::CondBinding { cond, then_branch } => JsxNode::CondBinding {
             cond: cond.clone(),
-            then_branch: Box::new(flatten_node(then_branch, graph, signals)),
+            then_branch: Box::new(flatten_node(then_branch, graph, signals, shared_bindings)),
         },
         JsxNode::ComponentRef { component: ref_name, .. } => {
             let target = graph
@@ -228,12 +249,14 @@ fn flatten_node(node: &JsxNode, graph: &ComponentGraph, signals: &mut Vec<Signal
                 }
             }
             signals.extend(target.signals.iter().cloned());
-            flatten_node(&target.root, graph, signals)
+            shared_bindings.extend(target.shared_bindings.iter().cloned());
+            flatten_node(&target.root, graph, signals, shared_bindings)
         }
         other @ (JsxNode::StaticText(_)
         | JsxNode::TextBinding { .. }
         | JsxNode::RowItemText
-        | JsxNode::InputBinding { .. }) => other.clone(),
+        | JsxNode::InputBinding { .. }
+        | JsxNode::SharedValueBinding { .. }) => other.clone(),
     }
 }
 
@@ -274,10 +297,21 @@ fn island_tag_for(component: &Component, activation: IslandActivation) -> Island
 /// generated `#[wasm_bindgen(constructor)]` Island entry point inside that
 /// same module.
 fn generate_islands(graph: &ComponentGraph) -> String {
+    // Precomputed once: which components author `sharedSignal(...)`
+    // directly — see `CodegenCtx::components_with_shared_bindings`'s doc
+    // comment for how `lower_node`'s `ComponentRef` arm uses this.
+    let components_with_shared_bindings: HashSet<String> = graph
+        .components
+        .iter()
+        .filter(|c| !c.shared_bindings.is_empty())
+        .map(|c| c.name.clone())
+        .collect();
+
     let mut out = String::new();
     for component in &graph.components {
+        let has_shared = !component.shared_bindings.is_empty();
         if component.name == graph.root {
-            out.push_str(&generate_component(component, None));
+            out.push_str(&generate_component(component, None, has_shared, &components_with_shared_bindings));
             continue;
         }
         let activation = graph.activation_for(&component.name).unwrap_or_else(|| {
@@ -299,8 +333,13 @@ fn generate_islands(graph: &ComponentGraph) -> String {
         let mod_name = sanitize_mod_name(&component.name);
         writeln!(out, "pub mod {mod_name}_generated {{").unwrap();
         writeln!(out, "    use ::wasm_bindgen::JsCast as _;").unwrap();
-        out.push_str(&generate_component(component, Some(&tag)));
-        out.push_str(&generate_island_entry_body(&tag));
+        out.push_str(&generate_component(
+            component,
+            Some(&tag),
+            has_shared,
+            &components_with_shared_bindings,
+        ));
+        out.push_str(&generate_island_entry_body(&tag, has_shared));
         writeln!(out, "}}").unwrap();
     }
     out
@@ -331,14 +370,15 @@ fn generate_islands(graph: &ComponentGraph) -> String {
 /// nothing left to guess at runtime, a real (if narrow) correctness
 /// improvement over the page-global delegation path, not just parity with
 /// it.
-fn generate_island_entry_body(tag: &IslandTag) -> String {
+fn generate_island_entry_body(tag: &IslandTag, has_shared: bool) -> String {
     let struct_name = &tag.ctor;
     let mut out = String::new();
-    writeln!(
-        out,
-        "struct IslandState {{ app: ::loom_runtime::LoomApp, dom: ::loom_runtime::web::BrowserDom, signals: Signals }}"
-    )
-    .unwrap();
+    let island_state_fields = if has_shared {
+        "app: ::loom_runtime::LoomApp, dom: ::loom_runtime::web::BrowserDom, signals: Signals, shared: ::loom_runtime::web::JsSharedStore"
+    } else {
+        "app: ::loom_runtime::LoomApp, dom: ::loom_runtime::web::BrowserDom, signals: Signals"
+    };
+    writeln!(out, "struct IslandState {{ {island_state_fields} }}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "#[::wasm_bindgen::prelude::wasm_bindgen]").unwrap();
     writeln!(
@@ -386,12 +426,26 @@ fn generate_island_entry_body(tag: &IslandTag) -> String {
     )
     .unwrap();
     writeln!(out, "        }};").unwrap();
-    writeln!(out, "        let signals = resume(&mut app, &mut dom, &mut find_node, &[]);").unwrap();
-    writeln!(
-        out,
-        "        let state = ::std::rc::Rc::new(::std::cell::RefCell::new(IslandState {{ app, dom, signals }}));"
-    )
-    .unwrap();
+    if has_shared {
+        writeln!(out, "        let mut shared = ::loom_runtime::web::JsSharedStore;").unwrap();
+        writeln!(
+            out,
+            "        let signals = resume(&mut app, &mut dom, &mut find_node, &[], &mut shared);"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "        let state = ::std::rc::Rc::new(::std::cell::RefCell::new(IslandState {{ app, dom, signals, shared }}));"
+        )
+        .unwrap();
+    } else {
+        writeln!(out, "        let signals = resume(&mut app, &mut dom, &mut find_node, &[]);").unwrap();
+        writeln!(
+            out,
+            "        let state = ::std::rc::Rc::new(::std::cell::RefCell::new(IslandState {{ app, dom, signals }}));"
+        )
+        .unwrap();
+    }
     writeln!(
         out,
         "        for lref_el in ::loom_runtime::web::own_tagged_lref_descendants(&host) {{"
@@ -413,8 +467,13 @@ fn generate_island_entry_body(tag: &IslandTag) -> String {
     .unwrap();
     writeln!(out, "                let action = resume_action_by_symbol(&symbol, \"\");").unwrap();
     writeln!(out, "                let mut s = state_for_closure.borrow_mut();").unwrap();
-    writeln!(out, "                let IslandState {{ app, dom, signals }} = &mut *s;").unwrap();
-    writeln!(out, "                apply_action(app, signals, &action);").unwrap();
+    if has_shared {
+        writeln!(out, "                let IslandState {{ app, dom, signals, shared }} = &mut *s;").unwrap();
+        writeln!(out, "                apply_action(app, signals, &action, shared);").unwrap();
+    } else {
+        writeln!(out, "                let IslandState {{ app, dom, signals }} = &mut *s;").unwrap();
+        writeln!(out, "                apply_action(app, signals, &action);").unwrap();
+    }
     writeln!(out, "                app.tick(dom);").unwrap();
     writeln!(out, "            }});").unwrap();
     writeln!(
@@ -439,10 +498,16 @@ fn generate_island_entry_body(tag: &IslandTag) -> String {
 }
 
 pub fn generate(component: &Component) -> String {
-    generate_component(component, None)
+    let has_shared = !component.shared_bindings.is_empty();
+    generate_component(component, None, has_shared, &HashSet::new())
 }
 
-fn generate_component(component: &Component, island: Option<&IslandTag>) -> String {
+fn generate_component(
+    component: &Component,
+    island: Option<&IslandTag>,
+    has_shared: bool,
+    components_with_shared_bindings: &HashSet<String>,
+) -> String {
     let mut out = String::new();
     writeln!(out, "// GENERATED by loomc from {}() — do not edit by hand.", component.name).unwrap();
     writeln!(out).unwrap();
@@ -472,11 +537,12 @@ fn generate_component(component: &Component, island: Option<&IslandTag>) -> Stri
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
-    writeln!(
-        out,
-        "pub fn apply_action(app: &mut ::loom_runtime::LoomApp, signals: &Signals, action: &Action) {{"
-    )
-    .unwrap();
+    let apply_action_sig = if has_shared {
+        "pub fn apply_action(app: &mut ::loom_runtime::LoomApp, signals: &Signals, action: &Action, shared: &mut impl ::loom_runtime::SharedStore) {"
+    } else {
+        "pub fn apply_action(app: &mut ::loom_runtime::LoomApp, signals: &Signals, action: &Action) {"
+    };
+    writeln!(out, "{apply_action_sig}").unwrap();
     writeln!(out, "    match action {{").unwrap();
     for (variant, action) in variant_names.iter().zip(actions.iter()) {
         match action {
@@ -487,6 +553,19 @@ fn generate_component(component: &Component, island: Option<&IslandTag>) -> Stri
                     "            app.world.get_mut::<::loom_runtime::Signal<i32>>(signals.{signal}).unwrap().0 += 1;"
                 )
                 .unwrap();
+                // Only I32 signals (`Increment`) can ever have a matching
+                // `SharedBinding` — `sharedSignal(...)`'s writer role is
+                // I32-only (see that type's doc comment), and every other
+                // `ClickAction` variant targets a different signal kind
+                // (StringList/Bool/Str), so none of them can match here.
+                if let Some(shared_binding) = component.shared_bindings.iter().find(|sb| &sb.signal == signal) {
+                    writeln!(
+                        out,
+                        "            shared.set({:?}, app.world.get::<::loom_runtime::Signal<i32>>(signals.{signal}).unwrap().0);",
+                        shared_binding.key
+                    )
+                    .unwrap();
+                }
                 writeln!(out, "        }}").unwrap();
             }
             ClickAction::Rotate { signal } => {
@@ -546,11 +625,12 @@ fn generate_component(component: &Component, island: Option<&IslandTag>) -> Stri
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
-    writeln!(
-        out,
-        "pub fn setup(app: &mut ::loom_runtime::LoomApp, dom: &mut impl ::loom_runtime::DomOps, mount: ::loom_runtime::NodeHandle) -> (Signals, Vec<(::loom_runtime::NodeHandle, Action)>, Vec<(::loom_runtime::NodeHandle, fn(String) -> Action)>) {{"
-    )
-    .unwrap();
+    let setup_sig = if has_shared {
+        "pub fn setup(app: &mut ::loom_runtime::LoomApp, dom: &mut impl ::loom_runtime::DomOps, mount: ::loom_runtime::NodeHandle, shared: &mut impl ::loom_runtime::SharedStore) -> (Signals, Vec<(::loom_runtime::NodeHandle, Action)>, Vec<(::loom_runtime::NodeHandle, fn(String) -> Action)>) {"
+    } else {
+        "pub fn setup(app: &mut ::loom_runtime::LoomApp, dom: &mut impl ::loom_runtime::DomOps, mount: ::loom_runtime::NodeHandle) -> (Signals, Vec<(::loom_runtime::NodeHandle, Action)>, Vec<(::loom_runtime::NodeHandle, fn(String) -> Action)>) {"
+    };
+    writeln!(out, "{setup_sig}").unwrap();
 
     // Register exactly the patch Systems this component's binding sites
     // actually need — no unconditional "register everything" default.
@@ -595,8 +675,32 @@ fn generate_component(component: &Component, island: Option<&IslandTag>) -> Stri
         cond_site_fns: String::new(),
         cond_site_fn_names: Vec::new(),
         wrapped_in_own_module: island.is_some(),
+        components_with_shared_bindings: components_with_shared_bindings.clone(),
     };
     lower_node(&mut out, &component.root, "mount", component, &mut ctx);
+
+    // Publish this component's own directly-authored `sharedSignal(...)`
+    // initial values (see `ir::SharedBinding`'s doc comment) — the literal
+    // declared initial is always correct here (this call happens the
+    // moment the entity is first spawned, before anything could have
+    // changed it).
+    for shared_binding in &component.shared_bindings {
+        let initial = component
+            .signals
+            .iter()
+            .find(|s| s.name == shared_binding.signal)
+            .and_then(|s| match &s.init {
+                SignalInit::I32(v) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "loomc internal error: sharedSignal `{}` names a signal that isn't I32",
+                    shared_binding.signal
+                )
+            });
+        writeln!(out, "    shared.set({:?}, {initial});", shared_binding.key).unwrap();
+    }
 
     if let Some(tag) = island {
         // `node_0` is guaranteed to be the component's own root element's
@@ -641,7 +745,7 @@ fn generate_component(component: &Component, island: Option<&IslandTag>) -> Stri
 
     generate_resume_action_by_symbol(&mut out, &actions, &variant_names);
     writeln!(out).unwrap();
-    generate_resume(&mut out, component, &ctx.cond_site_fn_names);
+    generate_resume(&mut out, component, &ctx.cond_site_fn_names, has_shared);
 
     out
 }
@@ -751,12 +855,18 @@ fn generate_resume_action_by_symbol(out: &mut String, actions: &[ClickAction], v
 /// node's `NodeHandle` — host glue supplies this (e.g. a
 /// `document.querySelector` wrapper), not generated code, same reason
 /// `setup()` takes `dom: &mut impl DomOps` instead of hardcoding a backend.
-fn generate_resume(out: &mut String, component: &Component, cond_site_fn_names: &[(String, String)]) {
-    writeln!(
-        out,
-        "pub fn resume(app: &mut ::loom_runtime::LoomApp, dom: &mut impl ::loom_runtime::DomOps, mut find_node: impl FnMut(&str) -> ::loom_runtime::NodeHandle, captures: &[(&str, &str)]) -> Signals {{"
-    )
-    .unwrap();
+fn generate_resume(
+    out: &mut String,
+    component: &Component,
+    cond_site_fn_names: &[(String, String, String)],
+    has_shared: bool,
+) {
+    let resume_sig = if has_shared {
+        "pub fn resume(app: &mut ::loom_runtime::LoomApp, dom: &mut impl ::loom_runtime::DomOps, mut find_node: impl FnMut(&str) -> ::loom_runtime::NodeHandle, captures: &[(&str, &str)], shared: &mut impl ::loom_runtime::SharedStore) -> Signals {"
+    } else {
+        "pub fn resume(app: &mut ::loom_runtime::LoomApp, dom: &mut impl ::loom_runtime::DomOps, mut find_node: impl FnMut(&str) -> ::loom_runtime::NodeHandle, captures: &[(&str, &str)]) -> Signals {"
+    };
+    writeln!(out, "{resume_sig}").unwrap();
     writeln!(out, "    app.add_systems(::loom_runtime::patch_text_system::<i32>);").unwrap();
     let has_list = component.signals.iter().any(|s| matches!(s.init, SignalInit::StringList(_)));
     if has_list {
@@ -820,17 +930,22 @@ fn generate_resume(out: &mut String, component: &Component, cond_site_fn_names: 
                     s.name, s.name
                 )
                 .unwrap();
+                // Must attach the SAME `CondSiteN` marker `setup()`'s own
+                // spawn for this site does — the reconcile System's query
+                // filters on `With<CondSiteN>` (see the `CondBinding` arm's
+                // doc comment), so a resumed entity missing this marker
+                // would never be seen by its own site's system at all.
+                let (fn_name, marker_name) = cond_site_fn_names
+                    .iter()
+                    .find(|(signal, _, _)| signal == &s.name)
+                    .map(|(_, f, m)| (f.clone(), m.clone()))
+                    .unwrap_or_else(|| panic!("loomc internal error: no reconcile function recorded for conditional `{}`", s.name));
                 writeln!(
                     out,
-                    "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({}_shown), ::loom_runtime::CondBlock {{ size: {}_children.len(), children: {}_children }}, ::loom_runtime::DomTarget({}_node))).id();",
+                    "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({}_shown), ::loom_runtime::CondBlock {{ size: {}_children.len(), children: {}_children }}, ::loom_runtime::DomTarget({}_node), {marker_name})).id();",
                     s.name, s.name, s.name, s.name
                 )
                 .unwrap();
-                let fn_name = cond_site_fn_names
-                    .iter()
-                    .find(|(signal, _)| signal == &s.name)
-                    .map(|(_, f)| f.clone())
-                    .unwrap_or_else(|| panic!("loomc internal error: no reconcile function recorded for conditional `{}`", s.name));
                 writeln!(out, "    app.add_systems({fn_name});").unwrap();
             }
             SignalInit::StringList(_) => {
@@ -913,6 +1028,19 @@ fn generate_resume(out: &mut String, component: &Component, cond_site_fn_names: 
     // reused) at that moment rather than truly left untouched — a real,
     // scale-dependent cost worth narrowing later, not hidden here.
     writeln!(out, "    app.tick(dom);").unwrap();
+    // Publish the *actually resumed* value (not the literal declared
+    // initial — resume may have recovered a different live value, e.g.
+    // from a real capture) to the shared store, same as `setup()` does
+    // for its own freshly-spawned value — see that call site's doc
+    // comment for why this is the writer role's other seeding point.
+    for shared_binding in &component.shared_bindings {
+        writeln!(
+            out,
+            "    shared.set({:?}, app.world.get::<::loom_runtime::Signal<i32>>({}_entity).unwrap().0);",
+            shared_binding.key, shared_binding.signal
+        )
+        .unwrap();
+    }
     writeln!(out, "    Signals {{").unwrap();
     for s in &component.signals {
         writeln!(out, "        {}: {}_entity,", s.name, s.name).unwrap();
@@ -949,6 +1077,9 @@ fn collect_binding_shapes(node: &JsxNode) -> Vec<BindingShape> {
             // `<mod>_generated::setup(...)` line — contributes nothing to
             // *this* component's own binding shapes.
             JsxNode::ComponentRef { .. } => {}
+            // Read-only, no Signal/Entity/patch system at all — see this
+            // variant's doc comment.
+            JsxNode::SharedValueBinding { .. } => {}
             JsxNode::StaticText(_) | JsxNode::RowItemText => {}
         }
     }
@@ -1000,11 +1131,14 @@ struct CodegenCtx {
     /// appended to `out` once at the end of `generate()` (top-level
     /// functions can't be emitted inline mid-`setup()`).
     cond_site_fns: String,
-    /// (cond signal name, generated function name) — `generate_resume`
-    /// needs this to register the *same* per-site function `setup()` used,
-    /// not the generic `cond_reconcile_f_system` (which doesn't know this
-    /// site's actual static content) — see `generate_resume`'s `Bool` arm.
-    cond_site_fn_names: Vec<(String, String)>,
+    /// (cond signal name, generated function name, marker component name) —
+    /// `generate_resume` needs this to register the *same* per-site
+    /// function `setup()` used (not the generic `cond_reconcile_f_system`,
+    /// which doesn't know this site's actual static content) AND to attach
+    /// the same `CondSiteN` marker its own spawned entity needs — see
+    /// `generate_resume`'s `Bool` arm and the `CondBinding` arm's own doc
+    /// comment for why every site needs a distinct marker.
+    cond_site_fn_names: Vec<(String, String, String)>,
     /// `true` while generating a non-root Island component (wrapped in its
     /// own `pub mod <name>_generated { ... }` by `generate_islands`). Every
     /// other Island's own generated module is a **flat sibling** at that
@@ -1020,6 +1154,20 @@ struct CodegenCtx {
     /// is correct at any JSX nesting depth for this reason — not just for
     /// one level of nesting.
     wrapped_in_own_module: bool,
+    /// Names of every component in the whole graph whose OWN
+    /// `shared_bindings` is non-empty (precomputed once — see
+    /// `generate_islands`) — used by `lower_node`'s `ComponentRef` arm to
+    /// decide whether the generated call to that component's `setup()`
+    /// needs a trailing shared-store argument. A **fresh, throwaway**
+    /// `InMemorySharedStore` is passed at each such call site rather than
+    /// forwarding a `shared` parameter through every caller up the chain —
+    /// safe because `setup()` only ever runs once, during the SSR pass,
+    /// and whatever it publishes to a store there is never read back (the
+    /// SSR'd HTML's own content, e.g. `SharedValueBinding`'s `initial`
+    /// literal, doesn't depend on it) — see this field's use site for the
+    /// full reasoning. Empty for the legacy single-component `generate()`
+    /// path (no graph, no `ComponentRef` ever meaningfully appears there).
+    components_with_shared_bindings: HashSet<String>,
 }
 
 impl CodegenCtx {
@@ -1033,6 +1181,13 @@ impl CodegenCtx {
         let name = format!("cond_reconcile_site_{}", self.cond_site_index);
         self.cond_site_index += 1;
         name
+    }
+
+    /// Must be called *before* `fresh_cond_site_fn` for the same site, so
+    /// both share the same site index (`CondSite0`/`cond_reconcile_site_0`,
+    /// etc.) — does not itself advance `cond_site_index`.
+    fn fresh_cond_site_marker(&self) -> String {
+        format!("CondSite{}", self.cond_site_index)
     }
 }
 
@@ -1240,10 +1395,41 @@ fn lower_node(
             .unwrap();
             writeln!(out, "    dom.set_attribute({node_var}, \"data-loom-id\", {cond:?});").unwrap();
 
+            // Each conditional site needs its OWN marker Component to keep
+            // its reconcile System from matching every *other* site's
+            // entity too. Without this, two or more `{cond() && ...}`
+            // sites in the same component all spawn the same shape
+            // (`Signal<bool>` + `CondBlock` + `DomTarget`, no other
+            // distinguishing type) — a real bug found by actually building
+            // a fixture with 3 conditionals in one component (RQ6 §4.2's
+            // CheckoutForm): `Changed<Signal<bool>>` is tracked per-entity,
+            // not per-System, so when *any* site's signal changes, *every*
+            // site's `cond_reconcile_site_N` query matches that same
+            // entity — each system would then apply *its own* hardcoded
+            // static text to whichever entity the query call happens to
+            // return, cross-wiring completely unrelated conditionals'
+            // content. `With<CondSiteN>` scopes each system back to only
+            // the one entity it actually owns. Declared at **top level**
+            // (via `ctx.cond_site_fns`, spliced in after `setup()` closes —
+            // same as the reconcile function itself), not inline in
+            // `setup()`'s own body: a struct declared as a local item
+            // inside one function has block scope, invisible to `resume()`
+            // and to the top-level `cond_reconcile_site_N` function that
+            // needs to name it in a `Query<..., With<CondSiteN>>` — a
+            // second real bug found immediately after fixing the first
+            // (this fix's own first attempt didn't compile/resume
+            // correctly until caught).
+            let marker_name = ctx.fresh_cond_site_marker();
+            let mut marker_decl = String::new();
+            writeln!(marker_decl, "#[derive(::bevy_ecs::prelude::Component)]").unwrap();
+            writeln!(marker_decl, "struct {marker_name};").unwrap();
+            writeln!(marker_decl).unwrap();
+            ctx.cond_site_fns.push_str(&marker_decl);
+
             let entity_var = format!("{cond}_entity");
             writeln!(
                 out,
-                "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({initial}), ::loom_runtime::CondBlock::with_size({size}), ::loom_runtime::DomTarget({node_var}))).id();",
+                "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({initial}), ::loom_runtime::CondBlock::with_size({size}), ::loom_runtime::DomTarget({node_var}), {marker_name})).id();",
                 size = texts.len()
             )
             .unwrap();
@@ -1254,7 +1440,7 @@ fn lower_node(
             writeln!(site_fn, "fn {fn_name}(").unwrap();
             writeln!(
                 site_fn,
-                "    mut q: ::bevy_ecs::prelude::Query<(&::loom_runtime::Signal<bool>, &mut ::loom_runtime::CondBlock, &::loom_runtime::DomTarget), ::bevy_ecs::prelude::Changed<::loom_runtime::Signal<bool>>>,"
+                "    mut q: ::bevy_ecs::prelude::Query<(&::loom_runtime::Signal<bool>, &mut ::loom_runtime::CondBlock, &::loom_runtime::DomTarget), (::bevy_ecs::prelude::Changed<::loom_runtime::Signal<bool>>, ::bevy_ecs::prelude::With<{marker_name}>)>,"
             )
             .unwrap();
             writeln!(site_fn, "    mut commands: ::bevy_ecs::prelude::Commands,").unwrap();
@@ -1287,7 +1473,7 @@ fn lower_node(
             writeln!(site_fn, "}}").unwrap();
             writeln!(site_fn).unwrap();
             ctx.cond_site_fns.push_str(&site_fn);
-            ctx.cond_site_fn_names.push((cond.clone(), fn_name.clone()));
+            ctx.cond_site_fn_names.push((cond.clone(), fn_name.clone(), marker_name.clone()));
 
             writeln!(out, "    app.add_systems({fn_name});").unwrap();
         }
@@ -1417,11 +1603,43 @@ fn lower_node(
             // Island's own wrapped module needs exactly one `super::` hop;
             // a reference generated for the unqualified root needs none.
             let path_prefix = if ctx.wrapped_in_own_module { "super::" } else { "" };
+            // If the target authors `sharedSignal(...)` itself, its own
+            // `setup()` needs a trailing shared-store argument (see
+            // `CodegenCtx::components_with_shared_bindings`'s doc comment
+            // for why a fresh throwaway store here — not a `shared`
+            // parameter threaded through *this* component's own signature
+            // — is correct: `setup()` only ever runs once, at SSR time,
+            // and nothing reads back what it publishes).
+            let shared_arg = if ctx.components_with_shared_bindings.contains(ref_name) {
+                ", &mut ::loom_runtime::InMemorySharedStore::default()"
+            } else {
+                ""
+            };
             writeln!(
                 out,
-                "    let _ = {path_prefix}{sub_mod}_generated::setup(app, dom, {parent_var});"
+                "    let _ = {path_prefix}{sub_mod}_generated::setup(app, dom, {parent_var}{shared_arg});"
             )
             .unwrap();
+        }
+        // `{sharedValue("cartCount", 0)}` — a plain static-text node at SSR
+        // time (the `initial` fallback literal) tagged with
+        // `data-loom-shared-subscriber` so `shared-store.js`'s existing,
+        // unmodified DOM-marker patch mechanism picks it up — no
+        // Signal/Entity/DomTarget/patch system involved at all (see this
+        // variant's doc comment).
+        JsxNode::SharedValueBinding { key, initial } => {
+            let node_var = ctx.fresh_node_var();
+            writeln!(
+                out,
+                "    let {node_var} = dom.create_element({parent_var}, \"span\", None);"
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    dom.set_attribute({node_var}, \"data-loom-shared-subscriber\", {key:?});"
+            )
+            .unwrap();
+            writeln!(out, "    dom.append_static_text({node_var}, {:?});", initial.to_string()).unwrap();
         }
     }
 }

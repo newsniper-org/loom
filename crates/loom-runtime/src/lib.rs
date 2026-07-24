@@ -85,6 +85,37 @@ pub struct ListRows(pub Vec<Entity>);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct InputValueTarget;
 
+/// Host-agnostic access to RQ4's cross-island shared store (Task #28-a,
+/// pulled forward for Task #26's CartBadge scenario) — the same
+/// "generated code stays host-agnostic, a host adapter implements the
+/// trait" shape `DomOps`/`BrowserDom` already established. Kept minimal
+/// (Phase 1 scope: i32 values only, matching `__loomShared`'s current
+/// JS-side signature) rather than pre-guessing a richer future shape.
+pub trait SharedStore {
+    fn set(&mut self, key: &str, value: i32);
+    fn get(&mut self, key: &str) -> Option<i32>;
+}
+
+/// A `SharedStore` any native (non-wasm) caller can use — SSR (no real
+/// `window.__loomShared` exists there) and native tests. The `set()` call
+/// has no effect on SSR'd HTML either way (it's a side channel to an
+/// external store, not part of the DOM tree being built), so a plain
+/// in-memory map is sufficient; it exists only to satisfy the type
+/// signature, not to model real cross-widget behavior (that only happens
+/// in a real browser via `web::JsSharedStore`).
+#[derive(Debug, Default)]
+pub struct InMemorySharedStore(std::collections::HashMap<String, i32>);
+
+impl SharedStore for InMemorySharedStore {
+    fn set(&mut self, key: &str, value: i32) {
+        self.0.insert(key.to_string(), value);
+    }
+
+    fn get(&mut self, key: &str) -> Option<i32> {
+        self.0.get(key).copied()
+    }
+}
+
 /// The narrow, closed DOM operation surface a patch System is allowed to
 /// describe. No general tree-diff method exists here by construction.
 pub trait DomOps {

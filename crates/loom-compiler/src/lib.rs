@@ -273,6 +273,46 @@ mod tests {
         }
 
         #[test]
+        fn multiple_conditionals_in_one_component_get_distinct_site_markers() {
+            // Regression test for a real bug found while building Task
+            // #26's CheckoutForm fixture (3 conditionals in one
+            // component): every `cond_reconcile_site_N` used to share the
+            // exact same query shape (Signal<bool>+CondBlock+DomTarget, no
+            // discriminating marker) — since `Changed<Signal<bool>>` is
+            // tracked per-entity (not per-System), toggling ANY one of the
+            // conditionals made EVERY site's reconcile system match that
+            // same entity, cross-wiring each site's own hardcoded static
+            // text onto whichever entity happened to match. Each site must
+            // get its own `CondSiteN` marker component + a `With<CondSiteN>`
+            // filter so its system only ever touches its own entity.
+            let source = r#"
+                export function App() {
+                  const shipping = signal(false);
+                  const gift = signal(false);
+                  return (
+                    <div>
+                      <button onClick={() => shipping.toggle()}>toggle shipping</button>
+                      {shipping() && <p>Express shipping selected.</p>}
+                      <button onClick={() => gift.toggle()}>toggle gift</button>
+                      {gift() && <p>Gift wrap selected.</p>}
+                    </div>
+                  );
+                }
+            "#;
+            let rust = compile_tsx_to_rust(source);
+            assert!(rust.contains("struct CondSite0;"), "{rust}");
+            assert!(rust.contains("struct CondSite1;"), "{rust}");
+            assert!(
+                rust.contains("::bevy_ecs::prelude::With<CondSite0>") && rust.contains("::bevy_ecs::prelude::With<CondSite1>"),
+                "{rust}"
+            );
+            // Each site's spawn (in setup() AND resume()) must carry its
+            // OWN marker.
+            assert_eq!(rust.matches(", CondSite0)).id();").count(), 2, "{rust}"); // setup() + resume()
+            assert_eq!(rust.matches(", CondSite1)).id();").count(), 2, "{rust}");
+        }
+
+        #[test]
         fn toggle_action_gets_an_empty_lref_capture() {
             // Bool signals are DOM-recovered (see generate_resume's Bool
             // arm) — the toggle action must not carry a stale-initial-value
@@ -706,6 +746,77 @@ mod tests {
             "#;
             let module = parse_tsx(source);
             lower::lower_module(&module); // must not panic
+        }
+    }
+
+    /// Task #26 — `sharedSignal()`/`sharedValue()` (RQ4 cross-widget, pulled
+    /// forward from Task #28-a to unblock the widget-embed fixture's
+    /// CartBadge scenario).
+    mod shared_signal {
+        use super::*;
+
+        const CART_SOURCE: &str = r#"
+            import { signal, sharedSignal } from "loom";
+
+            function Widget() {
+              const cartCount = sharedSignal("cartCount", 0);
+              return <button onClick={() => cartCount.increment()}>{cartCount()}</button>;
+            }
+
+            export function App() {
+              return (
+                <div>
+                  <span>{sharedValue("cartCount", 0)}</span>
+                  <Widget client:load />
+                </div>
+              );
+            }
+        "#;
+
+        #[test]
+        fn islands_mode_threads_shared_store_only_where_needed() {
+            let out = compile_tsx_to_rust_graph(CART_SOURCE, GraphMode::Islands);
+            // Widget authors sharedSignal directly -> its own setup/
+            // apply_action/resume all gain the shared-store parameter.
+            assert!(
+                out.contains(
+                    "pub fn apply_action(app: &mut ::loom_runtime::LoomApp, signals: &Signals, action: &Action, shared: &mut impl ::loom_runtime::SharedStore) {"
+                ),
+                "{out}"
+            );
+            assert!(out.contains("shared.set(\"cartCount\", app.world.get::<::loom_runtime::Signal<i32>>(signals.cartCount).unwrap().0);"), "{out}");
+            assert!(out.contains("shared.set(\"cartCount\", 0);"), "{out}"); // setup()'s own seeding
+            // App itself has NO shared_bindings of its own -> its OWN
+            // setup() signature is untouched (still 3-arg) — but its
+            // ComponentRef call into Widget passes a throwaway store.
+            assert!(
+                out.contains(
+                    "pub fn setup(app: &mut ::loom_runtime::LoomApp, dom: &mut impl ::loom_runtime::DomOps, mount: ::loom_runtime::NodeHandle) -> (Signals, Vec<(::loom_runtime::NodeHandle, Action)>, Vec<(::loom_runtime::NodeHandle, fn(String) -> Action)>) {"
+                ),
+                "{out}"
+            );
+            assert!(
+                out.contains("let _ = widget_generated::setup(app, dom, node_0, &mut ::loom_runtime::InMemorySharedStore::default());"),
+                "{out}"
+            );
+            // CartBadge-equivalent reader: plain static text + subscriber
+            // attribute, no Signal/Entity at all for it.
+            assert!(out.contains("data-loom-shared-subscriber\", \"cartCount\""), "{out}");
+        }
+
+        #[test]
+        fn flatten_mode_merges_shared_bindings_and_needs_no_component_ref_forwarding() {
+            let out = compile_tsx_to_rust_graph(CART_SOURCE, GraphMode::Flatten);
+            assert!(!out.contains("pub mod "), "{out}");
+            assert!(!out.contains("InMemorySharedStore"), "{out}"); // no ComponentRef left to forward through
+            // The ONE merged component now directly owns the shared binding.
+            assert!(
+                out.contains(
+                    "pub fn setup(app: &mut ::loom_runtime::LoomApp, dom: &mut impl ::loom_runtime::DomOps, mount: ::loom_runtime::NodeHandle, shared: &mut impl ::loom_runtime::SharedStore) -> (Signals, Vec<(::loom_runtime::NodeHandle, Action)>, Vec<(::loom_runtime::NodeHandle, fn(String) -> Action)>) {"
+                ),
+                "{out}"
+            );
+            assert!(out.contains("data-loom-shared-subscriber\", \"cartCount\""), "{out}");
         }
     }
 }
