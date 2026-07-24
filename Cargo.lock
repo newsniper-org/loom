@@ -680,7 +680,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-fic"
+version = "0.0.1-phase1"
+dependencies = [
+ "bevy_ecs",
+ "getrandom 0.3.4",
+ "loom-compiler",
+ "loom-runtime",
+]
+
+[[package]]
 name = "loom-island-demo"
+version = "0.0.1-phase1"
+dependencies = [
+ "bevy_ecs",
+ "console_error_panic_hook",
+ "getrandom 0.3.4",
+ "loom-runtime",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "loom-island-productcard"
+version = "0.0.1-phase1"
+dependencies = [
+ "bevy_ecs",
+ "console_error_panic_hook",
+ "getrandom 0.3.4",
+ "loom-runtime",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "loom-island-quantitypicker"
 version = "0.0.1-phase1"
 dependencies = [
  "bevy_ecs",

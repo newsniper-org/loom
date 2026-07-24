@@ -366,6 +366,26 @@ Phase 2·3 시점엔 FIC(C ABI shim, WASM-in-process 등)가 아직 없으므로
   선택을 대신 정하지 않는다. 단 조건 C는 RQ6 벤치마크 전용 실험적 스파이크로서
   RQ3의 최종 프로덕션 채택 결정과 독립적으로 병행 가능하다(§9-4). §9에 확정
   시한을 등록한다.
+- **2026-07-24 (§3.2 실측 라운드) — 조건 C 스파이크 1차 결과**: RQ3 "알려진 약점" 1번
+  문서에 상세 기록된 대로, 실제로 nightly + `-Zbuild-std=std,panic_unwind
+  -Zbuild-std-features=panic-unwind` + `RUSTFLAGS="-Cpanic=unwind"`로 빌드하고
+  `wasm-bindgen-cli 0.2.126`(이 저장소가 쓰는 버전과 동일)을 직접 호출해 시도한 결과,
+  **이 문서와 RQ3가 인용했던 "wasm-bindgen CLI가 TryTable 인코딩에서 깨진다"는 우려가
+  이번 재현 시도에서는 재현되지 않았다** — CLI가 정상 처리했고(`wasm-tools print`로
+  실제 `try_table`/`throw_ref` 명령어가 산출물에 들어있음을 확인, 쉬운 경로로 우회된
+  게 아님), Chromium에서 `catch_unwind`가 패닉을 실제로 잡고 같은 wasm 인스턴스가 그
+  후에도 정상 응답했다. **과대 해석 금지 — 정확한 한계**: (a) stable 채널이 아니라
+  nightly 빌드이므로 "표준 wasm-pack/stable 툴체인 경로에서 바로 된다"는 뜻이 아님
+  — 실제 `crates/loom-island-demo`/`bootstrap.js` 통합에는 wasm-pack이 기본 지원 안
+  하는 커스텀 nightly 빌드 스크립트가 별도로 필요(미착수). (b) Chromium 1개, 최소
+  재현 크레이트 1개(저장소 미커밋, `/tmp` 스크래치패드)에서만 확인 — Firefox/WebKit,
+  실제 `dispatch()` 크기의 코드 경로 전체에서는 미검증. (c) `wasm-bindgen#4861`이
+  가리키는 정확히 그 실패 케이스를 내가 못 찾은 것일 수도 있어 "그 버그가 없다"라고
+  결론 내리지 않는다. **결론**: 조건 C는 "안정 채널에서 완전히 막힘"이 아니라
+  "nightly로는 실제로 작동 가능성이 있고, stable 통합 경로와 전체 코드 경로 실측은
+  아직 안 함" — §7 H-04 강한 형태 자동 승격의 선행 요건(위 문단)은 여전히 미충족
+  (조건 C를 §8 최선형 체크리스트로 stable 통합까지 실제 구현·측정한 게 아니므로).
+  상세 재현 절차는 RQ3 문서의 "알려진 약점" 1번 항목에 기록.
 
 ### 5.5 측정 대상 상호작용
 
@@ -788,6 +808,119 @@ value={s()} onInput={(e) => s.set(e.target.value)}/>`를 실제로 컴파일하�
 소급 수정하지 않음), §4.1이 원래 요구한 4요소(카운터+리스트+조건부+폼 입력)가
 이제 전부 실제 컴파일러 산출물로 존재한다는 사실 자체는 정확히 기록해 둔다 —
 다음 §3.2 실측이 이 4요소 전부를 포함한 새 바이너리로 M1을 갱신한다.
+
+---
+
+### §3.2 "Phase 3 완료 — 비용 실측(첫 정면 대결)" 실행 (2026-07-24)
+
+**스코프, 정직하게 축소함**: §3.2 자체 규칙("축소 가능한 것은 문서화·부가 편의
+기능뿐")이 명시한 축소 불가 4항목(6-상태 기계, 2단계 detach, panic 봉쇄 조건
+B/C 실제 시도, MutationObserver 설계 시도)은 전부 실제로 시도·구현했다. 반면
+그 외 항목은 이번 라운드에서 명시적으로 축소함: Chromium 1개만(Firefox/WebKit
+미실행), N=1만(§4.4의 N∈{1,10,50} 스케일링·원본 앱 규모 축 미실행), §4.1
+"전체-앱" 픽스처의 Island 팔은 **미구현**(아래 이유), 호스트 간섭 3패턴(§5.3)은
+미실행, M2-M4·M7·M10은 미실측. 이는 §3.1의 선례(그때도 "단독 기준선 확정"으로
+스코프를 줄였다)와 같은 종류의, 조용히 넘기지 않고 명시한 축소다.
+
+**§4.1 Island 팔을 이번에 만들지 않은 이유(숨기지 않음)**: §4.1은 "정체성
+통제" — 같은 JSX 소스에서 `client:` 지시어 유무만 다르게 파생해야 한다고
+명시한다. 그런데 Phase 3(2단계)은 컴파일러 통합(증분 4: `ir.rs`/`lower.rs`/
+`codegen.rs`의 `ComponentGraph`/`IslandActivation`/`ComponentRef`)을 의도적으로
+스트레치로 미뤘다(그 자체는 Phase 3의 정식 축소 허용 항목 — roadmap/PHASES.md
+Phase 3 절 참고). 컴파일러 지원 없이 "같은 소스에서 지시어만 다르게" 파생할
+방법이 없으므로, §4.1의 Island 팔을 손코딩으로 만들면 정체성 통제 원칙 자체를
+어기게 된다 — 차라리 안 만들고 이 갭을 정확히 기록하는 쪽을 택함. 대신 §4.2
+"위젯-임베드" 픽스처(Island 개념이 원래 예시로 든 CartBadge/ProductCard/
+QuantityPicker 자체라 손코딩이 정체성 통제를 어기지 않음)는 Phase 3의
+`crates/loom-island-demo` 산출물을 그대로 재사용해 이번에 실측했다.
+
+**축소 불가 4항목 실행 결과**:
+
+1. **6-상태 기계 + 2단계 detach**: Phase 3(`crates/loom-runtime/src/island.rs`,
+   `crates/loom-island-demo`)에서 이미 구현·검증 완료 — 이번 라운드에서 추가로
+   한 것 없음(반복 확인만).
+2. **panic 봉쇄 조건 B(island별 wasm 인스턴스 분리) — 실제 구현**: 새 크레이트
+   `crates/loom-island-productcard`/`crates/loom-island-quantitypicker`(각자
+   독립된 `.wasm`)를 만들어 `demo/islands/condition-b/index.html`에서 함께
+   로드하고 QuantityPicker에 의도적 panic(`panic_now()`)을 주입. Playwright로
+   실측: panic이 캐치 가능한 JS 예외로만 나타남(페이지 전체 안 죽음) / **별도
+   인스턴스인 ProductCard는 완전히 무사**(패닉 전후 동일하게 상호작용 가능,
+   M6의 조건 B "완전 봉쇄" 실증) / panic이 난 QuantityPicker 자신은
+   wasm-bindgen의 `WasmRefCell` borrow-poison으로 영구 응답 불능(RQ3 Q4의
+   no-restart/failed 의미론과 우연히 정합). 상세는 RQ3 문서 "알려진 약점" 1번.
+3. **panic 봉쇄 조건 C(LRef 디스패치 단위 catch_unwind, island 경계 비의존) —
+   실제 시도, 이 문서의 기존 서술을 정정**: nightly 툴체인 +
+   `-Zbuild-std=std,panic_unwind -Zbuild-std-features=panic-unwind` +
+   `RUSTFLAGS="-Cpanic=unwind"`로 실제 `panic=unwind` wasm 바이너리를 빌드하고
+   (`rustup target remove wasm32-unknown-unknown --toolchain nightly`로
+   prebuilt std와의 `E0152` 충돌 회피), `wasm-bindgen-cli 0.2.126`(이 저장소
+   버전과 동일)으로 직접 처리해 `wasm-tools print`로 실제 `try_table`/
+   `throw_ref`(표준 wasm exception-handling 인코딩) 포함을 확인한 뒤 Chromium에서
+   로드·실행. **결과: 이 문서와 RQ3가 인용한 "wasm-bindgen CLI가 TryTable에서
+   깨지는 열린 버그(#4861)"가 재현되지 않았다** — `catch_unwind`가 패닉을 정확히
+   잡았고 같은 인스턴스가 그 후에도 정상 응답했다. 과대 해석 금지 사항(nightly
+   전용이라 안정 채널 결론은 안 바뀜, Chromium 1개만, `#4861`이 가리키는 정확한
+   실패 케이스를 다른 코드 패턴에서 못 찾았을 가능성)은 RQ3 문서에 상세 기록.
+   **§7 H-04 강한 형태 자동 승격의 선행 요건은 여전히 미충족**(stable 통합까지
+   실제 구현한 게 아니므로) — 이 스파이크는 "가능성이 있어 보인다"는 데이터일
+   뿐, 조건 C의 최종 채택 확정이 아니다.
+4. **MutationObserver 기반 호스트발 제거 감지(RQ3 알려진 약점 6번) — 실제 구현**:
+   `demo/resume/registry.js`에 `watchForHostInitiatedRemoval()` 추가 —
+   `document.body`를 `childList: true, subtree: true`로 관찰해, `detachAndRemove()`
+   를 거치지 않은 임의의 DOM 제거(레거시 스크립트가 직접 `.remove()`를 호출하는
+   경우)도 감지해 같은 detach 시퀀스를 발동시킴. Playwright로 실측: "레거시
+   스크립트가 직접 product-card를 제거"를 시뮬레이션(`document.getElementById(...)
+   .remove()`, registry API 미경유) → 두 island 모두 정상적으로 `detached`
+   전이. `detachAndRemove()` 경로와 동시에 존재해도 이중 처리 없이 안전하게
+   공존함(이미 detached인 항목은 스킵).
+
+**M1(번들 크기) — §4.2 위젯-임베드 픽스처, release + wasm-opt(-Oz, wasm-pack
+내장) + gzip -9**:
+
+| 구성 | raw | gzip-9 |
+|---|---|---|
+| Layer 0 상시 로드 — H-Qwik(`bootstrap.js`만) | 6,085 B | 2,742 B |
+| Layer 0 상시 로드 — H-Island(`registry.js`+`shared-store.js`) | 9,871 B | 4,175 B |
+| Island 공유 청크(`loom-island-demo`, ProductCard+QuantityPicker 한 파일) | 357,734 B | 128,769 B |
+| Island 분리 청크 합(조건 B, `productcard`+`quantitypicker` 각자 별도 `.wasm`) | 684,673 B | 246,736 B |
+| H-Qwik 전체-앱(§4.1, 카운터+리스트+조건부+폼입력 4요소, 참고용) | 392,382 B | 140,196 B |
+
+**해석**: (1) Island의 "항상 로드" 비용(Layer 0)이 H-Qwik의 `bootstrap.js` 단독보다
+raw 62%·gzip 52% 더 큼 — Registry+공유 store 오케스트레이션 자체의 실제 고정비.
+(2) 청크를 공유하면(현재 빌드 상태, 조건 A/A+격리없음) Island 쪽이 오히려 H-Qwik
+전체-앱보다 작음(같은 두 위젯이 카운터+리스트+조건부+폼입력 4요소보다 코드가
+적기 때문 — **위젯 개수·기능이 다른 두 픽스처라 이 숫자를 직접 "이겼다"로
+못 씀**, 참고용으로만 병기). (3) **인스턴스 분리(조건 B) 비용이 실측으로
+드러남**: 공유 1개 청크(357,734B) 대비 분리 2개 청크 합(684,673B)은 **+91.4%
+raw(+91.6% gzip)** — Bevy ECS 런타임 고정비가 위젯마다 중복되기 때문. 이게
+바로 M5(b)에 계상해야 할 "진짜 격리(조건 B)의 실제 가격표"다 — 조건 A(공유
+인스턴스, 격리 없음)에서 조건 B로 가는 건 공짜가 아니다.
+
+**M8(정합성 게이트) — 이름/ID 충돌 하위 시나리오**: 페이지 전역에 QuantityPicker의
+내부 태그(`data-loom-id="qty-value"`)와 고의로 동일한 문자열을 가진 엉뚱한
+엘리먼트를 주입한 뒤 실제 상호작용 실측. 결과: QuantityPicker의 `own_tagged_
+descendants`가 자기 host 서브트리로 스코프돼 있어(opaque 경계 쿼리) 전역 충돌
+엘리먼트를 전혀 건드리지 않았고, 공유 store 갱신도 정상 동작 — **codegen.rs의
+`ResumedComponent::new`가 가진 페이지 전역 쿼리 취약점과 대조되는, 설계상
+이 취약점이 없는 사례**를 실측으로 확인.
+
+**M9(cross-widget reactivity) — 정확성 + 지연시간**: QuantityPicker 증가 클릭
+200회 반복(순수 in-page `performance.now()` 측정, 폴링 오차 배제 — 클릭이
+동기 호출이라 `element.click()` 반환 시점에 이미 CartBadge 갱신이 끝나 있음을
+확인 후 그 왕복만 측정). **정확성 200/200(100%)**, **지연시간 median 0.0ms,
+p95 0.1ms, max 0.6ms** — 공유 store가 청크 로드 없는 순수 동기 JS DOM patch이기
+때문(§6 M9 비고가 예견한 "H-Qwik 쪽이 trivial하게 유리"의 정반대 방향 데이터:
+여기선 Island 쪽 메커니즘 자체가 이미 사실상 O(0)에 수렴함 — 단 이건 CartBadge가
+**자기 Island가 아예 없는** 특수 사례라 결과가 나온 것이지, "Island 간 통신
+일반"이 항상 이렇다는 뜻은 아님, RQ4 문서 참고).
+
+**미실측 항목(§10 절차대로 명시)**: M2(위젯-로컬 TTI, §3.1과 같은 이유로 이번
+픽스처에서도 사실상 0 수렴 예상되나 별도 실측 안 함) / M3(wake-up payload) /
+M4(N-스케일링 상주 메모리, N=1만이라 스케일링 자체가 없음) / M7(호스트 간섭
+3패턴) / M10(기능 매트릭스). §4.1 전체-앱 픽스처의 Island 팔과 §4.4
+N-스케일링·원본 앱 규모 축은 컴파일러 통합(증분 4) 이후로 이월. 이 시점의
+결과는 §3.2 자체 규정대로 판정이 아니라 데이터 등록 — §7 정식 판정은 Phase 6
+전유.
 
 ---
 

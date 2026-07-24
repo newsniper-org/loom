@@ -139,6 +139,46 @@ function bootstrapIslands() {
       throw new Error(`[registry] island "${id}" has unknown data-loom-activation "${activation}"`);
     }
   }
+
+  watchForHostInitiatedRemoval();
+}
+
+// RQ3's "알려진 약점" 6번의 실제 완화 시도: `detachAndRemove` is the
+// "명시적 unmount API" primary contract (RQ3 Q3), but a host page that
+// removes an island's DOM through some *other* means (a legacy jQuery-style
+// script calling `.remove()` directly, a framework's own reconciler, a
+// route change that swaps a whole page section) would never call it,
+// silently leaving the Registry's entry stuck at `attached`/`dormant`
+// forever — a zombie. This `MutationObserver` catches that case too, from
+// outside any single removal path.
+function watchForHostInitiatedRemoval() {
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const removedNode of mutation.removedNodes) {
+        if (!(removedNode instanceof Element)) continue;
+        const hosts = [];
+        if (removedNode.matches?.("[data-loom-island]")) hosts.push(removedNode);
+        if (removedNode.querySelectorAll) hosts.push(...removedNode.querySelectorAll("[data-loom-island]"));
+
+        for (const hostEl of hosts) {
+          const id = hostEl.dataset.loomIslandId;
+          const state = window.__loomRegistry.getState(id);
+          // Already handled by an explicit `detachAndRemove` call in the
+          // same synchronous task (MutationObserver callbacks are always
+          // microtasks, so that call — if any — already ran by now), or an
+          // id this registry never saw — either way, nothing to do.
+          if (state === undefined || state === "detaching" || state === "detached") continue;
+          console.warn(
+            `[registry] island "${id}" was removed from the DOM without going through detachAndRemove() ` +
+              "-- detected via MutationObserver instead (RQ3 알려진 약점 6번 완화)"
+          );
+          window.__loomRegistry.beginDetach(id);
+          window.__loomRegistry.finishDetach(id);
+        }
+      }
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
 }
 
 document.addEventListener("DOMContentLoaded", bootstrapIslands);

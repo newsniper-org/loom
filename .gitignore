@@ -4,3 +4,6 @@
 /demo/resume/chunks
 /demo/resume/index.html
 /demo/islands/chunks
+/demo/islands/condition-b/productcard
+/demo/islands/condition-b/quantitypicker
+__pycache__/

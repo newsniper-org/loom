@@ -185,6 +185,51 @@ detached 도달.
    던지면 해당 엘리먼트의 `_loomInstance`를 버리고 이후 그 엘리먼트로의 dispatch를 전부
    거부하도록 함(RQ3 Q4의 attached→failed 전이를 host glue 레벨에서 실제로 구현한 것,
    영향 범위를 그 엘리먼트 하나로 한정).
+   **2026-07-24 (RQ6 §3.2 실측 라운드) — 조건 C를 실제로 시도해 이 문서의 기존 주장을
+   정정함(중요, 숨기지 않음)**: 이 항목이 인용한 "표준화된 TryTable 인코딩이
+   wasm-bindgen의 CLI 인터프리터를 깨는 현재 열려 있는 호환성 버그(wasm-bindgen#4861)"를
+   실제로 재현해보려고 시도했는데, **재현되지 않았다**. 실제로 한 것: nightly 툴체인에서
+   `wasm32-unknown-unknown` 대상의 사전 빌드 std를 제거하고(`rustup target remove
+   wasm32-unknown-unknown --toolchain nightly`, prebuilt std와 `-Zbuild-std`가 충돌하는
+   `E0152 duplicate lang item` 회피), `RUSTFLAGS="-Cpanic=unwind" cargo +nightly build
+   --target wasm32-unknown-unknown -Zbuild-std=std,panic_unwind
+   -Zbuild-std-features=panic-unwind`로 실제 `panic=unwind` 바이너리를 빌드하고,
+   `catch_unwind`로 감싼 함수 하나(패닉하는 경로/안 하는 경로 각각 호출)를
+   `wasm-bindgen-cli 0.2.126`(이 저장소가 쓰는 버전과 동일)으로 직접 처리(wasm-pack이
+   아니라 CLI를 직접 호출 — wasm-pack은 기본적으로 stable 툴체인만 사용해 이 실험을
+   못 태움). `wasm-tools print`로 산출물을 실제 확인해 `try_table`/`throw_ref` 명령어
+   (표준화된 wasm exception-handling 제안의 실제 인코딩, 레거시 `try`/`delegate`가
+   아님)가 실제로 들어있음을 확인 — 즉 "쉬운 케이스라 TryTable을 안 쓴 것"이 아니라
+   진짜 TryTable 인코딩을 담은 바이너리로 테스트한 것. **결과**: `wasm-bindgen` CLI가
+   에러 없이 처리했고(종료 코드 0), Chromium에서 실제로 로드해 호출한 결과 패닉하는
+   호출은 `catch_unwind`가 정확히 잡아 정수 반환값(-1)으로 돌아왔으며, **같은 wasm
+   인스턴스가 그 후에도 정상 호출(42 반환)에 계속 응답**함 — 인스턴스가 오염되거나
+   죽지 않았다. **단, 과대 해석 금지**: (a) 이건 stable 채널이 아니라 nightly +
+   `-Zbuild-std` 조합이라 "안정 채널에서 no-op"이라는 이 항목의 원래 문장은 여전히
+   유효 — 안정 채널 자체가 뚫린 게 아니라 "nightly로 실제 빌드는 가능하고 작동한다"는
+   사실이 새로 확인된 것. (b) 이번 실험은 Chromium 1개 브라우저, `loom-island-demo`가
+   아니라 별도 최소 재현 크레이트(`/tmp` 스크래치패드, 저장소에 커밋 안 됨)에서만
+   확인함 — 실제 `crates/loom-island-demo`/`bootstrap.js`에 조건 C를 통합하려면
+   wasm-pack이 기본으로 지원 안 하는 nightly 빌드 스크립트가 별도로 필요함(다음 단계로
+   미룸, 이번엔 "가능한지" 자체만 검증). (c) `wasm-bindgen#4861`이 인용하는 정확히
+   그 실패 패턴을 내가 재현 못 한 것뿐일 수도 있음(다른 코드 패턴에서는 여전히 깨질
+   가능성 배제 못 함) — "그 버그가 존재하지 않는다"가 아니라 "이 저장소가 실제 쓰는
+   `catch_unwind` 사용 패턴 + wasm-bindgen 0.2.126 조합에서는 재현 안 됨"으로 한정해
+   기록한다. **RQ6-verification-plan.md §5.4 조건 C 재평가는 그 문서에 기록.**
+   **같은 라운드 — 조건 B(island별 wasm 인스턴스 분리)도 실제로 구현·측정함**: 새 크레이트
+   `crates/loom-island-productcard`/`crates/loom-island-quantitypicker`(각자 독립된
+   `.wasm` 산출물 — `loom-island-demo`가 하나의 청크를 공유하는 것과 달리 이번엔 진짜로
+   분리)를 만들고, `demo/islands/condition-b/index.html`에서 둘을 같은 페이지에 함께
+   로드해 QuantityPicker 쪽에 의도적 panic을 주입(`panic_now()`)한 뒤 Playwright로 실제
+   확인: (1) panic이 잡을 수 있는 JS 예외로만 나타나고 페이지 전체를 안 죽임, (2)
+   **별도 wasm 인스턴스인 ProductCard는 완전히 무사**(패닉 전과 동일하게 계속
+   상호작용 가능) — 조건 B의 핵심 주장이 실제로 성립함을 직접 관찰. 부수 관찰:
+   panic이 난 QuantityPicker 인스턴스 자신은 이후 호출에서 wasm-bindgen 자체의
+   `WasmRefCell` borrow-poison 메커니즘("recursive use of an object detected which
+   would lead to unsafe aliasing") 때문에 영구적으로 응답 불능이 됨 — 이는 버그가
+   아니라 **정확히 RQ3 Q4의 no-restart/failed 상태가 요구하는 동작**(오염된 객체는
+   그대로 두고 복구하지 않음)과 우연히 정합적으로 들어맞음. M6(장애 격리)/M5(b)(인스턴스
+   분리 비용) 실측 데이터로 RQ6-verification-plan.md에 등록.
 2. crash 시 상호작용 후 상태 전손(no-restart의 의도된 비용). failed island의 사용자 노출
    정책(동결 vs 폴백 마크업)은 미결.
 3. 중첩 island 간 동적 데이터 전달 부재(SSR prop 동결) + 불일치 감지 불가 — RQ4 선결 의존.

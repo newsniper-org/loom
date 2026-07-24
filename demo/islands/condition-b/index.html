@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>RQ6 §5.4 condition B spike — separate wasm instances</title>
+</head>
+<body>
+  <!--
+    Minimal, dedicated page for the condition B spike (roadmap/PHASES.md
+    RQ6 §3.2 section) — NOT the widget-embed fixture itself
+    (demo/islands/index.html), which still shares one chunk (see
+    crates/loom-island-demo's module doc for why). Here, ProductCard and
+    QuantityPicker are each built from their OWN separate crate
+    (crates/loom-island-productcard, crates/loom-island-quantitypicker) into
+    separate .wasm files — the actual "Island = wasm instance" claim, tested
+    directly rather than assumed.
+  -->
+  <div id="product-card">
+    <h2>Widget</h2>
+    <button data-loom-id="expand-toggle">show details</button>
+    <p data-loom-id="details"></p>
+  </div>
+
+  <div id="quantity-picker">
+    <button data-loom-id="qty-decrement">-</button>
+    <span data-loom-id="qty-value">1</span>
+    <button data-loom-id="qty-increment">+</button>
+  </div>
+
+  <div id="test-log"></div>
+
+  <script type="module">
+    import initProductCard, { ProductCardIsland } from "./productcard/productcard.js";
+    import initQuantityPicker, { QuantityPickerIsland } from "./quantitypicker/quantitypicker.js";
+
+    await initProductCard();
+    await initQuantityPicker();
+
+    window.__productCard = new ProductCardIsland(document.getElementById("product-card"));
+    window.__quantityPicker = new QuantityPickerIsland(document.getElementById("quantity-picker"));
+
+    window.__testReady = true;
+  </script>
+</body>
+</html>

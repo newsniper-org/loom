@@ -1,0 +1,25 @@
+[package]
+name = "loom-fic"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "loom_fic"
+
+[[bin]]
+name = "loom-fic-sidecar"
+path = "src/bin/sidecar.rs"
+
+[dependencies]
+bevy_ecs = "0.14"
+# No "wasm_js" feature: that backend itself depends on wasm-bindgen/js-sys
+# (calls `crypto.getRandomValues`), which would drag JS-glue imports back
+# into the wasm32 build this crate exists to keep JS-free (see lib.rs's
+# `__getrandom_v03_custom` doc comment for the custom backend used instead,
+# active via `RUSTFLAGS='--cfg getrandom_backend="custom"'`).
+getrandom = "0.3"
+loom-runtime = { path = "../loom-runtime" }
+
+[build-dependencies]
+loom-compiler = { path = "../loom-compiler" }

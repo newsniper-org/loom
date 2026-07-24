@@ -493,6 +493,45 @@ subtree가 실제로 사라짐(2단계 detach 실증) / CartBadge(자기 Island 
    `finish_detach`는 동기 즉시 호출(RQ3의 "알려진 약점" #5, 미결로 남김).
 6. 리스트 row 안의 Island N개 인스턴스, 크로스 임베드 DOM 중첩 — 계획대로 범위 밖.
 
+## RQ6 §3.2 — "Phase 3 완료, 첫 정면 대결" 실측 (2026-07-24)
+
+상세는 `research-questions/RQ6-verification-plan.md`의 "§3.2 실행" 절 +
+`research-questions/data/rq6-phase3-widget-embed-chromium.json`(원시 데이터) —
+여기선 요지만.
+
+**§3.2 자체 규칙("축소 불가 4항목")을 전부 실제로 수행함**: (1) RQ3 6-상태
+기계/2단계 detach는 Phase 3에서 이미 완료. (2) **panic 봉쇄 조건 B(island별
+wasm 인스턴스 분리)를 실제 구현** — 새 크레이트 `crates/loom-island-productcard`/
+`crates/loom-island-quantitypicker`(진짜 별도 `.wasm`)로 Playwright 장애 주입
+실측: 한쪽 panic이 다른 쪽 인스턴스에 전혀 영향 없음(완전 봉쇄 실증). (3)
+**panic 봉쇄 조건 C를 실제로 시도해 이 문서/RQ3의 기존 서술을 정정** — nightly +
+`-Zbuild-std` 조합으로 진짜 `panic=unwind` wasm 바이너리를 빌드해 표준
+exception-handling 인코딩(`try_table`/`throw_ref`)이 실제로 담긴 산출물을
+`wasm-bindgen-cli`로 처리·실행한 결과, "wasm-bindgen이 이 인코딩에서 깨진다"던
+알려진 버그가 **재현되지 않음**(단 nightly 한정, stable 통합은 별도 과제 —
+상세는 RQ3 문서). (4) **MutationObserver 기반 호스트발 제거 감지를 실제 구현**
+— `registry.js`에 추가, "레거시 스크립트가 explicit unmount API 없이 직접 DOM을
+지우는" 시나리오를 실제로 재현해 정상 감지·정리됨을 확인.
+
+**§4.1 전체-앱 Island 팔은 이번에 안 만듦(숨기지 않은 이유)**: §4.1의 "정체성
+통제" 원칙(같은 소스에서 지시어만 다르게 파생)은 컴파일러 통합(Phase 3 증분 4,
+스트레치로 미룸) 없이는 손코딩으로 만족시킬 수 없음 — 어기고 만드느니 갭으로
+남김. 대신 §4.2 위젯-임베드 픽스처(Phase 3의 `loom-island-demo` 그대로 재사용,
+정체성 통제 문제 없음)를 실측.
+
+**실측 결과 요지**: M1 — Island의 상시 로드분(Layer 0: registry.js+shared-store.js)
+이 H-Qwik의 bootstrap.js보다 raw 62%/gzip 52% 더 큼(오케스트레이션 고정비).
+청크를 공유하면(조건 A) H-Island 쪽이 작아 보이지만 위젯 구성이 다른 픽스처라
+직접 비교 불가. **인스턴스 분리(조건 B)의 실제 가격표: 공유 대비 +91% 바이트**
+— "진짜 격리"는 공짜가 아님을 수치로 확인(M5(b)에 계상). M8 — 이름/ID 충돌
+시나리오에서 opaque 경계 스코프 쿼리 덕에 전역 충돌 무영향 확인(`ResumedComponent::
+new`의 페이지 전역 쿼리 취약점과 대조). M9 — cross-widget 정확성 200/200(100%),
+지연시간 median 0.0ms/max 0.6ms(공유 store가 순수 동기 JS 경로라 사실상 O(0)).
+
+**미실측(§10 절차대로 명시)**: Firefox/WebKit, N-스케일링({1,10,50})·원본 앱
+규모 축, 호스트 간섭 3패턴(§5.3), M2-M4·M7·M10, §4.1 Island 팔. 전부 판정이
+아니라 데이터 등록 — §7 정식 판정은 Phase 6 전유.
+
 ## Phase 4 — 백엔드 어댑터
 
 - FIC 확정 (05)
@@ -501,6 +540,50 @@ subtree가 실제로 사라짐(2단계 detach 실증) / CartBadge(자기 Island 
 - 네이티브 바인딩 1~2개(Node, Python 등) — "진짜 언어 무관"임을 증명하는 용도
 
 **종료 조건**: 최소 2개 이상 서로 다른 언어의 "백엔드"에서 동일 컴포넌트를 렌더링해 임베드 성공.
+
+**실행 상태 (2026-07-24) — 종료 조건 충족**
+
+`crates/loom-fic` 신설. FIC를 `render_html() -> String`(같은 `demo/counter-list.tsx`
+산출물 재사용, 새 컴포넌트 안 만듦 — CLAUDE.md 2-1) + C ABI shim(`loom_fic_render`/
+`loom_fic_free`, `[len: u32 LE][utf8 html]` 와이어 포맷)으로 구현. `StringDom`은
+`loom-resume-demo`에서 그대로 재사용하지 않고 복사함 — 그 크레이트는 wasm-bindgen/
+web-sys를 무조건 의존해서(ResumedComponent 경로 때문에), 재사용하면 순수 wasmtime
+호스트를 위한 "JS 없는" wasm32 빌드가 깨짐(모듈 문서에 이유 상세).
+
+**세 경로 전부 실제 구현·검증**:
+1. **네이티브 바인딩** — 계획(PyO3/napi-rs)보다 더 얇게 감: Python `ctypes`가 C ABI
+   `.so`를 언어별 래퍼 크레이트 없이 직접 로드(`examples/native_binding.py`) —
+   "하나의 C shim이 전체를 흡수"를 문자 그대로 밀어붙이면 PyO3조차 선택 사항임을 실측.
+2. **Sidecar HTTP** — `std::net::TcpListener`만 쓴 최소 서버(`loom-fic-sidecar`
+   바이너리, 프레임워크 없음) — Node.js `fetch()`로 호출(`examples/sidecar_client.js`,
+   `embed_host_page.js`).
+3. **WASM-in-process** — `wasm32-unknown-unknown`(wasm-bindgen 없는 plain 빌드) +
+   Python `wasmtime`(`examples/wasm_in_process.py`). **실제로 발견한 마찰(숨기지
+   않음)**: `bevy_ecs`가 `bevy_tasks`의 wasm32 비동기 실행기를 통해
+   `wasm-bindgen-futures`에 **무조건** 의존 — 이 렌더 경로가 그 코드를 전혀 안 쓰는데도
+   인스턴스화 시점에 `__wbindgen_*` import 4개를 요구함. `wasm-tools print`로 정확히
+   어떤 4개인지 확인(`__wbindgen_describe`, `__wbg___wbindgen_throw_*`,
+   `__wbindgen_externref_table_grow`/`_set_null`) 후 `wasmtime`의
+   `Linker.define_func`로 no-op 스텁 제공해 해결(이 경로가 실제로 그 함수들을
+   호출 안 함을 확인하고 안전하다고 판단). `getrandom`도 wasm32 기본 백엔드(`wasm_js`,
+   wasm-bindgen 의존)를 요구해 "custom backend"(`--cfg getrandom_backend="custom"`
+   + 직접 구현한 `__getrandom_v03_custom`)로 대체 — 결정론적 단발 SSR이라 진짜
+   난수가 불필요해서 안전(주석에 왜 안전한지 명시, 실제 서비스라면 진짜 난수 소스
+   import 필요).
+
+**종료 조건 실측**: Python(ctypes 네이티브 바인딩 + wasmtime WASM-in-process 둘 다) +
+Node.js(Sidecar HTTP) — 서로 다른 두 언어에서 동일 컴포넌트를 렌더링해 각자 독립적으로
+만든 "레거시 호스트 페이지"(loom이 생성 안 한 nav/footer 포함)에 실제로 임베드 성공,
+Playwright로 스크린샷 검증(`#loom-mount`에 "count:0" 등 실제 컨텐츠 렌더링 확인).
+
+**검증**: `cargo test -p loom-fic`(2개, `render_html`/C ABI 왕복 각각) +
+`cargo test --workspace`(96개 전체 통과) + 위 크로스-언어 임베드 실측.
+
+**의도적으로 미룬 것(숨기지 않음)**: `resumability_payload`/`assets` 필드(반환 HTML이
+이미 모든 정보를 인라인으로 담고 있어 지금은 중복), `request_context`의 실제 파라미터화
+(Phase 1 IR이 요청별 동적 초기값을 지원 안 함 — 스키마 자체가 자명하게 빔), Sidecar의
+콜드 스타트/커넥션 풀링 전략, Phase 3 §3.3 언급된 "선택 사항"인 실제 폴리글랏 백엔드
+재확인(Phase 6 몫).
 
 ## Phase 5 — 공식 검증
 

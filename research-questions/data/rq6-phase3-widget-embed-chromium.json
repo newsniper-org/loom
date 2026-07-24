@@ -1,0 +1,49 @@
+{
+  "date": "2026-07-24",
+  "round": "RQ6 §3.2 - Phase 3 완료 첫 정면 대결",
+  "browser": "chromium",
+  "m1_bundle_size": {
+    "methodology": "release + wasm-opt(-Oz, wasm-pack 내장) + gzip -9",
+    "layer0_always_loaded": {
+      "h_qwik_bootstrap_js": { "raw": 6085, "gzip9": 2742 },
+      "h_island_registry_plus_shared_store_js": { "raw": 9871, "gzip9": 4175 }
+    },
+    "island_shared_chunk": {
+      "crate": "loom-island-demo",
+      "raw": 357734,
+      "gzip9": 128769
+    },
+    "island_separated_chunks_condition_b": {
+      "productcard": { "raw": 344852, "gzip9": 124263 },
+      "quantitypicker": { "raw": 339821, "gzip9": 122473 },
+      "combined_raw": 684673,
+      "combined_gzip9": 246736,
+      "overhead_vs_shared_pct_raw": 91.4,
+      "overhead_vs_shared_pct_gzip9": 91.6
+    },
+    "h_qwik_full_app_reference_only": {
+      "crate": "loom-resume-demo",
+      "note": "카운터+리스트+조건부+폼입력 4요소 - 위젯 개수/기능이 다른 픽스처라 직접 비교 불가, 참고용",
+      "raw": 392382,
+      "gzip9": 140196
+    }
+  },
+  "m6_fault_isolation_condition_b": {
+    "setup": "loom-island-productcard + loom-island-quantitypicker, 별도 .wasm, demo/islands/condition-b/index.html",
+    "result": "QuantityPicker에 panic_now() 주입 -> 캐치 가능한 JS 예외만 발생, 페이지 전체 생존, ProductCard(별도 인스턴스) 완전 무사, QuantityPicker 자신은 wasm-bindgen WasmRefCell borrow-poison으로 영구 응답 불능"
+  },
+  "m6_condition_c_spike": {
+    "setup": "nightly + -Zbuild-std=std,panic_unwind -Zbuild-std-features=panic-unwind + RUSTFLAGS=-Cpanic=unwind, wasm-bindgen-cli 0.2.126 직접 호출",
+    "result": "wasm-bindgen CLI가 try_table/throw_ref(표준 wasm exception-handling 인코딩) 포함 바이너리를 정상 처리(exit 0), Chromium에서 catch_unwind가 패닉을 정확히 잡고 같은 인스턴스가 계속 정상 응답 - RQ3/RQ6이 인용한 'wasm-bindgen#4861로 막힘' 주장이 이번 재현 시도에서는 재현 안 됨",
+    "caveats": "nightly 전용(stable 채널 결론 안 바뀜), Chromium 1개만, #4861의 정확한 실패 케이스를 못 찾았을 가능성 배제 못함"
+  },
+  "m8_name_collision": {
+    "setup": "quantity-picker의 data-loom-id='qty-value'와 동일한 문자열을 페이지 전역에 주입",
+    "result": "own_tagged_descendants의 opaque 경계 스코프 쿼리 덕에 전역 충돌 엘리먼트 미접촉, 정상 동작 확인"
+  },
+  "m9_cross_widget_reactivity": {
+    "setup": "QuantityPicker 증가 클릭 200회, element.click()의 동기 반환 시점을 이용해 폴링 오차 없이 in-page performance.now()로 측정",
+    "accuracy": "200/200 (100%)",
+    "latency_ms": { "median": 0.0, "p95": 0.1, "max": 0.6 }
+  }
+}
