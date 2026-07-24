@@ -579,6 +579,65 @@ mod tests {
         }
 
         #[test]
+        fn graph_mode_flatten_merges_nested_components_into_one_signals_and_action() {
+            // Task #26 — RQ6 §8 item 4's H-Qwik counterfactual shape: the
+            // SAME source that produces two `pub mod` blocks under
+            // GraphMode::Islands must instead produce ONE flat component
+            // (no `pub mod`, no `data-loom-island*` attributes at all) with
+            // BOTH nested components' signals/actions merged in.
+            let source = r#"
+                function Widget() {
+                  const count = signal(0);
+                  return <button onClick={() => count.increment()}>{count()}</button>;
+                }
+                function ProductCard() {
+                  const details = signal(false);
+                  return (
+                    <div>
+                      <button onClick={() => details.toggle()}>show details</button>
+                      {details() && <p>Free shipping on orders over $50.</p>}
+                      <Widget client:load />
+                    </div>
+                  );
+                }
+                export function App() {
+                  return <div><ProductCard client:visible /></div>;
+                }
+            "#;
+            let out = compile_tsx_to_rust_graph(source, GraphMode::Flatten);
+            assert!(!out.contains("pub mod "), "{out}");
+            assert!(!out.contains("data-loom-island"), "{out}");
+            assert!(!out.contains("wasm_bindgen"), "{out}");
+            // Both signals present in ONE merged Signals struct.
+            assert!(out.contains("pub details: ::bevy_ecs::entity::Entity,"), "{out}");
+            assert!(out.contains("pub count: ::bevy_ecs::entity::Entity,"), "{out}");
+            // Both actions present in ONE merged Action enum/apply_action —
+            // collect_actions walks the already-flattened tree in one pass.
+            assert!(out.contains("enum Action {\n    Action0,\n    Action1,\n}"), "{out}");
+        }
+
+        #[test]
+        #[should_panic(expected = "requires every signal name to be globally unique")]
+        fn graph_mode_flatten_rejects_colliding_signal_names_across_components() {
+            let source = r#"
+                function Widget() {
+                  const count = signal(0);
+                  return <button onClick={() => count.increment()}>{count()}</button>;
+                }
+                export function App() {
+                  const count = signal(0);
+                  return (
+                    <div>
+                      <span>{count()}</span>
+                      <Widget client:load />
+                    </div>
+                  );
+                }
+            "#;
+            compile_tsx_to_rust_graph(source, GraphMode::Flatten);
+        }
+
+        #[test]
         #[should_panic(expected = "no `client:load`/`client:visible` directive")]
         fn bare_component_ref_without_activation_panics() {
             let source = r#"

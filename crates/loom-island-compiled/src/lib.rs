@@ -1,7 +1,9 @@
-//! Task #25 acceptance crate — compiles `demo/islands/product-card.tsx`
-//! through the real loomc pipeline (`build.rs`, `GraphMode::Islands`)
-//! instead of hand-authoring the Island structs the way
-//! `crates/loom-island-demo` did. `App`'s own `setup()`/`resume()`
+//! Task #25/#26 acceptance crate — compiles `demo/islands/product-card.tsx`
+//! through the real loomc pipeline TWICE (`build.rs`, once per
+//! `GraphMode`), instead of hand-authoring the Island structs the way
+//! `crates/loom-island-demo` did.
+//!
+//! `generated` (`GraphMode::Islands`): `App`'s own `setup()`/`resume()`
 //! (unqualified, root — see `codegen.rs`'s `generate_islands`) is the
 //! page's SSR entry point (see `render_html()` below, used to produce
 //! `demo/islands/compiled/index.html`'s initial markup); `ProductCardIsland`
@@ -10,9 +12,22 @@
 //! wired by `demo/resume/registry.js` exactly like the hand-coded crate's
 //! structs were — same JS glue, same `data-loom-island*` marker
 //! convention, no changes needed there.
+//!
+//! `generated_flat` (`GraphMode::Flatten`, Task #26): the SAME source,
+//! compiled as RQ6 §8 item 4's H-Qwik counterfactual — ONE merged
+//! `Signals`/`Action`/`World`, no Island boundary, no `data-loom-island*`
+//! attributes at all (see `render_html_flat()`). This is what makes the
+//! §4.1 "정체성 통제" (identity control) principle literal for this
+//! fixture: both arms are derived from `demo/islands/product-card.tsx`,
+//! differing only in which `GraphMode` compiled them — not two
+//! independently hand-written implementations.
 
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+}
+
+pub mod generated_flat {
+    include!(concat!(env!("OUT_DIR"), "/generated_flat.rs"));
 }
 
 // A minimal native-only DomOps impl for producing this page's initial SSR
@@ -188,6 +203,19 @@ pub fn render_html() -> String {
     dom.render_html(root)
 }
 
+/// Task #26 — the H-Qwik counterfactual's SSR output, from the SAME source
+/// `render_html()` compiles, just `GraphMode::Flatten`'d instead. RQ6 §8
+/// item 4's cost/isolation measurements (M1/M6 etc.) compare this against
+/// `render_html()`'s output.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn render_html_flat() -> String {
+    let (mut dom, root) = string_dom::StringDom::new_root("div");
+    let mut app = loom_runtime::LoomApp::new();
+    let (_signals, _actions, _input_actions) = generated_flat::setup(&mut app, &mut dom, root);
+    app.tick(&mut dom);
+    dom.render_html(root)
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -211,5 +239,25 @@ mod tests {
         assert!(html.contains(r#"<p data-loom-id="details"></p>"#), "{html}");
         // Widget's own counter starts at its declared literal.
         assert!(html.contains(">0<"), "{html}");
+    }
+
+    #[test]
+    fn render_html_flat_has_no_island_boundary_at_all() {
+        // Task #26 — RQ6 §8 item 4's H-Qwik counterfactual: same signals/
+        // static content as the Island arm, but zero Island markers, since
+        // there's no separate compiled unit for ProductCard/Widget in this
+        // mode at all — everything lives in App's own single Signals/
+        // World/setup().
+        let html = render_html_flat();
+        assert!(!html.contains("data-loom-island"), "{html}");
+        assert!(!html.contains("data-loom-chunk"), "{html}");
+        assert!(!html.contains("data-loom-ctor"), "{html}");
+        // M8-style consistency check: the same reference content is still
+        // present — same static text, same data-loom-id markers, same
+        // initial signal values — only the Island boundary is gone.
+        assert!(html.contains(r#"<p data-loom-id="details"></p>"#), "{html}");
+        assert!(html.contains(r#"data-loom-id="count""#), "{html}");
+        assert!(html.contains(">0<"), "{html}");
+        assert!(html.contains("show details"), "{html}");
     }
 }

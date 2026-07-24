@@ -556,6 +556,21 @@ DOM 제거)를 Playwright로 전부 재현 확인(8/8 통과), 3개 회귀 스�
 `docs/02-compiler-design.md`(미해결 절), `docs/07-naming-and-terminology.md`
 ("ComponentRef" 용어 충돌 정리)도 같이 갱신함.
 
+## Task #26 실행 상태 (2026-07-24) — H-Qwik 위젯-임베드 반사실 픽스처 (부분)
+
+`codegen.rs`에 `GraphMode::Flatten`을 실제로 구현(`flatten_graph` — JSX 트리 레벨
+에서 모든 `ComponentRef`를 재귀적으로 인라인해 그래프 전체를 하나의 `Component`로
+합침, 임의 중첩 깊이 자동 처리). `crates/loom-island-compiled`의 build.rs가 **같은**
+`demo/islands/product-card.tsx`를 `GraphMode::Islands`/`GraphMode::Flatten` 양쪽으로
+컴파일 — RQ6 §4.1 "정체성 통제" 원칙을 문자 그대로 충족(별도 손코딩 아님). 상세는
+`research-questions/RQ6-verification-plan.md`의 "§3.4 실행" 절.
+
+**의도적으로 축소한 범위(§3.4에 상세, 숨기지 않음)**: 5-컴포넌트 전체 픽스처
+(CartBadge/CheckoutForm/MiniDashboard 포함)는 미착수 — 이번엔 Task #25의
+ProductCard/Widget 2-컴포넌트 픽스처로 `GraphMode::Flatten` 자체의 정확성만 확정.
+M1/M6/M8/M9의 실제 정량 재측정도 미착수(Task #27 몫) — 이번엔 SSR 출력 비교로
+정합성만 native 테스트 수준에서 확인.
+
 ## RQ6 §3.2 — "Phase 3 완료, 첫 정면 대결" 실측 (2026-07-24)
 
 상세는 `research-questions/RQ6-verification-plan.md`의 "§3.2 실행" 절 +

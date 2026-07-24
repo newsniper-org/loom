@@ -1070,6 +1070,50 @@ N-스케일링·원본 앱 규모 축은 컴파일러 통합(증분 4) 이후로
 — 전자는 벤치마크로 마저 풀 수 있는 순수 기술적 잔여 작업, 후자는 이 프로젝트가
 애초에 관할 밖이라고 선언한 질문(§12)이다.
 
+### §3.4 "Task #26 — H-Qwik 위젯-임베드 반사실 픽스처" 실행 (2026-07-24)
+
+§3.3이 남긴 "전자"(H-Qwik으로 같은 걸 만들면 얼마나 나쁜가 — 벤치마크로 풀 수 있는
+순수 기술적 잔여 작업)를 여기서 실제로 착수. Task #25가 만든 `ComponentGraph`/
+`IslandActivation`/`ComponentRef`를 기반으로 `codegen.rs`에 `GraphMode::Flatten`을
+**실제로 구현**(§4.1 item4의 "N개 top-level entity가 단일 World/단일 payload" 모양) —
+`flatten_graph`가 JSX 트리 레벨에서 모든 `ComponentRef`를 재귀적으로 인라인하여
+그래프 전체를 하나의 `Component`로 합치므로, `collect_actions`/`lower_node`/`resume`
+등 기존 codegen 로직 전부가 무수정으로 그 결과에 대해 올바르게 동작함(임의 중첩
+깊이도 자동으로 처리 — `GraphMode::Islands`가 필요로 했던 `super::` 경로 보정 같은
+특수 처리가 아예 필요 없음).
+
+**§4.1 "정체성 통제" 원칙을 문자 그대로 충족**: `crates/loom-island-compiled`의
+`build.rs`가 **같은** `demo/islands/product-card.tsx` 소스를 `GraphMode::Islands`와
+`GraphMode::Flatten` 양쪽으로 각각 컴파일(`generated`/`generated_flat` 모듈) —
+별도로 손코딩된 두 번째 구현이 아니라, 지시어 유무만 다른 한 소스에서 파생됨.
+`render_html_flat()`의 SSR 출력(native 테스트로 확인)은 Island 팔과 **같은 정적
+콘텐츠/`data-loom-id` 마커/초기 시그널 값**을 유지하면서 `data-loom-island*` 속성이
+전혀 없고, LRef 청크 이름이 `ProductCard_chunk`/`Widget_chunk` 둘로 나뉘던 것이
+`App_chunk` 하나로 합쳐짐(단일 payload 요구사항의 직접적 반영).
+
+**의도적으로 축소한 범위(숨기지 않음)**:
+1. §4.2가 원래 요구한 5-컴포넌트 위젯-임베드 픽스처(CartBadge + ProductCard +
+   QuantityPicker + CheckoutForm + MiniDashboard)를 이번엔 만들지 않음 — Task #25의
+   2-컴포넌트 픽스처(ProductCard/Widget)를 그대로 재사용해 `GraphMode::Flatten`
+   자체의 정확성만 먼저 확정. CartBadge의 cross-widget(`cartCount`) 요구는 애초에
+   `sharedSignal()`(Task #28-a, 미착수) 없이는 어느 팔에서도 저작 불가능하므로
+   포함 못 함. CheckoutForm/MiniDashboard(§9-6/§6 M8 이름 충돌용)는 Task #27이
+   전체 M1-M10 배터리를 실제로 돌릴 때 마저 짓는 것으로 미룸.
+2. 시그널 이름 전역 유일성 요구(`flatten_graph`가 충돌 시 명확히 panic) — 자동
+   네임스페이싱/리네이밍은 구현 안 함(이 픽스처가 그럴 필요가 없으므로).
+3. "서로 다른 anchor marker" 요구는 새 IR 필드 대신 기존 `data-loom-id`/
+   `data-loom-lref` 마커로 loosely 충족 — Task #27의 실제 측정에서 이걸로
+   불충분하다고 판명되면 그때 전용 `anchor_id` 필드를 추가.
+4. M1(번들 크기)/M6(장애 격리)/M8/M9 등 §6 표의 실제 정량 재측정은 이번엔 안 함(SSR
+   내용 비교로 정합성만 native 테스트 수준에서 확인) — Task #27의 몫.
+
+Playwright 검증: `demo/islands/compiled/index.html`(Island 팔)의 기존 8개 시나리오
+전부 무회귀 재확인. `cargo test --workspace` 전체 통과.
+
+**상세**: `crates/loom-compiler/src/codegen.rs`의 `flatten_graph`/`generate_flatten`
+독 코멘트, `crates/loom-island-compiled/src/lib.rs`의 `render_html_flat`/그 테스트,
+`roadmap/PHASES.md` Task #26 절.
+
 ---
 
 *교차 참조*: RQ6-are-islands-necessary.md(본 계획이 정식화하는 두 가설과 두 검증

@@ -106,7 +106,7 @@
 //! other action ignores it, `SetString` uses it (see that function's doc
 //! comment).
 
-use crate::ir::{ClickAction, Component, ComponentGraph, IslandActivation, JsxNode, SignalInit};
+use crate::ir::{ClickAction, Component, ComponentGraph, IslandActivation, JsxNode, SignalDecl, SignalInit};
 use std::fmt::Write as _;
 
 /// Which physical Island chunk/constructor a compiled unit corresponds to —
@@ -134,23 +134,106 @@ pub enum GraphMode {
     /// include!(...) }` call sites (none of them need to change).
     Islands,
     /// RQ6 §8's H-Qwik counterfactual target shape — every component in the
-    /// graph, Island-activated or not, becomes a sibling top-level entity
-    /// set under ONE shared `LoomApp`/`World`/`Signals`, no per-component
-    /// module boundary, no Island host attributes, one LRef payload. Makes
-    /// Task #26's "정체성 통제" fixture derivable from the *same* JSX source
-    /// that produces `Islands` mode's output, differing only in which
-    /// `GraphMode` compiles it. **Designed, not implemented this round** —
-    /// building the actual fixture is Task #26's job
-    /// (RQ6-verification-plan.md §8 item 4).
+    /// graph, Island-activated or not, becomes part of ONE shared
+    /// `LoomApp`/`World`/`Signals`/`Action`, no per-component module
+    /// boundary, no Island host attributes, one LRef payload. Makes Task
+    /// #26's "정체성 통제" fixture derivable from the *same* JSX source that
+    /// produces `Islands` mode's output, differing only in which
+    /// `GraphMode` compiles it — see `flatten_graph`'s doc comment for the
+    /// implementation approach and its one stated scope cut.
     Flatten,
 }
 
 pub fn generate_graph(graph: &ComponentGraph, mode: GraphMode) -> String {
     match mode {
         GraphMode::Islands => generate_islands(graph),
-        GraphMode::Flatten => panic!(
-            "loomc: GraphMode::Flatten is designed but not yet implemented — see Task #26 / RQ6-verification-plan.md §8 item 4"
-        ),
+        GraphMode::Flatten => generate_component(&flatten_graph(graph), None),
+    }
+}
+
+/// RQ6 §8 item 4's H-Qwik counterfactual: recursively inlines every
+/// `ComponentRef` in `graph` with its target's own JSX subtree, producing
+/// ONE merged `Component` — no Island boundary, no separate compiled unit,
+/// one `Signals`/`Action`/`World`/LRef payload for the whole graph. Because
+/// this operates at the JSX-tree level *before* codegen, every existing
+/// codegen mechanism (`collect_actions`, `collect_binding_shapes`,
+/// `lower_node`, `resume`, LRef generation) works correctly and completely
+/// unchanged on the result — from codegen's point of view it's just one
+/// (larger) ordinary component tree, exactly the "no independent World
+/// partition, no independent payload" difference from `GraphMode::Islands`
+/// RQ6 §8 item 4 specifies. This also handles arbitrarily deep nesting for
+/// free (a `ComponentRef` inside an inlined component's own tree is itself
+/// recursively flattened), unlike `GraphMode::Islands`'s module-per-
+/// component approach, which needed the explicit `super::` path-prefix
+/// fix (`CodegenCtx::wrapped_in_own_module`) to handle nesting at all.
+///
+/// **Scope cut (stated, not hidden)**: requires every signal name to be
+/// globally unique across the whole graph (panics with a clear message
+/// otherwise) — automatic per-component renaming/namespacing is possible
+/// but not needed by Task #26's own fixture (which simply avoids colliding
+/// names across its components), so it isn't implemented here. Also: RQ6
+/// §8 item 4's "서로 다른 anchor marker" language is satisfied loosely via
+/// each inlined component's own existing `data-loom-id`/`data-loom-lref`
+/// tags (already emitted identically in both `GraphMode`s) rather than a
+/// dedicated new "anchor id" IR field/attribute — sufficient to locate
+/// each former-Island's own subtree for Task #26/#27's measurement
+/// purposes without a wider IR change; revisit if a future measurement
+/// genuinely needs a single distinguished per-component root marker this
+/// doesn't provide.
+fn flatten_graph(graph: &ComponentGraph) -> Component {
+    let root = graph.root_component();
+    let mut signals = root.signals.clone();
+    let flattened_root = flatten_node(&root.root, graph, &mut signals);
+    Component {
+        name: root.name.clone(),
+        signals,
+        root: flattened_root,
+    }
+}
+
+fn flatten_node(node: &JsxNode, graph: &ComponentGraph, signals: &mut Vec<SignalDecl>) -> JsxNode {
+    match node {
+        JsxNode::Element {
+            tag,
+            class,
+            action,
+            children,
+        } => JsxNode::Element {
+            tag: tag.clone(),
+            class: class.clone(),
+            action: action.clone(),
+            children: children.iter().map(|c| flatten_node(c, graph, signals)).collect(),
+        },
+        JsxNode::ListBinding { signal, row_var, row } => JsxNode::ListBinding {
+            signal: signal.clone(),
+            row_var: row_var.clone(),
+            row: Box::new(flatten_node(row, graph, signals)),
+        },
+        JsxNode::CondBinding { cond, then_branch } => JsxNode::CondBinding {
+            cond: cond.clone(),
+            then_branch: Box::new(flatten_node(then_branch, graph, signals)),
+        },
+        JsxNode::ComponentRef { component: ref_name, .. } => {
+            let target = graph
+                .components
+                .iter()
+                .find(|c| &c.name == ref_name)
+                .unwrap_or_else(|| panic!("loomc internal error: ComponentRef names unknown component `{ref_name}`"));
+            for s in &target.signals {
+                if signals.iter().any(|existing| existing.name == s.name) {
+                    panic!(
+                        "loomc: GraphMode::Flatten requires every signal name to be globally unique across the whole ComponentGraph (found a second declaration of `{}`, referenced via component `{}`) — automatic renaming is a stated scope cut, not implemented",
+                        s.name, target.name
+                    );
+                }
+            }
+            signals.extend(target.signals.iter().cloned());
+            flatten_node(&target.root, graph, signals)
+        }
+        other @ (JsxNode::StaticText(_)
+        | JsxNode::TextBinding { .. }
+        | JsxNode::RowItemText
+        | JsxNode::InputBinding { .. }) => other.clone(),
     }
 }
 
