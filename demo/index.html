@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>loom Phase 1 demo — No-VDOM counter + dynamic list</title>
+</head>
+<body>
+  <!--
+    This div is the sole hand-authored DOM in this demo. Everything inside
+    it (the label span, the counter span, the buttons, the <ul> and its
+    rows) is created by the compiled `setup()` function in
+    crates/loom-demo/src/lib.rs / build.rs-generated code — no VDOM, no
+    hand-written render function.
+  -->
+  <div id="app"></div>
+  <script type="module">
+    import init from "./pkg/loom_demo.js";
+    init();
+  </script>
+</body>
+</html>

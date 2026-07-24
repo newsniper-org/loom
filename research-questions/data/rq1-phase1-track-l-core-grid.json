@@ -1,0 +1,182 @@
+[
+  {
+    "candidate": "K",
+    "workload": "swap",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.3,
+    "min_ms": 0.1,
+    "max_ms": 3.8
+  },
+  {
+    "candidate": "C",
+    "workload": "swap",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.0,
+    "min_ms": 0.0,
+    "max_ms": 0.1
+  },
+  {
+    "candidate": "D",
+    "workload": "swap",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.3,
+    "min_ms": 0.1,
+    "max_ms": 0.4
+  },
+  {
+    "candidate": "E",
+    "workload": "swap",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.2,
+    "min_ms": 0.1,
+    "max_ms": 0.3
+  },
+  {
+    "candidate": "K",
+    "workload": "shuffle10",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.25,
+    "min_ms": 0.1,
+    "max_ms": 0.6
+  },
+  {
+    "candidate": "C",
+    "workload": "shuffle10",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.1,
+    "min_ms": 0.0,
+    "max_ms": 1.1
+  },
+  {
+    "candidate": "D",
+    "workload": "shuffle10",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.2,
+    "min_ms": 0.1,
+    "max_ms": 0.7
+  },
+  {
+    "candidate": "E",
+    "workload": "shuffle10",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.2,
+    "min_ms": 0.1,
+    "max_ms": 0.6
+  },
+  {
+    "candidate": "K",
+    "workload": "head_insert",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.2,
+    "min_ms": 0.1,
+    "max_ms": 0.3
+  },
+  {
+    "candidate": "C",
+    "workload": "head_insert",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.1,
+    "min_ms": 0.0,
+    "max_ms": 0.2
+  },
+  {
+    "candidate": "D",
+    "workload": "head_insert",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.0,
+    "min_ms": 0.0,
+    "max_ms": 0.1
+  },
+  {
+    "candidate": "E",
+    "workload": "head_insert",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.05,
+    "min_ms": 0.0,
+    "max_ms": 0.1
+  },
+  {
+    "candidate": "K",
+    "workload": "append",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.25,
+    "min_ms": 0.2,
+    "max_ms": 0.8
+  },
+  {
+    "candidate": "C",
+    "workload": "append",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.0,
+    "min_ms": 0.0,
+    "max_ms": 0.1
+  },
+  {
+    "candidate": "D",
+    "workload": "append",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.0,
+    "min_ms": 0.0,
+    "max_ms": 0.1
+  },
+  {
+    "candidate": "E",
+    "workload": "append",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.0,
+    "min_ms": 0.0,
+    "max_ms": 0.1
+  },
+  {
+    "candidate": "K",
+    "workload": "remove_middle",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.2,
+    "min_ms": 0.1,
+    "max_ms": 0.4
+  },
+  {
+    "candidate": "C",
+    "workload": "remove_middle",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.1,
+    "min_ms": 0.0,
+    "max_ms": 0.2
+  },
+  {
+    "candidate": "D",
+    "workload": "remove_middle",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.0,
+    "min_ms": 0.0,
+    "max_ms": 0.1
+  },
+  {
+    "candidate": "E",
+    "workload": "remove_middle",
+    "n": 200,
+    "reps": 20,
+    "median_ms": 0.0,
+    "min_ms": 0.0,
+    "max_ms": 0.1
+  }
+]

@@ -1,0 +1,318 @@
+# 로드맵
+
+각 Phase는 이전 Phase의 "종료 조건"을 만족해야 시작. 건너뛰지 말 것 (CLAUDE.md).
+
+## Phase 0 — 리서치 수렴 (지금 여기)
+
+**목표**: 코드를 쓰기 전에 최소한의 잠정 답을 확보.
+- RQ1(동적 제어 흐름): ~~후보 A/B 중 하나 잠정 선택~~ → **판별 프로토콜 사전 등록으로
+  대체·이행됨(2026-07-23)**. 초판 문구는 후보가 A/B 2안이던 시점 기준 — 후보가 A~F로
+  확장되었고(RQ1, 2026-07-22), 병익님 지시로 산출물을 무가중 공평 프로토콜로 재정의.
+  `research-questions/RQ1-benchmark-protocol.md` 참고
+- RQ3(Island 중첩): 최소 규칙 하나 잠정 확정 (완벽하지 않아도 됨, Phase 3까지 반복 개선)
+  → **이행됨(2026-07-23)**: supervision forest + 독립 resume + DOM 물리성 결속 2단계
+  detach + promote-once/no-restart. RQ3 문서의 잠정 규칙과 재검토 트리거 참고
+- RQ6(Islands 필요성): 최소한 "검증 계획"이라도 확정 — Phase 1/2를 Island 없이 먼저
+  만들어서 판단 재료를 얻는 것 자체가 Phase 0의 산출물이 될 수 있음 → **이행됨
+  (2026-07-23)**: `research-questions/RQ6-verification-plan.md` (사전 등록 검증
+  계획, v1.1 — RQ1과 동형의 3인 교차 감사 완료). 판정 자체는 Phase 2/3/6 세
+  시점에 걸쳐 순차 확정 — Phase 2 종료
+  항목(아래), Phase 3 종료 항목, 본 파일 Phase 6 항목 참고.
+
+**종료 조건**: 위 3개에 대한 잠정 답이 문서화됨(완전한 답이 아니어도 "이렇게 가정하고
+진행한다"는 명시적 결정이면 충분).
+
+## Phase 1 — 컴파일러 + No-VDOM 반응성 프로토타입
+
+**범위**: Island/Resumability/backend-agnostic 전부 제외. 단일 앱, 단일 IslandWorld,
+client=server 동일 프로세스(Node나 WASM 테스트 하네스) 가정.
+- JSX → Entity graph + PatchTable 컴파일 (02)
+- `Changed<T>` 게이팅 patch system 동작 확인 (03)
+- RQ1 벤치마크 프로토콜(사전 등록 v1.1)의 공통 기반(§2) 구축 + 트랙 L/T 핵심 격자 실측
+  (2026-07-23 갱신 — 초판 "RQ1 잠정안으로 동적 리스트 하나" 문구를 프로토콜 체제로 대체)
+
+**종료 조건**: VDOM 없이 카운터 + 동적 리스트가 실제로 브라우저에서 갱신됨.
+
+**착수 상태 (2026-07-23) — 종료 조건 충족, 단 스코프를 아래처럼 명시적으로 축소함:**
+
+- **된 것**: `crates/loom-runtime`(Signal<T>/DomTarget/ListRows Component,
+  `Changed<T>` 게이팅 patch System, RQ1 candidate K 리스트 reconcile, 영속
+  Bevy `Schedule` 기반 tick 드라이버) + `crates/loom-compiler`(SWC
+  `swc_ecma_parser`로 실제 TSX 파싱 → IR → Rust codegen, "loomc") +
+  `crates/loom-demo`(wasm-bindgen + web_sys 브라우저 DOM 바인딩). Playwright로
+  headless Chromium에서 실제 카운터 증가(0→3)와 리스트 append/rotate가
+  DOM에 정확히 반영됨을 확인함(스크린샷 포함) — 종료 조건 충족.
+- **의도적으로 축소한 것 (CLAUDE.md 정직성 요구 — 숨기지 않음)**:
+  1. **PatchTable(opcode+dispatch table)를 구현하지 않고 Rust 제네릭 System으로
+     대체함.** docs/02의 opcode 설계는 Phase 2의 LRef 직렬화 경계를 위한 것이고
+     Phase 1은 그 경계가 없음(client=server 동일 프로세스) — 제네릭
+     `patch_text_system::<T>`가 컴파일타임 모노모picture화라는 동일한 "정적
+     디스패치, Component엔 클로저 없음" 속성을 만족함. Phase 2에서 opcode
+     방식으로 전환 필요(loom-runtime/src/lib.rs 모듈 문서 참고).
+  2. **RQ1 벤치마크 프로토콜의 사전 등록 본실행(row 깊이 축·원본 앱 규모 축·
+     WebKit/CDP 스로틀링·트랙 N/R·§2.4 형식 최선형 체크리스트 전수 대조)은
+     여전히 실행하지 않음.** 단 **트랙 L(리스트) 후보 C/D/E는 2026-07-23 전부
+     구현·네이티브 검증(22개 테스트)·N-스케일링(n∈{100,1000,10000})·POD/heap
+     아이템축(부분)·Chromium+Firefox 2브라우저 실측을 마쳤다** —
+     `crates/loom-runtime/src/list.rs`, `crates/loom-bench`, 원시 데이터
+     `research-questions/data/`, 상세는 RQ1 문서 "Phase 1 트랙 L 진행 상황"
+     참고. **이 실측 도중 `place_in_order`가 우발적으로 O(n²)이던 실제 성능
+     버그를 발견해 이중 연결 리스트 기반 O(1) 구현으로 수정·재검증·재측정했고**,
+     수정 후에도 LIS 미적용으로 인해 swap/shuffle10류 전역 재배치 워크로드에서
+     D/E가 K보다 뚜렷이 느리다는 것을 확인함 — RQ1이 Phase 0에서 이미 예측했던
+     "LIS 없이는 O(이동 수) 주장 불성립"이 실측으로 검증된 사례. **이어서
+     2026-07-24, LIS 기반 최소 이동 변형 D-LIS/E-LIS를 구현·네이티브 검증(18개
+     테스트 신규)·재측정함** — swap(국소 재배치)은 median 점추정으로는 K와
+     가까워졌으나(Chromium 0.99x-1.04x K), shuffle10(광역 재배치, 실제로는
+     `v.len()/10`회 무작위 재배치)은 좁아지되 닫히지 않음(2.12x→1.56x-1.69x K)
+     — 원인은 shuffle10이 swap과 달리 진짜로 이동해야 하는 개수 자체가 n에
+     비례해 크기 때문. **같은 날 §8 paired bootstrap 통계(10^4 리샘플, 99% CI,
+     우세/열세/등가/비결정 어휘)를 기존 데이터에 적용해 재검증한 결과, swap의
+     "K와 근접"은 점추정만으로는 그렇게 보였을 뿐 통계적으로는 대부분 비결정
+     (CI가 1을 걸침)이고 Firefox E-LIS는 오히려 열세로 판정됨** —
+     `research-questions/analysis/rq1-paired-bootstrap.py`. 상세는 RQ1 문서
+     "3차 실측"·"§8 통계 절차 적용" 절, 원시 데이터 `research-questions/data/
+     rq1-phase1-track-l-core-grid-v5-*.json`. **트랙 T(조건부) 후보 B/F도
+     구현·네이티브 검증(10개 테스트)·브라우저 실측을 마쳤다** —
+     `crates/loom-runtime/src/cond.rs`. 상태 보존 여부(B=손실, F=보존)는 정합성
+     테스트로 확실히 검증했으나, 최초 실측은 자식 1개짜리 최소 서브트리라 타이머
+     해상도 아래에 묻혀 성능 축 판별 불가였음. **2026-07-24, 서브트리 크기 축을
+     1/10/50/500으로 확장**(`CondBlock`을 `child: Option<Entity>`에서
+     `{size, children: Vec<Entity>}`로 일반화하고, F가 개별 자식이 아니라 공유
+     anchor 하나에만 `set_visible`을 호출하도록 변경 — 신규 테스트 3개 포함)한
+     결과 size=500에서 마침내 결정적 수치를 확보: B의 toggle 비용은 노이즈
+     바닥 위로 뚜렷이 올라온 반면(Chromium median 0.5ms, Firefox median 1.0ms,
+     거의 매회 0 초과) F는 같은 크기에서도 여전히 사실상 0(0-3% 표본만 0 초과)
+     — **F의 토글 비용이 서브트리 크기와 무관하게 O(1)이라는 RQ1의 핵심 주장이
+     실측으로 확정됨**. 상세는 RQ1 문서 "트랙 T 재실측" 절, 원시 데이터
+     `research-questions/data/rq1-phase1-track-t-toggle-v2-*.json`. RQ1 자체의
+     잠정 선택(트랙 L/T 모두)은 여전히 미착수.
+  3. **저작 표면(TSX)은 examples/counter-island.sample.tsx보다 훨씬 좁은
+     부분집합.** `signal(리터럴)`, `{signal()}`, `{signal().map((x) => <tag>{x}</tag>)}`,
+     `onClick={() => signal.increment()/.append("literal")/.rotate()}`만
+     지원 — 일반 JS 표현식 트랜스파일이 아니라 "정적/동적 분류 + 좁은 patch
+     생성"이라는 핵심 메커니즘을 증명하는 프로토타입(`crates/loom-compiler/src/lower.rs`
+     모듈 문서에 지원 범위 명시). API 표면은 여전히 미확정(docs/02).
+  4. Island/Resumability/backend-agnostic 제외는 원래 스코프대로 유지.
+
+## Phase 2 — Resumability 레이어
+
+- LRef 직렬화/역직렬화 (RQ2 잠정 포맷으로)
+- 전역 delegation 리스너 + lazy chunk 로딩
+- Component 스냅샷 → 핸들러 실행 → 최소 상태만 materialize되는지 확인
+
+**종료 조건**: SSR 후 client JS 0 실행 상태에서, 상호작용 시점에만 코드가 로드되고 정확히
+동작함이 계측으로 확인됨 (번들 실행 시점 로깅 등).
+
+**여기서 RQ6 재검토**: Island 없이 이 정도로 충분한지 벤치마크.
+
+**착수 상태 (2026-07-23) — 카운터 단일 바인딩 사이트 하나로 종료 조건 충족, 범위는
+명시적으로 축소함:**
+
+- **된 것**: `crates/loom-resume-demo` — `src/bin/ssr.rs`(네이티브, SSR 역할 —
+  Phase 1의 `StringDom: DomOps`로 정적 HTML + `data-loom-id`/`data-loom-lref`
+  태깅 생성) + `demo/resume/bootstrap.js`(전역 클릭 위임 리스너, Qwik 메커니즘
+  그대로 재사용 — CLAUDE.md 2-1) + wasm "청크"(`ResumedCounter`, SSR로 이미 만든
+  DOM 노드에 직접 붙어 patch만 하는 `ResumeDom`). Playwright로 **네트워크 요청
+  자체를 감시**해 실제로 확인: (1) 페이지 로드 시 청크(.js/.wasm) 요청 0건,
+  (2) 첫 클릭 시에만 청크 요청 발생 + 값이 정확히 0→1, (3) 두 번째 클릭은
+  청크 재요청 없이(=RQ3 "promote-once-and-stay") 같은 인스턴스 재사용으로 1→2.
+  이게 종료 조건이 요구하는 "번들 실행 시점 로깅"의 실측.
+- **RQ2 포맷 잠정 결정**: 텍스트 기반 `chunk|symbol|key:value,...`(JSON/바이너리
+  아님) — 파싱에 라이브러리가 필요 없을 만큼 단순한 것을 우선한 잠정 선택.
+  RQ2 자체는 여전히 미해결(포맷 트레이드오프 문서 참고).
+- **의도적으로 축소한 것 (CLAUDE.md 정직성 요구)**:
+  1. **loom-compiler를 거치지 않음** — 이 프로토타입은 카운터 하나를 손으로
+     작성한 것이지, "컴파일된 모든 액션이 자동으로 LRef를 얻는" 일반 파이프라인이
+     아님. Track L/T가 컴파일러 통합 전에 런타임 레벨부터 시작한 것과 동일한
+     순서.
+  2. **캡처 대상이 스칼라 `Signal<i32>` 하나뿐** — 리스트/조건부 바인딩의 재개는
+     `ResumeDom`이 아직 지원하지 않음(다른 모든 `DomOps` 메서드는 `unimplemented!`).
+  3. Island 관련 내용(IslandRegistry, 2단계 detach 등, RQ3) 전부 미적용 — Phase 2는
+     Island 이전 단계.
+  4. LRef 캡처 최소집합의 정적 계산(over/under-capture 문제, docs/02 미해결 항목)은
+     다루지 않음 — 이 데모는 캡처할 대상이 정확히 1개뿐이라 문제 자체가 발생하지 않음.
+- **RQ6 재검토는 아직 하지 않음** — 이 시점 벤치마크(Island 없는 이 프로토타입의
+  번들 크기/TTI)는 후속 작업.
+
+**컴파일러 통합 (2026-07-24) — 위 "loom-compiler를 거치지 않음" 축소를 실제로 해소:**
+
+- **된 것**: `crates/loom-compiler/src/codegen.rs`가 이제 `data-loom-id`/
+  `data-loom-lref` 태깅과 `resume`/`resume_action_by_symbol` 함수 자체를
+  생성함 — `crates/loom-resume-demo`는 카운터를 손코딩하는 대신
+  `demo/counter-list.tsx`(loom-demo의 Phase 1 라이브 경로가 쓰는 것과 **동일한
+  소스**)를 컴파일해 SSR(`ssr_render`)과 재개(`ResumedComponent`) 양쪽에 씀 —
+  "손으로 고른 카운터 하나"가 아니라 "컴파일러의 평범한 출력이 별도 노력 없이
+  재개 가능한가"를 실제로 검증한 것. LRef 페이로드는 컴파일타임에 알려진
+  선언 초기값으로 코드젠 시점에 문자열로 굳어짐(런타임 포맷 불필요) — captures는
+  컴포넌트 전체의 `i32` 시그널(안전한 과대 캡처, 최소 집합 계산은 별도 항목).
+  `set_attribute`를 `DomOps` trait에 정식으로 추가해 `BrowserDom`/`StringDom`/
+  테스트용 `MockDom` 전부 구현하도록 함(이전엔 `StringDom`에만 있던 inherent
+  메서드). Playwright로 재검증: SSR 직후 청크/wasm 요청 0건, 첫 클릭에서만
+  로드+정확히 0→1, 두 번째 클릭은 캐시된 인스턴스 재사용(1→2, 재요청 없음) —
+  Phase 1 라이브 경로에서 이미 검증된 카운터가 컴파일러 통합 후에도 동일하게
+  동작함.
+- **실행 도중 실제 버그를 발견함**: `StringDom::append_static_text`가 실제
+  텍스트 노드 대신 `<#text-wrapper>...</#text-wrapper>`라는 **잘못된 HTML
+  태그**를 방출하고 있었음 — 손으로 쓴 카운터 단일 프로토타입은 이 경로를
+  전혀 타지 않아서(라벨을 `set_text_content`로만 썼음) 숨어 있던 결함. 컴파일된
+  코드는 정적 텍스트마다("count:", "+1", "append", "rotate") `append_static_text`를
+  호출하므로 이번에 처음 실측으로 드러남 — 조용히 넘기지 않고 `TEXT_NODE_TAG`
+  센티널을 `render_node`가 특별 취급하도록 고쳐 진짜 텍스트 노드처럼(래핑 태그
+  없이) 렌더링하게 수정하고 재검증함.
+- **의도적으로 축소한 것 (당시 기준)**:
+  1. 캡처/재개 대상이 `i32` 시그널(Increment 액션)뿐이었음 — `items`
+     (`StringList`, Append/Rotate)는 자리표시자만. **→ 아래 리스트 재개 항목에서
+     해소함.**
+  2. LRef 캡처는 여전히 최소 집합이 아니라 컴포넌트 전체 과대 캡처.
+  3. Island 관련 내용은 여전히 전부 미적용.
+- **RQ6 재검토는 여전히 하지 않음.**
+
+**리스트/조건부 바인딩의 재개 지원 (2026-07-24, 컴파일러 통합 바로 다음 라운드):**
+
+- **된 것 — 리스트(컴파일러 통합)**: `codegen.rs`의 `resume()`이 이제
+  `StringList` 시그널도 진짜로 재개함. 핵심 설계: row **값**은 LRef payload에
+  싣지 않고 **이미 올바른 내용을 보여주고 있는 SSR'd DOM 자체에서 읽어온다** —
+  새 `DomOps::adopt_children(parent) -> Vec<(NodeHandle, String)>`가 기존 자식
+  각각을 추적 대상으로 등록하며 현재 텍스트를 반환. 이러면 리스트 길이와
+  무관하게 LRef payload가 O(1)로 유지됨(리스트 전체를 문자열로 직렬화할 필요
+  없음). `resume()`은 이 값들로 row entity들과 리스트 자신의
+  `Signal<Vec<String>>`을 함께 복원하고 `list_reconcile_k_system::<String>`을
+  등록함. Append/Rotate 액션도 이제 LRef를 받음(`resume_action_by_symbol`은
+  `Append`의 리터럴 인자도 코드젠 시점에 굽는다 — 런타임 인자 전달 자체가
+  불필요해짐). Playwright로 재검증: append 후 a,b,c,new / rotate 후
+  b,c,new,a / 이어서 +1도 정상 동작하며 리스트를 건드리지 않음.
+- **실행 도중 실제 버그 2건을 더 발견함**:
+  1. **Bevy의 "새로 스폰된 컴포넌트는 첫 관찰에서 항상 Changed로 보임" 특성이
+     리스트 재개에서 실제 문제였음** — 등록만 해두고 안 건드리면, 무관한
+     액션(예: +1) 하나가 훗날 우연히 처음 tick을 트리거하는 순간
+     `list_reconcile_k_system`이 방금 어렵게 adopt한 행들을 전부 despawn+
+     respawn해버림. 해결: `resume()`이 끝에서 **정착(settle) tick**을
+     한 번 내부적으로 수행 — 이 비용은 "상호작용 전 JS 실행 0"이라는 핵심
+     주장을 깨지 않지만(첫 상호작용 시점의 청크 materialize 비용 안에
+     들어감), 리스트 행이 그 순간엔 실제로 다시 만들어진다는(재사용이 아님)
+     진짜 비용이며 숨기지 않고 문서화함(`codegen.rs` 모듈 문서).
+  2. **리스트 자신의 `Signal<Vec<String>>`을 빈 벡터로 복원하는 버그** —
+     row entity들은 adopt해놓고 리스트의 값 자체는 `Vec::new()`로 스폰해서,
+     첫 append가 `[new]`가 되어 a/b/c를 통째로 잃는 결과가 실제로 재현됨
+     (Playwright로 직접 확인). `adopt_children`이 돌려준 텍스트들을 리스트
+     시그널에도 반영하도록 수정.
+- **된 것 — 조건부(런타임 레벨 증명만, 컴파일러 미통합)**: `lower.rs`가
+  `{cond && <X/>}` 저작 표면을 아직 지원하지 않으므로(컴파일러에 연결할
+  대상 자체가 없음), RQ1 Track T의 B/F가 컴파일러 통합 전에 런타임에서
+  먼저 증명됐던 것과 같은 방식으로 `crates/loom-resume-demo::cond_resume`에
+  **네이티브 전용** 증명을 추가함 — F(CSS-hide)로 SSR 렌더된 자식의 내부
+  카운터가 완전히 새로운 `LoomApp`/`World`(SSR 쪽 World와 공유 상태 없음)로
+  넘어간 뒤에도 살아남고, 이어서 off→on 토글에도 보존됨을 네이티브 테스트
+  2개로 확인. **브라우저/wasm-pack 청크로는 검증하지 않음** — 컴파일러 저작
+  표면이 없어 실제 배포 형태를 만들 수 없기 때문(스칼라/리스트와의 명확한
+  차이, 숨기지 않음).
+- **여전히 안 한 것**: 조건부의 컴파일러 통합 자체(TSX 저작 표면 신설이
+  선행돼야 함 — 별도 스코프), Island 관련 전부, RQ6 재검토.
+
+**LRef 최소 캡처 집합 정적 계산 (2026-07-24, 바로 다음 라운드) — docs/02 미해결
+항목 해소:**
+
+- **된 것**: 이전엔 모든 액션의 LRef가 컴포넌트 전체의 `i32` 시그널을 과대
+  캡처했음(예: Append/Rotate도 무관한 `count:0`을 실었음). 현재 IR에서는 각
+  `ClickAction` variant가 시그널 정확히 하나만 참조하고 `apply_action`도 그
+  하나만 건드리므로, 최소 캡처 집합을 **정확히** 계산 가능함을 확인하고 구현함
+  (`codegen.rs`의 `format_i32_capture_for_action`) — Increment는 자신의 `i32`
+  시그널만, Append/Rotate는 아예 캡처 없음(리스트는 DOM에서 복구하므로).
+  새 테스트로 고정: `Action1`/`Action2`의 LRef가 `count:0`을 안 싣고 완전히
+  빈 캡처(`"App_chunk|Action1|"`)를 갖는지 직접 단언. Playwright로 스칼라/리스트
+  재개 둘 다 여전히 정상 동작함을 재확인.
+- **중요한 스코프 한계(숨기지 않음)**: 이 최소성은 두 조건에 의존한다 — (1)
+  액션 하나가 시그널 하나만 참조하는 현재 IR의 제약, (2) 캡처에서 빠진
+  시그널은 `resume()`에서 리터럴 선언 초기값으로 폴백하는데, 이게 안전한 건
+  Phase 1 IR이 시그널의 실제 첫 렌더 값이 선언값과 달라지는 경우를 지원 안
+  하기 때문. `bootstrap.js`가 **엘리먼트별로** 독립적인 재개 인스턴스를
+  캐싱하므로(컴포넌트별 공유 아님) 오늘은 문제없지만, IR이 요청별 동적
+  초기값을 지원하게 되면 이 폴백 안전성부터 재검토해야 함 — docs/02·
+  `codegen.rs` 양쪽에 이 caveat을 명시함.
+
+**RQ2 본체 착수 (2026-07-24, 같은 날 마지막 라운드) — 5개 하위 질문 중 진행
+가능한 만큼 실측·설계:**
+
+- **하위 질문 2(버저닝/stale chunk) — 부분 해소**: `bootstrap.js`가 청크
+  materialize 단계(동적 import/wasm init/생성자) 어디서 실패해도 명확한
+  진단 로그 후 전체 페이지 리로드로 폴백하도록 수정 — Qwik/Next와 동일한
+  업계 표준 대응(RQ2가 이미 지목한 "재실행 없음과 정면충돌"이라는 트레이드오프
+  그대로 수용). 존재하지 않는 청크를 참조하는 버튼으로 Playwright 실제
+  재현·검증(임시 픽스처, 실제 데모 파일은 미변경). "조용한 실패 → 있어보이는
+  실패"로 바뀐 것이지 진짜 graceful 복구는 아님 — 청크 버전 해시, 페이로드
+  스키마 버전 필드 등은 미착수.
+- **하위 질문 4(Entity id remap) — 실측으로 재산정**: 현재 스코프(스칼라 +
+  keyless K 리스트)에서는 remap이 **전혀 불필요**함을 확인 — 스칼라는
+  이름 기반 조회(`find_node`), K는 애초에 keyless라 SSR 쪽 Entity id 자체가
+  페이로드에 등장하지 않음. 단 이건 조건부 결론이다 — RQ1의 keyed 후보 D
+  (`RowKey`)/E(`OrderKey`)를 resume 대상으로 쓰게 되면 그 키들이 참조하는
+  entity를 안정적 식별자로 바꿔 싣고 resume 쪽에서 새 Entity id로 되짚는
+  진짜 remap 인프라가 필요해짐 — 설계는 RQ2 문서에 기술, 구현은 D/E가
+  resume 후보로 채택된 이후로 미룸.
+- **하위 질문 3(압축)**: 현재 페이로드가 너무 작아(스칼라 1쌍 또는 빈 문자열)
+  압축을 고민할 대상 자체가 없음 — 판단을 의도적으로 유보(성급한 최적화 방지).
+- **하위 질문 5(dormant island 생존)**: Phase 3 인프라 부재로 여전히 미착수.
+
+**"여기서 RQ6 재검토" 실행 (2026-07-24, Phase 2 마지막 라운드) — RQ6-verification-
+plan.md §3.1 "1차 재검토" 그대로:**
+
+- **스코프, §3.1 문언대로**: 이 시점엔 Island가 없으므로(Phase 3 산출물) 두
+  가설 대결이 아니라 **H-Qwik 팔 단독 기준선 확정 + 데이터 등록**만 실행 —
+  Island 팔·위젯-임베드·N-스케일링·원본 앱 규모·호스트 간섭·장애 주입은
+  전부 Phase 3(§3.2) 몫으로 정직하게 미룸(§7 정식 판정도 Phase 6 몫).
+- **된 것**: §4.1 "전체-앱" 픽스처의 H-Qwik 팔 — 카운터+리스트(컴파일러 생성,
+  RQ1 산출물 재사용) + 중첩 조건부 토글(RQ1 §2.3 "코드젠 동형 손코딩" 규약
+  준수, `cond_reconcile_f_system` 재사용) — `crates/loom-resume-demo`의
+  `ssr_render_full_app`/`ResumedCond`. **폼 입력은 제외**(loom-runtime에
+  양방향 폼 바인딩 자체가 없음 — 이 저장소 전체의 현재 능력 한계, 이 픽스처만의
+  축소가 아님). Playwright로 전체(카운터+리스트+조건부) 실제 브라우저 검증.
+- **M1(번들 크기) 실측**: 즉시 로드분(`bootstrap.js`) 3,241B raw/1,662B
+  gzip — §4.3 제로-프레임워크 기준선(2,021B/966B) 대비 1.6-1.7배로,
+  resumability의 "상호작용 전 실행 거의 0" 주장이 크기 축에서도 대체로
+  유지됨을 보여주는 조기 신호. 지연 청크(카운터+리스트+조건부 wasm+js)는
+  382,504B raw/136,542B gzip — 기준선 대비 **약 190배/141배**, wasm/Bevy
+  ECS 런타임 고정비가 지배적이라는 해석(단 이 픽스처 한 크기에서만 유효,
+  §4.4 N-스케일링 없이는 고정비/비례분 분해 불가 — 다음 우선순위). 부수
+  데이터: 기능 추가에 따른 raw wasm 증분 곡선(카운터만 304,001B →
+  +리스트 345,473B → +조건부 361,057B) — 기능당 증분이 줄어드는 추세.
+- **M2 대신 콜드/웜 클릭 지연시간**: 이 픽스처엔 §4.2식 "여러 위젯"이 없어
+  M2(위젯-로컬 TTI)는 §6 자기 예측대로 사실상 0에 수렴 — 대신 콜드(첫 클릭,
+  청크 materialize 포함) vs 웜(캐시 인스턴스) 클릭 지연시간을 실측: Chromium
+  localhost 15회 반복, 콜드 median 73.9ms vs 웜 median 37.0ms(차이 ≈37ms가
+  순수 materialize 비용 추정치). **한계**: 로컬호스트라 실사용 환경의
+  지배적 비용(132KB gzip 청크의 실제 네트워크 fetch 시간)이 전혀 반영 안
+  됨 — RQ1-benchmark-protocol.md의 CDP 스로틀링 관행을 이 축에도 적용하는
+  게 다음 우선순위. 원시 데이터: `research-questions/data/
+  rq6-phase2-baseline-chromium.json`.
+- 상세는 RQ6-verification-plan.md "§3.1 실행" 절 참고.
+
+## Phase 3 — Islands
+
+- 경계 지정 문법 확정 (06의 client directive 유비)
+- IslandWorld partition, IslandRoot supervision 분리
+- RQ3 규칙 실제 구현, RQ4(Island 간 통신) 최소 버전 시도
+
+**종료 조건**: 중첩 Island 예제 하나가 RQ3 규칙대로 동작. Island 간 통신 예제(장바구니
+카운터류) 하나 동작.
+
+## Phase 4 — 백엔드 어댑터
+
+- FIC 확정 (05)
+- WASM-in-process 하네스 먼저 (가장 저마찰, Rust 우선순위와 일치)
+- Sidecar HTTP 다음
+- 네이티브 바인딩 1~2개(Node, Python 등) — "진짜 언어 무관"임을 증명하는 용도
+
+**종료 조건**: 최소 2개 이상 서로 다른 언어의 "백엔드"에서 동일 컴포넌트를 렌더링해 임베드 성공.
+
+## Phase 5 — 공식 검증
+
+- RQ5 우선순위(teardown 안전성 → resumability 건전성 → 스케줄러 무충돌성)대로
+- 이 시점엔 설계가 실제 코드로 안정화되어 있어야 함 — 추상적 스펙을 먼저 증명하고
+  나중에 코드를 맞추지 말 것
+
+## Phase 6 — RQ6 최종 검증
+
+- Phase 2 종료 시점의 벤치마크와 Phase 3 완료 후 벤치마크를 비교
+- Island 도입이 실제로 이득(백엔드 임베딩 유연성)에 비해 복잡도(RQ3/RQ4) 비용을
+  정당화하는지 최종 판단. 이 시점에 04의 재해석이 맞았는지 여부가 결정됨

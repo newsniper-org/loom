@@ -1,0 +1,60 @@
+{
+  "note": "RQ6 \u00a73.1 Phase 2 baseline measurement, 2026-07-24. Chromium, localhost, cold=fresh browser+first click, warm=second click on same cached instance.",
+  "bundle_sizes": {
+    "bootstrap_js": {
+      "raw": 3241,
+      "gzip9": 1662,
+      "load_timing": "eager, page load"
+    },
+    "app_chunk_js_plus_wasm": {
+      "raw": 382504,
+      "gzip9": 136542,
+      "brotli11_wasm_only": 103716,
+      "load_timing": "lazy, first interaction only"
+    },
+    "zero_framework_baseline": {
+      "raw": 2021,
+      "gzip9": 966,
+      "load_timing": "eager, all inline"
+    },
+    "incremental_wasm_raw_bytes": {
+      "counter_only": 304001,
+      "counter_plus_list": 345473,
+      "counter_plus_list_plus_conditional": 361057
+    }
+  },
+  "cold_click_ms": [
+    1357.9,
+    77.2,
+    71.3,
+    71.9,
+    71.7,
+    73.9,
+    66.2,
+    71.7,
+    71.7,
+    82.3,
+    79.5,
+    74.1,
+    67.0,
+    74.2,
+    75.3
+  ],
+  "warm_click_ms": [
+    36.8,
+    37.1,
+    37.2,
+    37.0,
+    37.5,
+    37.1,
+    36.4,
+    36.6,
+    37.3,
+    36.8,
+    36.9,
+    36.9,
+    37.0,
+    36.3,
+    37.1
+  ]
+}

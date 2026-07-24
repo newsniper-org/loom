@@ -1,0 +1,58 @@
+<!doctype html>
+<!--
+  RQ6-verification-plan.md §4.3 "제로-프레임워크" 기준선 — functionally
+  equivalent to demo/resume/index.html's fixture (counter + list +
+  collapsible details), hand-written vanilla JS, no framework. Not a
+  competitor being judged against loom — a scale reference: §4.3 says the
+  point is to report the loom arms' cost as a percentage of this baseline,
+  distinguishing "different but both negligible next to this" from
+  "different by an amount comparable to this baseline's own size."
+-->
+<html lang="ko">
+<head><meta charset="utf-8" /><title>RQ6 zero-framework baseline</title></head>
+<body>
+  <div id="app">
+    <span class="label">count:</span>
+    <span class="value" id="count">0</span>
+    <button id="inc">+1</button>
+    <ul id="items"><li>a</li><li>b</li><li>c</li></ul>
+    <button id="append">append</button>
+    <button id="rotate">rotate</button>
+    <div class="details" id="details"></div>
+    <button id="toggle">toggle details</button>
+  </div>
+  <script>
+    let count = 0;
+    let items = ["a", "b", "c"];
+    let detailsShown = false;
+    let detailsCounter = 0;
+
+    document.getElementById("inc").addEventListener("click", () => {
+      count += 1;
+      document.getElementById("count").textContent = String(count);
+    });
+
+    function renderList() {
+      document.getElementById("items").innerHTML = items.map((i) => `<li>${i}</li>`).join("");
+    }
+    document.getElementById("append").addEventListener("click", () => {
+      items.push("new");
+      renderList();
+    });
+    document.getElementById("rotate").addEventListener("click", () => {
+      if (items.length) items.push(items.shift());
+      renderList();
+    });
+
+    document.getElementById("toggle").addEventListener("click", () => {
+      detailsShown = !detailsShown;
+      const el = document.getElementById("details");
+      if (detailsShown) {
+        el.textContent = String(detailsCounter);
+      } else {
+        el.textContent = "";
+      }
+    });
+  </script>
+</body>
+</html>

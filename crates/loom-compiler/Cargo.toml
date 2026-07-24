@@ -1,0 +1,18 @@
+[package]
+name = "loom-compiler"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+name = "loom_compiler"
+path = "src/lib.rs"
+
+[[bin]]
+name = "loomc"
+path = "src/main.rs"
+
+[dependencies]
+swc_common = "24.0.0"
+swc_ecma_ast = "26.0.0"
+swc_ecma_parser = "42.0.0"
+swc_ecma_visit = "26.0.0"

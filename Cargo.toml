@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/loom-runtime",
+    "crates/loom-compiler",
+    "crates/loom-demo",
+    "crates/loom-bench",
+    "crates/loom-resume-demo",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.0.1-phase1"
+
+[profile.release]
+opt-level = "s"
+lto = true
