@@ -251,6 +251,81 @@ pub fn render_html() -> String {
     dom.render_html(root)
 }
 
+/// RQ6 §4.5.1 (M11) — the H-Qwik "monolithic" half of the ISR partial-
+/// regeneration comparison, **naive variant**: `n_sections` static
+/// `<section>` blocks (standing in for "the rest of a large page" — RQ6
+/// §4.4's "원본 앱 규모" axis) plus this crate's one dynamic widget, each
+/// section created via its own `create_element`/`append_static_text` calls
+/// — the pre-2026-07-24 codegen shape (see git history: this is what every
+/// static element used to compile to, one runtime `DomOps` call per node,
+/// before `append_static_html`/`try_render_fully_static` existed). Kept
+/// alongside `render_large_page_monolithic_optimized` (below) specifically
+/// so the *size* of the optimization's effect is itself measurable, not
+/// just its existence.
+pub fn render_large_page_monolithic_naive(n_sections: usize) -> (String, std::time::Duration) {
+    let start = std::time::Instant::now();
+    let (mut dom, root) = StringDom::new_root("div");
+    for i in 0..n_sections {
+        let section = dom.create_element(root, "section", None);
+        dom.append_static_text(section, &format!("static section {i}"));
+    }
+    let mut app = loom_runtime::LoomApp::new();
+    let (_signals, _actions, _input_actions) = generated::setup(&mut app, &mut dom, root);
+    app.tick(&mut dom);
+    let html = dom.render_html(root);
+    (html, start.elapsed())
+}
+
+/// RQ6 §4.5.1 (M11) — the H-Qwik "monolithic" half, **optimized variant**:
+/// what codegen.rs's `try_render_fully_static`/`DomOps::append_static_html`
+/// optimization (2026-07-24) actually buys a monolithic component — the
+/// `n_sections` static blocks are built as one plain Rust `String` (no
+/// `DomOps`/ECS calls at all while building it, just `push_str`) and hand
+/// to `append_static_html` in a **single** call, exactly like real codegen
+/// now does for any fully-static subtree it can see at compile time (see
+/// that function's doc comment). This is the fair comparison point for the
+/// question 병익님 actually asked — "what if static content were fully
+/// compile-time-processed so runtime has no VDOM-like per-node overhead" —
+/// answered empirically here rather than assumed. **What this does NOT
+/// change**: the fundamental ISR asymmetry. Even at this optimized
+/// constant-per-byte cost, a monolithic component still has to *touch*
+/// (build + copy) all `n_sections` worth of bytes on every regeneration,
+/// because it's one inseparable render() call — `render_widget_only_for_isr`
+/// below still touches zero of those bytes, ever, because the static page
+/// and the widget are different compiled units. The scaling *slope*
+/// should shrink a lot; whether it goes to *zero* (making the two paths
+/// equivalent) is exactly what actually running this answers.
+pub fn render_large_page_monolithic_optimized(n_sections: usize) -> (String, std::time::Duration) {
+    let start = std::time::Instant::now();
+    let mut static_html = String::new();
+    for i in 0..n_sections {
+        static_html.push_str("<section>static section ");
+        static_html.push_str(&i.to_string());
+        static_html.push_str("</section>");
+    }
+    let (mut dom, root) = StringDom::new_root("div");
+    dom.append_static_html(root, &static_html);
+    let mut app = loom_runtime::LoomApp::new();
+    let (_signals, _actions, _input_actions) = generated::setup(&mut app, &mut dom, root);
+    app.tick(&mut dom);
+    let html = dom.render_html(root);
+    (html, start.elapsed())
+}
+
+/// RQ6 §4.5.1 (M11) — the Island half: regenerating *only* the widget
+/// (`render_html`, unchanged, timed here) while the surrounding
+/// `n_sections`-large page is assumed already cached/unaffected (an Island
+/// architecture's whole premise — the static page and the widget are
+/// separate compiled units, so this call never even sees `n_sections`).
+/// The `n_sections` parameter is accepted only so callers can log which
+/// page-size condition this timing corresponds to; it plays no role in the
+/// computation itself — that absence *is* the point being measured.
+pub fn render_widget_only_for_isr(_n_sections: usize) -> (String, std::time::Duration) {
+    let start = std::time::Instant::now();
+    let html = render_html();
+    (html, start.elapsed())
+}
+
 /// C ABI shim (leo4 pattern, docs/05). Returns a pointer to a
 /// `[len: u32 LE][utf8 bytes]` buffer — see this module's doc comment for
 /// why length travels inside the buffer rather than via an out-parameter.
@@ -304,5 +379,30 @@ mod tests {
             assert_eq!(html, expected);
             loom_fic_free(ptr, 4 + len);
         }
+    }
+
+    #[test]
+    fn large_page_monolithic_naive_includes_both_static_sections_and_the_widget() {
+        let (html, _elapsed) = render_large_page_monolithic_naive(3);
+        assert!(html.contains("<section>static section 0</section>"));
+        assert!(html.contains("<section>static section 2</section>"));
+        assert!(html.contains(r#"data-loom-id="count">0<"#), "the widget itself must still be present");
+    }
+
+    #[test]
+    fn large_page_monolithic_optimized_produces_byte_identical_html_to_naive() {
+        // The optimization must never change *what* gets rendered, only
+        // *how many DomOps calls* it costs to render it.
+        let (naive_html, _) = render_large_page_monolithic_naive(5);
+        let (optimized_html, _) = render_large_page_monolithic_optimized(5);
+        assert_eq!(naive_html, optimized_html);
+    }
+
+    #[test]
+    fn widget_only_render_ignores_n_sections_and_matches_render_html() {
+        let (html_small, _) = render_widget_only_for_isr(0);
+        let (html_large, _) = render_widget_only_for_isr(50_000);
+        assert_eq!(html_small, html_large, "n_sections must not affect this path's output at all");
+        assert_eq!(html_small, render_html());
     }
 }

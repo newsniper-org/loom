@@ -1,0 +1,25 @@
+{
+  "date": "2026-07-24",
+  "measurement": "RQ6 §4.5.1 M11 - ISR partial regeneration cost",
+  "methodology": "crates/loom-fic/src/bin/isr_bench.rs, native (not browser), release build, median of 20 reps per n_sections value. Re-measured after the 2026-07-24 same-day static-markup-collapse optimization (codegen.rs's try_render_fully_static + DomOps::append_static_html) was added mid-session in response to a design question about compile-time template emission.",
+  "note_on_rigor": "Smaller/narrower than RQ1's full paired-bootstrap protocol - median-of-20 only, no CI, native timing not browser timing. Sufficient to show the scaling shape, not a publication-grade benchmark.",
+  "three_variants": {
+    "monolithic_naive": "pre-optimization codegen shape - one DomOps::create_element/append_static_text call per static node",
+    "monolithic_optimized": "post-optimization - all static sections built as one plain Rust String (no DomOps calls) then inserted via one DomOps::append_static_html call, matching what codegen.rs now actually generates for a fully-static subtree",
+    "widget_only": "Island-style independent re-render of just the dynamic widget, never touching the surrounding n_sections content at all"
+  },
+  "runs_us_median_of_20": [
+    { "n_sections": 0, "monolithic_naive": 25, "monolithic_optimized": 22, "widget_only": 26 },
+    { "n_sections": 10, "monolithic_naive": 24, "monolithic_optimized": 22, "widget_only": 25 },
+    { "n_sections": 100, "monolithic_naive": 38, "monolithic_optimized": 23, "widget_only": 25 },
+    { "n_sections": 1000, "monolithic_naive": 158, "monolithic_optimized": 35, "widget_only": 25 },
+    { "n_sections": 10000, "monolithic_naive": 1721, "monolithic_optimized": 162, "widget_only": 25 },
+    { "n_sections": 50000, "monolithic_naive": 9697, "monolithic_optimized": 1384, "widget_only": 26 }
+  ],
+  "repeated_runs_at_n50000_us": {
+    "monolithic_naive": [11026, 11512, 11405, 9608, 10103, 9381],
+    "monolithic_optimized": [780, 1719, 1652],
+    "widget_only": [27, 28, 27, 25, 25, 26]
+  },
+  "interpretation": "The 2026-07-24 static-markup-collapse optimization (matching docs/02's originally-stated 'compile-time HTML template string' design, previously unimplemented) cuts the monolithic path's marginal per-section cost by roughly 7-14x (naive ~0.19-0.22us/section -> optimized ~0.015-0.03us/section). This substantially narrows the ISR partial-regeneration case for Islands. HOWEVER the optimized monolithic path still scales linearly with n_sections (still has to build+copy all the static bytes on every regeneration), while widget_only stays flat regardless of n_sections (Island's independent render never touches those bytes at all - true O(1), not just 'cheap O(n)'). At n_sections=50000 the optimized-vs-widget-only ratio is still roughly 30-70x, down from naive's ~400x. Conclusion: the compile-time optimization is real and worth having on its own merits, but it does not eliminate the structural ISR advantage Islands have - it only reduces its magnitude."
+}

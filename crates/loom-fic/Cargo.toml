@@ -11,6 +11,10 @@ name = "loom_fic"
 name = "loom-fic-sidecar"
 path = "src/bin/sidecar.rs"
 
+[[bin]]
+name = "isr-bench"
+path = "src/bin/isr_bench.rs"
+
 [dependencies]
 bevy_ecs = "0.14"
 # No "wasm_js" feature: that backend itself depends on wasm-bindgen/js-sys
