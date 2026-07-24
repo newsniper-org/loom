@@ -420,6 +420,79 @@ plan.md §3.1 "1차 재검토" 그대로:**
 **종료 조건**: 중첩 Island 예제 하나가 RQ3 규칙대로 동작. Island 간 통신 예제(장바구니
 카운터류) 하나 동작.
 
+**Phase 3 실행 상태 (2026-07-24)**
+
+**핵심 발견 — 모든 결정을 좌우한 제약**: wasm 모듈/인스턴스 경계가 `bevy_ecs::World`
+경계보다 더 근본적이다. `bootstrap.js`가 이미 각 LRef의 chunk를 독립된 동적 `import()`로
+지연 로드하므로, 서로 다른 청크로 컴파일된 두 Island는 구조적으로 별개의 wasm 인스턴스
+(별개의 선형 메모리)다 — Rust 참조/`Entity`/`Box<dyn Trait>`는 그 경계를 못 건너고,
+wasm-bindgen이 마셜링한 값만 건넌다. 이 사실 하나가 아래 전부를 동시에 결정했다: Island당
+별도 `bevy_ecs::World`(공유 World+마커 방식 기각), IslandRegistry가 JS 쪽 권위 구조여야
+함(Rust `HashMap`이 아니라), RQ4 공유 store가 "Layer 0 — Host Glue"라는 새 계층에 있어야
+함(docs/04 갱신).
+
+**증분 0 — panic 봉쇄 선결 조건**: `bootstrap.js`에서 실제로 발견한 버그를 고침 —
+`instance.dispatch(...)` 호출 자체가 try/catch 밖에 있었음(청크 import/wasm-init/생성자만
+감쌌었음). 고쳐서 dispatch가 던지면 그 엘리먼트의 `_loomInstance`를 버리고 이후 그
+엘리먼트로의 상호작용을 전부 거부(RQ3 Q4의 attached→failed를 host glue 레벨에서 구현,
+영향 범위를 그 엘리먼트 하나로 한정). wasm panic 봉쇄 자체는 RQ6-verification-plan.md
+§9-4가 이미 등록해 둔 폴백대로 **조건 A(미해결)를 그대로 채택**(RQ3 재검토 트리거 5번
+미발동) — 후보를 실측으로 다 시도해 고른 게 아니라 사전 등록된 시한 규칙을 발동시킨 것,
+숨기지 않고 기록.
+
+**증분 1 — `island.rs` + 순수 상태기계 검증**: `crates/loom-runtime/src/island.rs` 신설 —
+`IslandState`(RQ3/Lean4 stub과 동일한 6상태), `IslandRegistryEntry`(폐쇄 스키마),
+`IslandInstanceHandle`(JsHandle/Native), `IslandInstance`/`IslandRegistryBackend` trait,
+`NativeIslandRegistry`(Phase 4 네이티브 임베딩 + 이번 native 테스트 양쪽에 쓰이는 유일한
+Rust 구현체 — 이유는 위 핵심 발견 참고). `tests/island_candidates.rs` 11개: 2-island 등록,
+전체 lifecycle(dormant→attaching→attached→detaching→detached), dormant/failed의
+"actor 비경유" 직행 detach, in-flight attaching의 detach 폐기, 잘못된 전이 panic, **"detach
+1개가 다른 island를 안 건드림"(supervision edge 0개)을 실제로 단언**, `IslandInstance::
+begin_detach`가 실제로 호출되는지 확인.
+
+**증분 2+3 — 중첩 Island 손코딩 + Island 간 통신 (동시 완료)**: 새 크레이트
+`crates/loom-island-demo` — `ProductCardIsland`(`client:visible`)가
+`QuantityPickerIsland`(`client:load`)를 물리적으로 감싸는 실제 중첩 구조, 각자 독립된
+`LoomApp`/`World`, 같은 `BrowserDom`에 대고 호출(새 trait 불필요, 계획대로). **실제로
+구현하며 발견한 것**: 두 Island가 물리적으로 중첩돼 있으면 부모의 DOM 쿼리가 자식 Island의
+태그된 엘리먼트까지 주워버리는 문제(opaque 경계 위반) — `own_tagged_descendants`가
+`[data-loom-island]` 경계를 만나면 재귀를 멈추는 방식으로 해소(코드젠의 `ResumedComponent::
+new`가 미래에 중첩 Island를 지원하려면 똑같이 고쳐야 함 — RQ3에 이미 기록된 "resume 시점
+DOM 쿼리" 지점). ProductCard의 "상세 보기" 토글은 `cond_reconcile_f_system`을 직접 쓰지
+않고(그건 벤치마크용 하드코딩 span을 스폰함) 그 제어 흐름만 복제한 전용 함수를 손으로
+작성 — Task #10에서 코드젠이 한 것과 정확히 같은 이유.
+
+`demo/resume/registry.js`(JS 쪽 authoritative IslandRegistry — `data-loom-island` 스캔,
+`client:load`는 즉시 활성화, `client:visible`은 `IntersectionObserver` 1개) +
+`demo/resume/shared-store.js`(RQ4 최소 공유 store) + `demo/islands/index.html`(CartBadge는
+자기 Island/청크가 아예 없음 — RQ4의 핵심 주장).
+
+**Playwright 실브라우저 검증**(모두 통과, 콘솔/페이지 에러 0): quantity-picker(client:load)가
+스크롤 없이 즉시 attached / product-card(client:visible)는 중첩된 quantity-picker가 이미
+attach된 후에도 화면 밖에 있는 동안 계속 dormant(Q1 독립 활성화 실증) / quantity 변경 시
+CartBadge가 즉시 반영되고 product-card는 여전히 dormant(강제 결합 없음) / 스크롤 시
+product-card가 attached로 전이 / "상세 보기" 클릭 시 실제 상품 설명 텍스트 노출 /
+quantity-picker는 product-card attach 이후에도 독립적으로 계속 동작(Q2 입양 없음 실증) /
+"remove product card" 클릭이 중첩된 quantity-picker까지 cascade로 detached 전이시키고 DOM
+subtree가 실제로 사라짐(2단계 detach 실증) / CartBadge(자기 Island 없음)는 제거와 무관하게
+값 유지.
+
+**의도적으로 축소한 것 / 여전히 안 한 것 (숨기지 않음)**:
+1. Island당 별도 `.wasm` 파일 빌드 툴링 — `loom-island-demo`의 두 Island가 지금도 **같은**
+   청크 파일을 공유함(빌드 산출물로 직접 확인됨). "Island=청크=인스턴스 1:1" 불변식은
+   여전히 목표 상태이지 현실이 아님 — 이번 Playwright 검증도 이 사실 때문에 "청크 요청
+   안 됨"이 아니라 "registry 상태가 dormant로 남음"으로 Q1을 확인(더 정확한 방법으로 대체,
+   숨기지 않고 이유 기록).
+2. 컴파일러 통합(증분 4) — `ir.rs`/`lower.rs`/`codegen.rs`에 `ComponentGraph`/
+   `IslandActivation`/`ComponentRef` 추가는 미착수. 계획 문서가 이미 "증분 0~3만으로 Phase 3
+   종료 조건 충족, 컴파일러 통합은 별도 날짜로 추적"이라 명시했으므로 종료 조건 자체는
+   충족됨.
+3. `sharedSignal()` 저작 표면(증분 5, 스트레치) — 미착수.
+4. crash 통지 채널(RQ4로 이관된 요구) — 값 공유만 구현, 상태 변화 통지는 미착수.
+5. 비동기 정리(구조적 동시성 취소)의 실제 타임아웃 의미론 — 이번 `begin_detach`/
+   `finish_detach`는 동기 즉시 호출(RQ3의 "알려진 약점" #5, 미결로 남김).
+6. 리스트 row 안의 Island N개 인스턴스, 크로스 임베드 DOM 중첩 — 계획대로 범위 밖.
+
 ## Phase 4 — 백엔드 어댑터
 
 - FIC 확정 (05)

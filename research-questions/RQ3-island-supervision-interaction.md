@@ -173,6 +173,18 @@ detached 도달.
    공유 인스턴스면 B의 panic이 supervision 형태와 무관하게 앱 전체를 죽인다. Phase 1-2에서
    catch_unwind(wasm exception-handling 의존) / panic 회피 규약 / island별 인스턴스 분리 중
    하나를 실측으로 골라야 하며, 이 선택 없이는 fault 격리 주장이 공허하다.
+   **2026-07-24 (Phase 3) 갱신**: RQ6-verification-plan.md §9-4가 이미 등록해 둔 폴백대로
+   **조건 A(미해결)를 Phase 3 기본값으로 실제 채택**(후보를 실측으로 다 시도해 고른 것이
+   아니라, 시한 내 미결이면 A를 쓴다는 사전 등록된 규칙을 그대로 발동시킨 것 — 재검토
+   트리거 5번은 아직 발동 안 함). 대신 안정 채널·리스크 0인 완화책 2개를 실제로 실행함:
+   (a) "Island 1개 = wasm 청크 1개 = wasm 인스턴스 1개" 불변식은 여전히 목표 상태일 뿐—
+   `crates/loom-island-demo`의 두 Island(ProductCard/QuantityPicker)가 **같은** 청크
+   파일(`loom_island_demo`)을 공유하는 현재 빌드 산출물이 그 증거(빌드 툴링 작업은 여전히
+   범위 밖). (b) 실제로 발견해 고친 진짜 버그: `bootstrap.js`의 `dispatch(...)` 호출 자체가
+   try/catch 밖에 있었음(청크 import/wasm-init/생성자만 감쌌었음) — 고쳐서 dispatch가
+   던지면 해당 엘리먼트의 `_loomInstance`를 버리고 이후 그 엘리먼트로의 dispatch를 전부
+   거부하도록 함(RQ3 Q4의 attached→failed 전이를 host glue 레벨에서 실제로 구현한 것,
+   영향 범위를 그 엘리먼트 하나로 한정).
 2. crash 시 상호작용 후 상태 전손(no-restart의 의도된 비용). failed island의 사용자 노출
    정책(동결 vs 폴백 마크업)은 미결.
 3. 중첩 island 간 동적 데이터 전달 부재(SSR prop 동결) + 불일치 감지 불가 — RQ4 선결 의존.
@@ -208,3 +220,19 @@ detached 도달.
 진행한다"는 명시적 결정이며, Phase 3까지 위 재검토 트리거에 따라 반복 개선한다.
 연쇄 갱신: docs/06(승격 정책·2단계 detach 반영), Lean4 stub(ActorState 6상태 스펙 주석),
 RQ1(F 조건화 접속점), RQ2(dormant 저장 위치 요구), RQ4(crash 통지 채널 이관).
+
+**2026-07-24 (Phase 3) — 잠정 규칙이 실제 코드로 검증됨**: `crates/loom-runtime/src/
+island.rs`(6상태 기계 + `IslandRegistryBackend` trait, native 테스트 11개 — Q1/Q2/Q3
+2단계 detach/Q4 전부 실제 상태 전이로 확인) + `crates/loom-island-demo`(ProductCard
+`client:visible` 안에 QuantityPicker `client:load` 중첩, 실제 `BrowserDom`) +
+`demo/resume/registry.js`(JS 쪽 authoritative Registry — 이유는 아래) + Playwright
+실브라우저 검증(Q1: quantity-picker가 즉시 attach되어도 product-card는 화면에 스크롤
+되기 전까지 dormant로 남음 / Q3: "remove product card" 클릭이 중첩된 quantity-picker까지
+cascade로 detached 전이시키고 DOM subtree가 실제로 사라짐). 재검토 트리거 8개 중 발동한
+것 없음 — 잠정 규칙은 그대로 유지.
+
+**핵심 발견(코드 문서에 위임)**: 권위 있는 Registry가 Rust 구조체일 수 없는 이유(서로 다른
+청크 = 서로 다른 wasm 인스턴스 = 서로 다른 선형 메모리)는 `crates/loom-runtime/src/
+island.rs`와 `demo/resume/registry.js` 양쪽의 모듈 문서에 상세 기술 — 이 발견 하나가
+"Island당 별도 World"와 "Registry는 JS 쪽"을 동시에 결정함. docs/04에 "Layer 0 — Host
+Glue" 개념으로 반영.

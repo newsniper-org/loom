@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>loom Phase 3 — Islands (RQ3 supervision + RQ4 shared state)</title>
+</head>
+<body>
+  <!--
+    Hand-authored markup stands in for what loomc's SSR output would be —
+    no Island authoring surface exists in the compiler yet (roadmap/
+    PHASES.md Phase 3 status). Everything below is real, working code
+    against `crates/loom-island-demo`; only the *authoring* step (writing
+    this as JSX with `client:visible`/`client:load` attributes) is future
+    work.
+
+    CartBadge (header) is NOT an Island — it has no wasm chunk of its own
+    at all. It reflects `cartCount` purely via shared-store.js's direct DOM
+    patch (RQ4's whole point: a subscriber doesn't need its own chunk just
+    to display a value another Island produced).
+  -->
+  <header>
+    cart: <span id="cart-badge" data-loom-shared-subscriber="cartCount">0</span>
+  </header>
+
+  <!-- Spacer so ProductCard starts below the fold — Playwright scrolls to
+       it to trigger `client:visible`'s IntersectionObserver, proving it did
+       NOT activate merely because QuantityPicker (nested inside it,
+       `client:load`) already did. -->
+  <div style="height: 1200px;">(scroll down for the product card)</div>
+
+  <div
+    id="product-card"
+    data-loom-island
+    data-loom-island-id="product-card"
+    data-loom-activation="visible"
+    data-loom-chunk="loom_island_demo"
+    data-loom-ctor="ProductCardIsland"
+  >
+    <h2>Widget</h2>
+    <button data-loom-id="expand-toggle">show details</button>
+    <p data-loom-id="details"></p>
+
+    <div
+      id="quantity-picker"
+      data-loom-island
+      data-loom-island-id="quantity-picker"
+      data-loom-activation="load"
+      data-loom-chunk="loom_island_demo"
+      data-loom-ctor="QuantityPickerIsland"
+    >
+      <button data-loom-id="qty-decrement">-</button>
+      <span data-loom-id="qty-value">1</span>
+      <button data-loom-id="qty-increment">+</button>
+    </div>
+  </div>
+
+  <button id="remove-card">remove product card</button>
+  <script>
+    document.getElementById("remove-card").addEventListener("click", () => {
+      window.__loomRegistry.detachAndRemove("product-card");
+    });
+  </script>
+
+  <!-- Always loaded, small (RQ4's minimal shared store) — see that file's
+       doc comment for why this isn't lazy/LRef-gated. -->
+  <script src="../resume/shared-store.js"></script>
+  <!-- Always loaded (RQ3's IslandRegistry + activation orchestrator). -->
+  <script src="../resume/registry.js"></script>
+</body>
+</html>

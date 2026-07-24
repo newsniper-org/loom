@@ -6,6 +6,7 @@ members = [
     "crates/loom-demo",
     "crates/loom-bench",
     "crates/loom-resume-demo",
+    "crates/loom-island-demo",
 ]
 
 [workspace.package]

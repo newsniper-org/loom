@@ -41,6 +41,12 @@ pub use list::{
 pub mod cond;
 pub use cond::{cond_reconcile_b_system, cond_reconcile_f_system, CondBlock};
 
+pub mod island;
+pub use island::{
+    IslandId, IslandInstance, IslandInstanceHandle, IslandRegistryBackend, IslandRegistryEntry, IslandState,
+    NativeIslandRegistry,
+};
+
 #[cfg(feature = "browser")]
 pub mod web;
 

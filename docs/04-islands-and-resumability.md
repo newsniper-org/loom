@@ -69,3 +69,24 @@ Component가 POD이므로 이 스냅샷은 사실상 archetype 테이블의 부�
 않고 완화 방안을 하나 제안: **공유 lazy signal store** — 여러 Island가 구독할 수 있는 최소한의
 전역 Signal 집합을 두고, 구독도 LRef 방식으로 지연 등록. 단, 이건 "각 Island은 완전히 독립적으로
 resume된다"는 속성을 부분적으로 깨뜨리므로 신중하게 범위를 제한해야 함. RQ4에서 계속.
+
+## "Island = 완전 독립 World partition" 전제에 대한 수정 — Layer 0(Host Glue) (2026-07-24, Phase 3)
+
+Phase 3에서 위 두 메커니즘(IslandRegistry, 공유 signal store)을 실제로 구현하며 확인된 사실:
+Island World 어디에도 속하지 않는 **상시 상주 계층이 실제로 필요**함 — `IslandRegistry`도,
+공유 store도 특정 Island의 `bevy_ecs::World`에 담을 수 없다(어느 Island가 소유하든 다른
+Island의 wasm 인스턴스에서 도달 불가능해지므로). 이 계층을 **"Layer 0 — Host Glue"**로
+명명함(`crates/loom-runtime/src/island.rs`, `demo/resume/registry.js`, `demo/resume/
+shared-store.js`가 실물). "Island = 완전히 독립된 World partition"이라는 원래 전제는 부분
+수정 필요 — Island World들은 서로 독립이되, 그 위에 이 얇은 중립 계층 하나가 상시 얹혀 있음.
+
+**단, 이게 "하나의 큰 공유 World로 도로 붕괴"하는 건 아님**: Layer 0의 공개 표면은 IslandRegistry의
+폐쇄된 스키마(topology 추적 + detach 발행 전용, RQ3 참고)와 공유 store의 작은 get/set/notify
+API뿐 — `&mut World`를 통째로 넘기거나 임의 Component를 공유하는 것과 질적으로 다름.
+
+**위 "구독도 LRef 방식으로 지연 등록"은 실제 구현에서 채택하지 않음(정정)**: 공유 store 자체는
+항상 로드되는 작은 JS(`shared-store.js`)로 구현하고, 구독자는 `data-loom-shared-subscriber`
+DOM 마커만으로 표시함 — 순수 표시용 구독에 청크 로드를 요구하는 건 이득 없이 비용만 추가하기
+때문(코드젠이 SSR 시점에 정적으로 구독자를 마킹하는 게 LRef 지연보다 **더** 게으름, 코드 자체가
+전혀 안 실림). 예: CartBadge는 QuantityPicker의 수량이 바뀌어도 자기 wasm 청크를 전혀 로드하지
+않음 — `demo/islands/index.html` + Playwright 실측(roadmap/PHASES.md Phase 3 절 참고)으로 확인.

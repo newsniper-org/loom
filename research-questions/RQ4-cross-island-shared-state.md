@@ -40,3 +40,25 @@ Qwik/Astro 둘 다 "island끼리 통신 불가"를 명시된 한계로 인정함
 
 미착수. Phase 3 진행 중 RQ3와 함께 다뤄야 함 — 둘이 독립적으로 풀리지 않을 가능성 높음.
 (RQ3 쪽은 2026-07-23 잠정 규칙 확정 — 위 이관 항목 참고.)
+
+**2026-07-24 (Phase 3) — 최소 슬라이스 구현됨**: 검토 문제 1번(공유 store가 격리를 얼마나
+깨는가)과 2번(Layer 소속)에 대한 실제 답. **결정**: 공유 store는 항상 로드되는 작은 JS
+(`demo/resume/shared-store.js`, `window.__loomShared.set/get`) + DOM 마커 기반 구독
+(`data-loom-shared-subscriber`) — 04 원안의 "구독도 LRef로 지연 등록"과 **다르게 감**(순수
+표시용 구독에 청크 로드를 요구하는 게 이득 없이 비용만 큼 — docs/04에 이유 상세 기록).
+문제 2번(어느 Layer 소속인가)의 답: 특정 Island의 World에 속할 수 없으므로 **"Layer 0 —
+Host Glue"**로 명명한 상시 상주 계층에 둠(docs/04 참고) — "Island = 완전 독립 World
+partition"이라는 원 전제의 부분 수정이지만, 공개 표면이 폐쇄된 get/set/notify뿐이라 "하나의
+큰 공유 World로 붕괴"하지는 않음.
+
+**실제 검증(Playwright, crates/loom-island-demo + demo/islands/index.html)**: QuantityPicker
+(client:load)의 수량 변경 → `loom_shared_set("cartCount", n)` 호출 → CartBadge(자기 wasm
+청크가 아예 없음)가 순수 JS DOM patch로 반영. **CartBadge 자신의 청크는 전혀 로드되지
+않음**을 실측 확인(RQ6 §4.2 시나리오와 동일 패턴) — dormant island가 필요조차 없는, "Island
+자체가 없어도 되는" 더 강한 경우임을 보여줌.
+
+**문제 3번(백엔드 경유 대안)은 여전히 미착수** — 이번 라운드는 프레임워크 내부 공유
+메커니즘만 구현. **crash 통지 채널(RQ3에서 이관된 요구)도 미착수** — 이번 최소 슬라이스는
+값 공유만 다루고 crash/상태 변화 통지는 다루지 않음. **저작 표면(`sharedSignal()` 같은
+컴파일러 확장)도 스트레치로 미룸** — 이번엔 손코딩 레벨(`loom_shared_set` extern import
+직접 호출)까지만.
