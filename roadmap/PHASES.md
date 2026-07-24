@@ -591,6 +591,46 @@ Playwright로 스크린샷 검증(`#loom-mount`에 "count:0" 등 실제 컨텐�
 - 이 시점엔 설계가 실제 코드로 안정화되어 있어야 함 — 추상적 스펙을 먼저 증명하고
   나중에 코드를 맞추지 말 것
 
+**실행 상태 (2026-07-24) — RQ5 세 후보 전부 실제 결론**
+
+**#2(스케줄러 무충돌성)를 먼저 조사함**(RQ5가 명시한 순서 그대로 — 타입시스템으로
+대체 가능한지부터 검토): `bevy_ecs` 0.14.2 실제 소스를 읽어 확인 — 이 프로젝트는
+`multi_threaded` feature를 어떤 크레이트에서도 안 켜서(default feature 아님)
+실제 실행기가 `SingleThreaded` 하나뿐이고, 동시 실행 자체가 없어 데이터 레이스가
+날 대상 자체가 없음. 혹시 몰라 `MultiThreadedExecutor`도 확인했더니
+`can_run`(`schedule/executor/multi_threaded.rs:459`)이 실행 직전에
+`archetype_component_access().is_compatible(...)`을 무조건 검사(`ambiguity_
+detection` 로그 설정과 무관)해 겹치는 System을 절대 동시 실행 안 시킴 —
+**Bevy 자체가 이미 이 안전성을 런타임에 보장**함을 확인. **결론: TLA+ 증명
+안 함** — 이미 잘 풀린 문제를 재검증하는 것이라 스코프 밖(CLAUDE.md 2-1).
+`formal-verification/tla/SchedulerSafety.stub.tla`에 파일:라인 단위 근거 기록,
+스텁 상태를 의도적으로 유지.
+
+**#1(teardown 안전성)**: `formal-verification/lean4/SupervisionTree.lean`(구
+`.stub.lean`에서 승격) — `crates/loom-runtime/src/island.rs`의
+`NativeIslandRegistry` 6-상태 기계를 그대로 모델링해 RQ3의 동기 안전성
+(`beginDetach_forbids_access`, `no_transition_restores_access_from_detaching_
+or_detached`) + 진행성(`detach_reaches_detached_in_at_most_two_steps`) 정리를
+**실제로 증명**(`sorry` 없음, `lean` 명령으로 직접 확인). 스코프 한계 명시:
+Entity/DOM 소유권까지 포함한 전체 주장이 아니라 actor 라벨 절반만 증명.
+
+**#3(resumability 건전성, 가장 가치 있으나 정의부터 없던 것)**: `formal-verification/
+lean4/ResumabilitySoundness.lean` 신설 — "resume 결과 = hydration했다면 나왔을
+결과와 동일하다"를 i32 스칼라 카운터 축소 모델로 **처음 formal 정의**(`Resumability
+Sound`)하고, 현재 IR의 실제 제약("시그널당 액션 최대 1개", `SingleWriter`) 하에서
+증명. 그 제약이 없으면 실제로 깨지는 반례(같은 시그널을 두 독립 엘리먼트가 각자
+재개하면 서로 다른, 둘 다 틀린 값에 도달하는 구체적 계산)도 함께 남김 — IR이 지금
+이 제약을 두는 실제 이유. Qwik이 이 정리를 공식 증명한 선례는 재조사에서도 못 찾음.
+
+**검증**: `lean SupervisionTree.lean`/`lean ResumabilitySoundness.lean` 둘 다
+에러·경고 없이 통과(Lean 4.29.1). `cargo test --workspace`는 이번 라운드에서
+변경 없음(순수 formal-verification/ 작업, Rust 코드 미변경).
+
+**의도적으로 미룬 것(숨기지 않음)**: `SupervisionNode`의 실제 Entity/DOM 소유권
+모델링(Layer 2 스펙 확정 후), `ResumabilitySoundness`를 StringList/Bool/Str(DOM-
+복구형 재개)로 확장, IR의 "시그널당 액션 1개" 제약을 정적 검사로 실제 강제(현재는
+저작자 규율 의존 — `ResumabilitySoundness.lean`의 반례가 이 갭의 실제 근거).
+
 ## Phase 6 — RQ6 최종 검증
 
 - Phase 2 종료 시점의 벤치마크와 Phase 3 완료 후 벤치마크를 비교
