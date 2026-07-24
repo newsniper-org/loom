@@ -182,6 +182,32 @@ impl DomOps for StringDom {
             .map(|&idx| (NodeHandle(idx as u32), self.text[idx].clone().unwrap_or_default()))
             .collect()
     }
+
+    /// An `<input>` has no text child to set — its rendered value is the
+    /// `value` *attribute* (see `set_attribute`'s doc comment: `create_element`
+    /// + `set_attribute("value", ...)` is exactly how codegen's `setup()`
+    /// sets an input's initial value). Overwrites the existing entry rather
+    /// than pushing a duplicate — `setup()`'s own settle tick (see
+    /// codegen.rs's module doc) calls this once, redundantly, right after
+    /// `set_attribute` already set the same initial value, so pushing
+    /// unconditionally would render `<input value="0" value="0">`.
+    fn set_input_value(&mut self, node: NodeHandle, value: &str) {
+        let idx = node.0 as usize;
+        if let Some(entry) = self.attrs[idx].iter_mut().find(|(k, _)| k == "value") {
+            entry.1 = value.to_string();
+        } else {
+            self.attrs[idx].push(("value".to_string(), value.to_string()));
+        }
+    }
+
+    fn get_input_value(&mut self, node: NodeHandle) -> String {
+        let idx = node.0 as usize;
+        self.attrs[idx]
+            .iter()
+            .find(|(k, _)| k == "value")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    }
 }
 
 /// Runs the compiler-generated `setup()` against `StringDom` and ticks once
@@ -191,65 +217,40 @@ impl DomOps for StringDom {
 pub fn ssr_render() -> String {
     let (mut dom, root) = StringDom::new_root("div");
     let mut app = loom_runtime::LoomApp::new();
-    let (_signals, _actions) = generated::setup(&mut app, &mut dom, root);
+    let (_signals, _actions, _input_actions) = generated::setup(&mut app, &mut dom, root);
     app.tick(&mut dom);
     dom.render_html(root)
 }
 
-/// RQ6-verification-plan.md §4.1's "전체-앱" 픽스처, H-Qwik 팔 — counter +
-/// list (both compiler-generated, `ssr_render`'s `setup()` call reused as-is)
-/// + one nested conditional toggle, hand-wired directly against
-/// `loom-runtime`'s already-tested `cond_reconcile_f_system` (RQ1 §2.3's
-/// "코드젠 동형 손코딩" rule: no runtime knowledge the compiler couldn't
-/// also have produced — this just reuses an existing, tested System, the
-/// same way RQ6 §4.1 says to reuse RQ1's output rather than re-solving it).
-/// **Form input is not included** — `loom-runtime` has no two-way form-value
-/// binding at all yet (not a corner cut for this fixture specifically; the
-/// capability doesn't exist anywhere in this codebase) — stated plainly in
-/// `research-questions/RQ6-verification-plan.md`'s status section, not
-/// silently substituted with something else.
+/// **History (2026-07-24)**: this crate used to carry a hand-wired
+/// `ssr_render_full_app`/`ResumedCond` pair reproducing RQ6 §4.1's "전체-앱"
+/// fixture's nested conditional directly against `cond_reconcile_f_system`
+/// (loomc had no conditional authoring surface yet). `loom-compiler/src/
+/// codegen.rs` now lowers `{cond() && <X/>}` itself (a `details` Bool signal
+/// + toggle button were added to `demo/counter-list.tsx`), so `ssr_render`/
+/// `ResumedComponent` below already cover this fixture's simple case — the
+/// hand-wired pair was deleted rather than kept alongside a now-redundant
+/// duplicate. **Form input is still not included** — `loom-runtime` has no
+/// two-way form-value binding yet (not a corner cut for this fixture
+/// specifically; the capability doesn't exist anywhere in this codebase) —
+/// stated plainly in `research-questions/RQ6-verification-plan.md`'s status
+/// section, not silently substituted with something else.
 ///
-/// The conditional starts **hidden** (`Signal(false)`) — unlike
-/// `cond_resume`'s proof (which specifically exercises the harder
-/// "already-shown-with-existing-state" resume case), a fresh fixture more
-/// realistically starts collapsed, so its resume path needs no captured
-/// child state at all: `ResumedCond::new` just reconstructs an *empty*
-/// `CondBlock` wired to the wrapper node, and the first toggle spawns the
-/// child exactly like a live (non-resumed) F toggle would.
-pub fn ssr_render_full_app() -> String {
-    let (mut dom, root) = StringDom::new_root("div");
-    let mut app = loom_runtime::LoomApp::new();
-    let (_signals, _actions) = generated::setup(&mut app, &mut dom, root);
-
-    app.add_systems(loom_runtime::cond_reconcile_f_system);
-    let cond_wrapper = dom.create_element(root, "div", Some("details"));
-    dom.set_attribute(cond_wrapper, "data-loom-id", "details");
-    let _cond_entity = app
-        .world
-        .spawn((
-            loom_runtime::Signal(false),
-            loom_runtime::CondBlock::with_size(1),
-            loom_runtime::DomTarget(cond_wrapper),
-        ))
-        .id();
-    let toggle_button = dom.create_element(root, "button", None);
-    dom.append_static_text(toggle_button, "toggle details");
-    dom.set_attribute(toggle_button, "data-loom-lref", "App_chunk|CondToggle|");
-
-    app.tick(&mut dom); // settles count/items/cond — all freshly Added, all Changed on this first tick.
-    dom.render_html(root)
-}
-
-/// Conditional (RQ1 Track T candidate F) resume — a **runtime-only** proof,
-/// hand-written like the original counter kickoff was, because there's no
-/// compiler surface for conditionals to integrate with yet (`lower.rs`
-/// doesn't lower `{cond && <X/>}` — see this module's doc comment). Proves
-/// the same property `codegen.rs`'s scalar/list resume does — a fresh
-/// `LoomApp` can pick up exactly where SSR left off, using only a captured
-/// value and the DOM SSR already rendered — for F specifically: does the
-/// child's internal state (which F's whole reason to exist is to *not*
-/// reset on toggle) survive being captured, handed to a brand-new `World`,
-/// and then actually toggled off and back on there.
+/// Conditional (RQ1 Track T candidate F) resume with **existing internal
+/// state** — a **runtime-only** proof, hand-written like the original
+/// counter kickoff was, because compiled conditionals are static-only
+/// (`JsxNode::CondBinding`'s `then_branch` may not itself declare a nested
+/// signal — see `ir.rs`'s doc comment), so there is still no compiler
+/// surface for *this* harder case. Proves the same property `codegen.rs`'s
+/// scalar/list resume does — a fresh `LoomApp` can pick up exactly where SSR
+/// left off, using only a captured value and the DOM SSR already rendered —
+/// for F specifically: does the child's internal state (which F's whole
+/// reason to exist is to *not* reset on toggle) survive being captured,
+/// handed to a brand-new `World`, and then actually toggled off and back on
+/// there. Unlike `demo/counter-list.tsx`'s compiled conditional (which
+/// starts hidden and empty, so its resume path needs no captured child
+/// state at all), this proof specifically exercises the harder
+/// "already-shown-with-existing-state" resume case.
 pub mod cond_resume {
     use super::StringDom;
     use loom_runtime::{
@@ -421,72 +422,22 @@ impl ResumedComponent {
         ResumedComponent { app, dom, signals }
     }
 
-    /// Reused across every subsequent click on the same button — this is
-    /// the whole point: the expensive part (dynamic import + snapshot
-    /// materialization) happens once, then it's a normal Phase-1-style live
-    /// tick, exactly as cheap as the non-resumable counter demo's.
-    /// `symbol` is the LRef's `ActionN` segment (see codegen.rs's
-    /// `resume_action_by_symbol`) — only symbols generated::setup() actually
-    /// tagged with an LRef are ever dispatched here in practice.
-    pub fn dispatch(&mut self, symbol: &str) {
-        let action = generated::resume_action_by_symbol(symbol);
+    /// Reused across every subsequent click (or `input` keystroke) on the
+    /// same element — this is the whole point: the expensive part (dynamic
+    /// import + snapshot materialization) happens once, then it's a normal
+    /// Phase-1-style live tick, exactly as cheap as the non-resumable
+    /// counter demo's. `symbol` is the LRef's `ActionN` segment (see
+    /// codegen.rs's `resume_action_by_symbol`) — only symbols
+    /// generated::setup() actually tagged with an LRef are ever dispatched
+    /// here in practice. `value` is `None` for every action except a
+    /// `SetString` (input binding) dispatch, which needs the just-typed
+    /// value the symbol alone can't carry (see `resume_action_by_symbol`'s
+    /// doc comment) — `bootstrap.js`'s `click` listener omits it entirely
+    /// (JS `undefined` becomes `None` here), its new `input` listener always
+    /// passes one.
+    pub fn dispatch(&mut self, symbol: &str, value: Option<String>) {
+        let action = generated::resume_action_by_symbol(symbol, value.as_deref().unwrap_or(""));
         generated::apply_action(&mut self.app, &self.signals, &action);
-        self.app.tick(&mut self.dom);
-    }
-}
-
-/// RQ6 §4.1 fixture's nested conditional, browser-side — the wasm-exposed
-/// counterpart to `cond_resume`'s native proof, but for the *simpler* case
-/// (`ssr_render_full_app`'s toggle starts hidden, so there's no existing
-/// child state to adopt — see that function's doc comment). Not
-/// compiler-generated (no conditional codegen exists), so unlike
-/// `ResumedComponent` there's no `generated::` module backing this; it's a
-/// small, direct, hand-wired use of `cond_reconcile_f_system` — the same
-/// System `crates/loom-resume-demo::cond_resume` and RQ1 Track T's native
-/// tests already exercise, not new/untested logic.
-#[wasm_bindgen]
-pub struct ResumedCond {
-    app: loom_runtime::LoomApp,
-    dom: BrowserDom,
-    entity: bevy_ecs::entity::Entity,
-}
-
-#[wasm_bindgen]
-impl ResumedCond {
-    /// Ignores `_captures_str` — an empty-hidden `CondBlock` needs nothing
-    /// captured (see `ssr_render_full_app`'s doc comment). Kept as a
-    /// parameter only so `bootstrap.js` can construct either resumed class
-    /// identically (`new ctor(capturesRaw)`), without needing to know which
-    /// one actually uses its argument.
-    #[wasm_bindgen(constructor)]
-    pub fn new(_captures_str: &str) -> ResumedCond {
-        console_error_panic_hook::set_once();
-        let document = web_sys::window().expect("no `window`").document().expect("no `document`");
-        let mut app = loom_runtime::LoomApp::new();
-        app.add_systems(loom_runtime::cond_reconcile_f_system);
-        let mut dom = BrowserDom::new_for_resume(document.clone());
-        let wrapper_el = document
-            .query_selector("[data-loom-id=\"details\"]")
-            .expect("query_selector failed")
-            .expect("no element tagged data-loom-id=\"details\"");
-        let wrapper = dom.adopt(wrapper_el.into());
-        let entity = app
-            .world
-            .spawn((
-                loom_runtime::Signal(false),
-                loom_runtime::CondBlock::with_size(1),
-                loom_runtime::DomTarget(wrapper),
-            ))
-            .id();
-        app.tick(&mut dom); // settle tick, same reasoning as generated::resume.
-        ResumedCond { app, dom, entity }
-    }
-
-    /// Ignores `symbol` — this fixture's conditional has exactly one action
-    /// (toggle), so there's nothing to route on.
-    pub fn dispatch(&mut self, _symbol: &str) {
-        let current = self.app.world.get::<loom_runtime::Signal<bool>>(self.entity).unwrap().0;
-        self.app.world.get_mut::<loom_runtime::Signal<bool>>(self.entity).unwrap().0 = !current;
         self.app.tick(&mut self.dom);
     }
 }
@@ -540,21 +491,25 @@ mod tests {
     }
 
     #[test]
-    fn full_app_fixture_includes_the_nested_conditional_starting_collapsed() {
-        let html = ssr_render_full_app();
-        // Counter/list still present — the fixture wraps ssr_render()'s
-        // setup(), it doesn't replace it.
+    fn compiled_conditional_starts_collapsed_and_the_toggle_gets_a_normal_lref() {
+        let html = ssr_render();
+        // Counter/list still present — the conditional is one more binding
+        // site in the same `generated::setup()`, not a separate fixture.
         assert!(html.contains(r#"data-loom-id="count">0<"#));
         assert!(html.contains("<li>a</li><li>b</li><li>c</li>"));
-        // The conditional starts hidden -- no child markup should exist
+        // The conditional starts hidden — no child markup should exist
         // inside the wrapper yet (F only lazy-spawns on first `true`).
         assert!(
-            html.contains(r#"<div class="details" data-loom-id="details"></div>"#),
+            html.contains(r#"<p class="details" data-loom-id="details"></p>"#),
             "the conditional wrapper must be tagged and empty while hidden, got: {html}"
         );
+        // The toggle button is `Action3`, routed through the same generic
+        // `ResumedComponent`/`resume_action_by_symbol` path as every other
+        // action — no hand-wired symbol or resumed class needed anymore.
         assert!(
-            html.contains(r#"data-loom-lref="App_chunk|CondToggle|""#),
-            "the toggle button must carry a hand-wired LRef (no compiler support for conditionals yet)"
+            html.contains(r#"data-loom-lref="App_chunk|Action3|""#),
+            "the toggle button must carry a compiler-generated LRef with no captures \
+             (Bool signals are DOM-recovered, not capture-fallback-dependent)"
         );
     }
 }

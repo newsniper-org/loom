@@ -7,7 +7,7 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "demo/resume/index.html".to_string());
 
-    let body_html = loom_resume_demo::ssr_render_full_app();
+    let body_html = loom_resume_demo::ssr_render();
 
     let page = format!(
         r#"<!doctype html>

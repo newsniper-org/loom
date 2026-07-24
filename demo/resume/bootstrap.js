@@ -25,20 +25,23 @@
 // so the fallback here is a full reload, which trades away resumability's
 // "no re-execution" promise for correctness in exactly this one failure
 // case. A better answer is still open (RQ2).
-console.log("[bootstrap] loaded — 0 chunks requested yet");
-
-document.addEventListener("click", async (event) => {
-  const el = event.target.closest("[data-loom-lref]");
-  if (!el) return;
-
+// 2026-07-24 — `<input>` two-way bindings: a keystroke needs the exact same
+// "materialize chunk once, then reuse" flow as a click, just on the `input`
+// event instead and carrying the just-typed value along (see
+// crates/loom-resume-demo/src/lib.rs's `ResumedComponent::dispatch` doc
+// comment for why a value has to ride along at all — unlike every other
+// action, `SetString`'s payload can't be known until this exact moment).
+// Factored out so click/input share one materialize-and-cache path rather
+// than duplicating it.
+async function dispatchLref(el, value) {
   const [chunk, symbol, capturesRaw] = el.dataset.loomLref.split("|");
 
   // RQ3 "promote-once-and-stay": once a chunk has materialized a live
-  // instance for this element, every later click reuses it directly —
+  // instance for this element, every later interaction reuses it directly —
   // no re-import, no re-materialization from the (by-then-stale) captured
   // snapshot.
   if (el._loomInstance) {
-    el._loomInstance.dispatch(symbol);
+    el._loomInstance.dispatch(symbol, value);
     return;
   }
 
@@ -47,19 +50,33 @@ document.addEventListener("click", async (event) => {
   try {
     const mod = await import(`./chunks/${chunk}.js`);
     await mod.default(); // wasm-bindgen's init(): fetches + instantiates the .wasm
-    // RQ6 §4.1 fixture note: the conditional isn't compiler-generated (no
-    // conditional codegen exists yet), so it's a second, hand-wired
-    // resumable class sharing this same chunk file rather than routing
-    // through `ResumedComponent` — this `symbol`-prefix check is fixture
-    // glue, not a general multi-component dispatch mechanism.
-    const ctor = symbol === "CondToggle" ? mod.ResumedCond : mod.ResumedComponent;
-    instance = new ctor(capturesRaw);
+    // 2026-07-24: conditionals (`{cond() && <X/>}`) are compiler-generated
+    // now (loom-compiler/src/codegen.rs), so their toggle is a normal
+    // `Action` dispatched through the same `ResumedComponent` every other
+    // action uses — no per-symbol special-casing needed here anymore.
+    instance = new mod.ResumedComponent(capturesRaw);
   } catch (err) {
     console.error(`[bootstrap] failed to materialize chunk "${chunk}" — reloading:`, err);
     window.location.reload();
     return;
   }
-  instance.dispatch(symbol);
+  instance.dispatch(symbol, value);
   el._loomInstance = instance;
   console.log("[bootstrap] chunk materialized and applied; subsequent clicks reuse this instance");
+}
+
+console.log("[bootstrap] loaded — 0 chunks requested yet");
+
+document.addEventListener("click", (event) => {
+  const el = event.target.closest("[data-loom-lref]");
+  if (!el) return;
+  // `value` omitted -> `undefined` -> wasm-bindgen's `Option<String>` sees
+  // `None` -> every non-`SetString` action ignores it, same as before.
+  dispatchLref(el);
+});
+
+document.addEventListener("input", (event) => {
+  const el = event.target.closest("[data-loom-lref]");
+  if (!el) return;
+  dispatchLref(el, event.target.value);
 });

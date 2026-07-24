@@ -130,6 +130,19 @@ impl DomOps for BrowserDom {
         el.set_attribute(name, value).expect("set_attribute failed");
     }
 
+    fn set_input_value(&mut self, node: NodeHandle, value: &str) {
+        // Property set (`.value =`), not `set_attribute` — see this trait
+        // method's doc comment for why an attribute write wouldn't be
+        // reflected in what the user actually sees once they've typed.
+        let el: web_sys::HtmlInputElement = self.node(node).clone().unchecked_into();
+        el.set_value(value);
+    }
+
+    fn get_input_value(&mut self, node: NodeHandle) -> String {
+        let el: web_sys::HtmlInputElement = self.node(node).clone().unchecked_into();
+        el.value()
+    }
+
     fn adopt_children(&mut self, parent: NodeHandle) -> Vec<(NodeHandle, String)> {
         let parent_node = self.node(parent).clone();
         let children = parent_node.child_nodes();

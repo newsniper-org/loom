@@ -70,6 +70,15 @@ pub struct DomTarget(pub NodeHandle);
 #[derive(Component, Default, Debug, Clone)]
 pub struct ListRows(pub Vec<Entity>);
 
+/// Marks a `Signal<String>` entity as an `<input>`'s two-way value binding,
+/// gating `patch_input_system` — not every `Signal<String>` should have its
+/// `DomTarget` written to via `set_input_value` (a plain text binding, if
+/// `TextBinding` ever grows `String` support, would need `set_text_content`
+/// instead). Unit struct, not data — the marker itself carries no state,
+/// same POD discipline as every other Component here.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct InputValueTarget;
+
 /// The narrow, closed DOM operation surface a patch System is allowed to
 /// describe. No general tree-diff method exists here by construction.
 pub trait DomOps {
@@ -122,6 +131,22 @@ pub trait DomOps {
     /// loom-compiler/src/codegen.rs's `resume()` generation). Not used by any
     /// Phase 1 candidate or patch System.
     fn adopt_children(&mut self, parent: NodeHandle) -> Vec<(NodeHandle, String)>;
+    /// `<input>` two-way binding's reactive write. **Must** set the DOM
+    /// property (`element.value = ...`), not the `value` *attribute* —
+    /// unlike every other write in this trait, an `<input>`'s attribute only
+    /// seeds its value at parse time; once a user has typed into it, only
+    /// the live property reflects what's actually displayed. Backends
+    /// should use `set_attribute(node, "value", ...)` instead for an
+    /// input's *initial* SSR/creation-time value (see codegen.rs's `setup()`
+    /// generation) — this method is for the ongoing `patch_input_system`.
+    fn set_input_value(&mut self, node: NodeHandle, value: &str);
+    /// Resume-only: reads an `<input>`'s *current* value directly from the
+    /// DOM, the same reasoning as `adopt_children` for list rows — a
+    /// captured LRef value would reflect the state at SSR time, not
+    /// whatever the user has typed since then (impossible to know at SSR
+    /// time in the first place), so resume recovers it from the live DOM
+    /// instead of ever attempting to serialize it into a capture.
+    fn get_input_value(&mut self, node: NodeHandle) -> String;
 }
 
 /// A DOM write emitted by a patch System this tick. Systems never touch a
@@ -179,10 +204,60 @@ pub enum DomWrite {
     /// RQ1 Track T candidate F: show/hide without despawn (see
     /// `DomOps::set_visible`).
     SetVisible { node: NodeHandle, visible: bool },
+    /// RQ1 row-depth axis (R1/R2, `RowBindings`): appends `texts.len()` extra
+    /// static text children under a row — standing in for "N bindings per
+    /// row" (RQ1-benchmark-protocol.md §3.2's R2, "binding 8개"). Named by
+    /// `Entity` like `SpawnRow`'s `before`: the row may have been spawned
+    /// earlier in the *same* flush batch, so its `NodeHandle` isn't resolved
+    /// until this write is actually applied (by then the row's `SpawnRow`
+    /// write — always emitted first — has already attached its `DomTarget`).
+    /// Models row-*creation* cost scaling with depth (correctly stresses K's
+    /// full-recreate-every-tick cost against D/E's move-only cost, which is
+    /// what RQ1 §9's D-vs-K rejection gate at R2 needs) — not candidate C's
+    /// separate "O(n×binding) retained-slot value-patch" cost, which would
+    /// need each binding independently re-compared/rewritten on every tick,
+    /// not just created once. Stated plainly: this axis doesn't test that
+    /// half of R2's prediction, and RQ1 §9's C adoption conditions don't
+    /// need R2 data at all (R1-only), so it isn't required to.
+    AppendStaticChildren { row: Entity, texts: Vec<String> },
+    /// Compiler-generated conditionals (`{cond() && <X/>}`, loom-compiler's
+    /// codegen.rs): appends one static text child under an *already
+    /// resolved* parent node. Unlike `AppendStaticChildren`, no
+    /// `Entity`-to-`NodeHandle` resolution is needed here — the parent (the
+    /// conditional's wrapper element) was created directly via
+    /// `DomOps::create_element` before any reconcile System ever ran, so it
+    /// already has a real `NodeHandle` by the time this write is emitted.
+    AppendStaticText { parent: NodeHandle, text: String },
+    /// Compiler-generated `<input>` two-way binding's reactive write (see
+    /// `patch_input_system`). Carries an already-resolved `NodeHandle`, same
+    /// reason as `AppendStaticText` — an input element is created directly
+    /// via `DomOps::create_element` in `setup()`/`resume()`, never as part
+    /// of a list/conditional spawn batch that would need `Entity`
+    /// resolution.
+    SetInputValue { node: NodeHandle, value: String },
 }
 
 #[derive(Resource, Default)]
 pub struct PendingDomWrites(pub Vec<DomWrite>);
+
+/// RQ1 row-depth axis: how many static text children each list row carries
+/// beyond its own primary content (default 1 = R1, "binding 1개"). Read by
+/// every Track L candidate's spawn path (`list_reconcile_k_system` here;
+/// `list_reconcile_c_system`/`place_in_order`/`place_in_order_lis` in
+/// `list.rs`) — see `DomWrite::AppendStaticChildren`'s doc comment for what
+/// this axis does and doesn't model.
+#[derive(Resource, Clone, Copy)]
+pub struct RowBindings(pub usize);
+
+impl Default for RowBindings {
+    fn default() -> Self {
+        RowBindings(1)
+    }
+}
+
+pub(crate) fn extra_binding_texts(row_bindings: usize, primary: &str) -> Vec<String> {
+    (1..row_bindings).map(|i| format!("{primary}-bind{i}")).collect()
+}
 
 /// docs/03 §"반응성 파이프라인": one narrow System per binding-site *shape*
 /// (monomorphized per `T`), gated by `Changed<Signal<T>>`, performing
@@ -198,6 +273,27 @@ pub fn patch_text_system<T>(
         pending.0.push(DomWrite::SetText {
             target: target.0,
             text: signal.0.to_string(),
+        });
+    }
+}
+
+/// The `<input>` two-way binding's reactive write — deliberately **not**
+/// generic over `T` like `patch_text_system`, unlike every other patch
+/// System here: an input's *value* has exactly one type (`String`) by
+/// construction (`DomOps::set_input_value` only makes sense for text), so
+/// there's no `T` to monomorphize over. Gated by `InputValueTarget` (not
+/// just `Signal<String>`) so a future plain-text `Signal<String>` binding
+/// (if `TextBinding` ever grows string support) can't be cross-matched by
+/// this System and have its DOM node's `value` property written instead of
+/// its `textContent` — see `InputValueTarget`'s doc comment.
+pub fn patch_input_system(
+    q: Query<(&Signal<String>, &DomTarget), (Changed<Signal<String>>, With<InputValueTarget>)>,
+    mut pending: ResMut<PendingDomWrites>,
+) {
+    for (signal, target) in &q {
+        pending.0.push(DomWrite::SetInputValue {
+            node: target.0,
+            value: signal.0.clone(),
         });
     }
 }
@@ -221,6 +317,7 @@ pub fn list_reconcile_k_system<T>(
     mut q: Query<(&Signal<Vec<T>>, &mut ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
+    row_bindings: Res<RowBindings>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
@@ -232,13 +329,18 @@ pub fn list_reconcile_k_system<T>(
         for item in items.0.iter() {
             let new_entity = commands.spawn_empty().id();
             rows.0.push(new_entity);
+            let text = item.to_string();
             pending.0.push(DomWrite::SpawnRow {
                 entity: new_entity,
                 parent: anchor.0,
                 tag: "li",
-                text: item.to_string(),
+                text: text.clone(),
                 before: None, // ClearChildren already emptied the parent; append in order.
             });
+            let extra = extra_binding_texts(row_bindings.0, &text);
+            if !extra.is_empty() {
+                pending.0.push(DomWrite::AppendStaticChildren { row: new_entity, texts: extra });
+            }
         }
     }
 }
@@ -262,10 +364,21 @@ impl LoomApp {
     pub fn new() -> Self {
         let mut world = World::new();
         world.init_resource::<PendingDomWrites>();
+        world.init_resource::<RowBindings>();
         Self {
             world,
             schedule: Schedule::default(),
         }
+    }
+
+    /// RQ1 row-depth axis: set how many static text children each list row
+    /// carries beyond its primary content (default 1). Must be called
+    /// before any list reconcile System runs for it to take effect on that
+    /// tick — matches the "configure once, then run" shape every other
+    /// LoomApp setup step already follows (`add_systems`).
+    pub fn set_row_bindings(&mut self, count: usize) -> &mut Self {
+        self.world.insert_resource(RowBindings(count));
+        self
     }
 
     pub fn add_systems<M>(&mut self, systems: impl IntoSystemConfigs<M>) -> &mut Self {
@@ -316,6 +429,16 @@ impl LoomApp {
                 }
                 DomWrite::RemoveNode { node } => dom.remove_node(node),
                 DomWrite::SetVisible { node, visible } => dom.set_visible(node, visible),
+                DomWrite::AppendStaticChildren { row, texts } => {
+                    let Some(handle) = self.dom_target(row) else {
+                        continue;
+                    };
+                    for text in &texts {
+                        dom.append_static_text(handle, text);
+                    }
+                }
+                DomWrite::AppendStaticText { parent, text } => dom.append_static_text(parent, &text),
+                DomWrite::SetInputValue { node, value } => dom.set_input_value(node, &value),
             }
         }
     }

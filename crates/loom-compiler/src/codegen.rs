@@ -69,6 +69,42 @@
 //! enough `World` state for `apply_action` to run unmodified against it —
 //! the same function Phase 1's live path already uses, now also correct for
 //! a resumed World.
+//!
+//! ## Conditionals (2026-07-24) — per-site function, not a parameterized System
+//! `{cond() && <tag>...}` (`JsxNode::CondBinding`) reuses RQ1 Track T
+//! candidate F's *algorithm* (lazy-spawn-then-hide, `cond.rs`'s
+//! `cond_reconcile_f_system`) without reusing that System itself: F's
+//! benchmark variant hardcodes its spawn content (a fixed span, standing in
+//! for "whatever a conditional subtree contains"), but a real compiled site
+//! needs its own actual static content spawned. So `lower_node`'s
+//! `CondBinding` arm generates a **fresh top-level function per site**
+//! (`cond_reconcile_site_N`) replicating F's control flow with that site's
+//! real `StaticText` children inlined as `DomWrite::AppendStaticText` calls
+//! — registered via `app.add_systems` in both `setup()` and `resume()`.
+//! Resume recovers shown/hidden from the DOM (`adopt_children` on the
+//! wrapper — empty means never shown, matching `SignalInit::Bool`'s doc
+//! comment on `generate_resume` for why that's a *complete* read of every
+//! state this pipeline's SSR can actually produce, not just today's
+//! observed cases).
+//!
+//! ## `<input>` two-way binding (2026-07-24)
+//! `<input value={s()} onInput={(e) => s.set(e.target.value)}/>`
+//! (`JsxNode::InputBinding`) synthesizes a `ClickAction::SetString` action
+//! (see `collect_actions`) so it rides the *same* `Action`/`apply_action`/
+//! `resume_action_by_symbol` machinery every onClick action already uses,
+//! rather than a parallel dispatch mechanism — `setup()`'s third return
+//! value, `Vec<(NodeHandle, fn(String) -> Action)>`, is how the live path's
+//! host glue (loom-demo) wires a real `input` DOM listener per site: each
+//! entry's `fn(String) -> Action` is literally the bare tuple-variant
+//! constructor (`Action::ActionN`), not a closure. Resume recovers the
+//! *live* value via `DomOps::get_input_value` — captures are structurally
+//! impossible here (at SSR time nothing has been typed yet), so this is the
+//! one case where DOM-recovery isn't just cheaper than a capture but the
+//! only way to get a correct answer at all. `SetString` is also the one
+//! action whose payload isn't determined by its symbol alone: unlike every
+//! other action, `resume_action_by_symbol` takes a `string_arg` — every
+//! other action ignores it, `SetString` uses it (see that function's doc
+//! comment).
 
 use crate::ir::{ClickAction, Component, JsxNode, SignalInit};
 use std::fmt::Write as _;
@@ -91,10 +127,10 @@ pub fn generate(component: &Component) -> String {
     for (i, action) in actions.iter().enumerate() {
         let variant = format!("Action{i}");
         match action {
-            ClickAction::Increment { .. } | ClickAction::Rotate { .. } => {
+            ClickAction::Increment { .. } | ClickAction::Rotate { .. } | ClickAction::Toggle { .. } => {
                 writeln!(out, "    {variant},").unwrap();
             }
-            ClickAction::Append { .. } => {
+            ClickAction::Append { .. } | ClickAction::SetString { .. } => {
                 writeln!(out, "    {variant}(String),").unwrap();
             }
         }
@@ -139,6 +175,25 @@ pub fn generate(component: &Component) -> String {
                 .unwrap();
                 writeln!(out, "        }}").unwrap();
             }
+            ClickAction::Toggle { signal } => {
+                writeln!(out, "        Action::{variant} => {{").unwrap();
+                writeln!(
+                    out,
+                    "            let sig = &mut app.world.get_mut::<::loom_runtime::Signal<bool>>(signals.{signal}).unwrap().0;"
+                )
+                .unwrap();
+                writeln!(out, "            *sig = !*sig;").unwrap();
+                writeln!(out, "        }}").unwrap();
+            }
+            ClickAction::SetString { signal } => {
+                writeln!(out, "        Action::{variant}(value) => {{").unwrap();
+                writeln!(
+                    out,
+                    "            app.world.get_mut::<::loom_runtime::Signal<String>>(signals.{signal}).unwrap().0 = value.clone();"
+                )
+                .unwrap();
+                writeln!(out, "        }}").unwrap();
+            }
         }
     }
     writeln!(out, "    }}").unwrap();
@@ -147,7 +202,7 @@ pub fn generate(component: &Component) -> String {
 
     writeln!(
         out,
-        "pub fn setup(app: &mut ::loom_runtime::LoomApp, dom: &mut impl ::loom_runtime::DomOps, mount: ::loom_runtime::NodeHandle) -> (Signals, Vec<(::loom_runtime::NodeHandle, Action)>) {{"
+        "pub fn setup(app: &mut ::loom_runtime::LoomApp, dom: &mut impl ::loom_runtime::DomOps, mount: ::loom_runtime::NodeHandle) -> (Signals, Vec<(::loom_runtime::NodeHandle, Action)>, Vec<(::loom_runtime::NodeHandle, fn(String) -> Action)>) {{"
     )
     .unwrap();
 
@@ -162,14 +217,30 @@ pub fn generate(component: &Component) -> String {
             BindingShape::ListString => {
                 writeln!(out, "    app.add_systems(::loom_runtime::list_reconcile_k_system::<String>);").unwrap();
             }
+            BindingShape::InputString => {
+                writeln!(out, "    app.add_systems(::loom_runtime::patch_input_system);").unwrap();
+            }
         }
     }
     writeln!(out, "    let mut actions: Vec<(::loom_runtime::NodeHandle, Action)> = Vec::new();").unwrap();
+    // `fn(String) -> Action` values (a tuple-variant constructor used bare,
+    // e.g. `Action::Action3`, is itself such a function — no closure
+    // allocated, so CLAUDE.md 금지 4 doesn't apply) — the live path's host
+    // glue (loom-demo) wires a real `input` DOM listener per entry, reading
+    // `event.target.value` and calling the constructor itself.
+    writeln!(
+        out,
+        "    let mut input_actions: Vec<(::loom_runtime::NodeHandle, fn(String) -> Action)> = Vec::new();"
+    )
+    .unwrap();
 
     let mut ctx = CodegenCtx {
         node_counter: 0,
         signal_entities: Vec::new(),
         action_index: 0,
+        cond_site_index: 0,
+        cond_site_fns: String::new(),
+        cond_site_fn_names: Vec::new(),
     };
     lower_node(&mut out, &component.root, "mount", component, &mut ctx);
 
@@ -184,13 +255,17 @@ pub fn generate(component: &Component) -> String {
         writeln!(out, "        {}: {},", s.name, entity_var).unwrap();
     }
     writeln!(out, "    }};").unwrap();
-    writeln!(out, "    (signals, actions)").unwrap();
+    writeln!(out, "    (signals, actions, input_actions)").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
+    // Per-site conditional reconcile functions (top-level, can't be emitted
+    // inline mid-`setup()`) — one per `CondBinding` site encountered above.
+    out.push_str(&ctx.cond_site_fns);
+
     generate_resume_action_by_symbol(&mut out, &actions, &variant_names);
     writeln!(out).unwrap();
-    generate_resume(&mut out, component);
+    generate_resume(&mut out, component, &ctx.cond_site_fn_names);
 
     out
 }
@@ -223,9 +298,11 @@ pub fn generate(component: &Component) -> String {
 /// remove without being asked to by an actual requirement yet.
 fn format_i32_capture_for_action(component: &Component, action: &ClickAction) -> String {
     let signal_name = match action {
-        ClickAction::Increment { signal } | ClickAction::Rotate { signal } | ClickAction::Append { signal, .. } => {
-            signal
-        }
+        ClickAction::Increment { signal }
+        | ClickAction::Rotate { signal }
+        | ClickAction::Append { signal, .. }
+        | ClickAction::Toggle { signal }
+        | ClickAction::SetString { signal } => signal,
     };
     component
         .signals
@@ -233,7 +310,19 @@ fn format_i32_capture_for_action(component: &Component, action: &ClickAction) ->
         .find(|s| &s.name == signal_name)
         .and_then(|s| match &s.init {
             SignalInit::I32(v) => Some(format!("{signal_name}:{v}")),
-            SignalInit::StringList(_) => None,
+            // None of these need a capture entry: StringList recovers row
+            // values from the DOM (list resume, see this module's doc
+            // comment); Bool recovers shown/hidden the same way (see
+            // `generate_resume`'s `SignalInit::Bool` arm); Str (input
+            // binding) recovers the live typed value the same way (see
+            // `generate_resume`'s `SignalInit::Str` arm) — all three are
+            // DOM-recovered, not capture-fallback-dependent, so omitting
+            // them is safe unconditionally, not just "safe today" like the
+            // I32 case. (`SetString` itself never actually reaches this
+            // function in practice — `JsxNode::InputBinding` gets its own
+            // LRef directly in `lower_node`, not through this Element-action
+            // path — but the match must stay exhaustive.)
+            SignalInit::StringList(_) | SignalInit::Bool(_) | SignalInit::Str(_) => None,
         })
         .unwrap_or_default()
 }
@@ -247,19 +336,26 @@ fn format_i32_capture_for_action(component: &Component, action: &ClickAction) ->
 /// way `setup()`'s `actions.push(...)` bakes it into the live path's
 /// `Action` value — it's compile-time known (Phase 1's IR only allows
 /// literal `.append("...")` arguments), so there's nothing for a caller to
-/// supply at resume time. This is why `resume_action_by_symbol` takes no
-/// `arg` parameter: every action shape this IR can express is fully
-/// determined by its symbol alone.
+/// supply at resume time. **`string_arg` (2026-07-24)** is the one exception
+/// to "every action shape is fully determined by its symbol alone": a
+/// `SetString` action's payload is a value the user just typed, which by
+/// construction cannot be known until the moment the real `input` DOM event
+/// fires — so unlike every other action, its host glue caller (see
+/// `ResumedComponent::dispatch`) must thread that live value through. Every
+/// other action ignores this parameter entirely.
 fn generate_resume_action_by_symbol(out: &mut String, actions: &[ClickAction], variant_names: &[String]) {
-    writeln!(out, "pub fn resume_action_by_symbol(symbol: &str) -> Action {{").unwrap();
+    writeln!(out, "pub fn resume_action_by_symbol(symbol: &str, string_arg: &str) -> Action {{").unwrap();
     writeln!(out, "    match symbol {{").unwrap();
     for (variant, action) in variant_names.iter().zip(actions.iter()) {
         match action {
-            ClickAction::Increment { .. } | ClickAction::Rotate { .. } => {
+            ClickAction::Increment { .. } | ClickAction::Rotate { .. } | ClickAction::Toggle { .. } => {
                 writeln!(out, "        {variant:?} => Action::{variant},").unwrap();
             }
             ClickAction::Append { literal, .. } => {
                 writeln!(out, "        {variant:?} => Action::{variant}({literal:?}.to_string()),").unwrap();
+            }
+            ClickAction::SetString { .. } => {
+                writeln!(out, "        {variant:?} => Action::{variant}(string_arg.to_string()),").unwrap();
             }
         }
     }
@@ -279,7 +375,7 @@ fn generate_resume_action_by_symbol(out: &mut String, actions: &[ClickAction], v
 /// node's `NodeHandle` — host glue supplies this (e.g. a
 /// `document.querySelector` wrapper), not generated code, same reason
 /// `setup()` takes `dom: &mut impl DomOps` instead of hardcoding a backend.
-fn generate_resume(out: &mut String, component: &Component) {
+fn generate_resume(out: &mut String, component: &Component, cond_site_fn_names: &[(String, String)]) {
     writeln!(
         out,
         "pub fn resume(app: &mut ::loom_runtime::LoomApp, dom: &mut impl ::loom_runtime::DomOps, mut find_node: impl FnMut(&str) -> ::loom_runtime::NodeHandle, captures: &[(&str, &str)]) -> Signals {{"
@@ -289,6 +385,10 @@ fn generate_resume(out: &mut String, component: &Component) {
     let has_list = component.signals.iter().any(|s| matches!(s.init, SignalInit::StringList(_)));
     if has_list {
         writeln!(out, "    app.add_systems(::loom_runtime::list_reconcile_k_system::<String>);").unwrap();
+    }
+    let has_input = component.signals.iter().any(|s| matches!(s.init, SignalInit::Str(_)));
+    if has_input {
+        writeln!(out, "    app.add_systems(::loom_runtime::patch_input_system);").unwrap();
     }
     for s in &component.signals {
         let entity_var = format!("{}_entity", s.name);
@@ -308,6 +408,54 @@ fn generate_resume(out: &mut String, component: &Component) {
                 )
                 .unwrap();
                 writeln!(out, "    }};").unwrap();
+            }
+            SignalInit::Bool(_) => {
+                // DOM-recovered, same reasoning as list resume above — no
+                // capture entry needed (`format_i32_capture_for_action`
+                // already omits `Bool` signals unconditionally). Unlike the
+                // I32/StringList cases, this doesn't need `captures` at all:
+                // `setup()` never toggles a conditional before the page is
+                // sent (nothing runs between `setup()` and its own settle
+                // tick that could flip a `Bool` signal), so SSR only ever
+                // produces two real states — wrapper rendered empty
+                // (`initial == false`) or wrapper rendered with its static
+                // content already inlined (`initial == true`, spawned by
+                // this same site's reconcile function during `setup()`'s
+                // settle tick). Whether the wrapper's children are empty or
+                // not is therefore a complete, correct read of shown/hidden
+                // for every SSR output this pipeline can actually produce —
+                // this deliberately does NOT cover a hidden-*after*-having-
+                // been-shown snapshot (nothing here persists a visibility
+                // style into SSR'd HTML for that case to be read back; see
+                // `cond.rs`'s `cond_reconcile_f_system` doc for why that
+                // state can still arise from a *live*, already-hydrated
+                // toggle — it just never reaches a fresh SSR pass).
+                writeln!(out, "    let {}_node = find_node({:?});", s.name, s.name).unwrap();
+                writeln!(
+                    out,
+                    "    let {}_adopted: Vec<(::loom_runtime::NodeHandle, String)> = dom.adopt_children({}_node);",
+                    s.name, s.name
+                )
+                .unwrap();
+                writeln!(out, "    let {}_shown = !{}_adopted.is_empty();", s.name, s.name).unwrap();
+                writeln!(
+                    out,
+                    "    let {}_children: Vec<::bevy_ecs::entity::Entity> = {}_adopted.iter().map(|_| app.world.spawn(()).id()).collect();",
+                    s.name, s.name
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({}_shown), ::loom_runtime::CondBlock {{ size: {}_children.len(), children: {}_children }}, ::loom_runtime::DomTarget({}_node))).id();",
+                    s.name, s.name, s.name, s.name
+                )
+                .unwrap();
+                let fn_name = cond_site_fn_names
+                    .iter()
+                    .find(|(signal, _)| signal == &s.name)
+                    .map(|(_, f)| f.clone())
+                    .unwrap_or_else(|| panic!("loomc internal error: no reconcile function recorded for conditional `{}`", s.name));
+                writeln!(out, "    app.add_systems({fn_name});").unwrap();
             }
             SignalInit::StringList(_) => {
                 // List resume recovers row *values* from the already-correct
@@ -351,6 +499,27 @@ fn generate_resume(out: &mut String, component: &Component) {
                 )
                 .unwrap();
             }
+            SignalInit::Str(_) => {
+                // DOM-recovered, same reasoning as list/cond resume above —
+                // no capture needed. Unlike those two, there's nothing to
+                // reconstruct beyond the value itself: `get_input_value`
+                // reads the *live* `.value` property directly (see that
+                // method's doc comment for why an attribute/captured value
+                // would be wrong the instant a user has typed anything).
+                writeln!(out, "    let {}_node = find_node({:?});", s.name, s.name).unwrap();
+                writeln!(
+                    out,
+                    "    let {}_value = dom.get_input_value({}_node);",
+                    s.name, s.name
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({}_value), ::loom_runtime::InputValueTarget, ::loom_runtime::DomTarget({}_node))).id();",
+                    s.name, s.name
+                )
+                .unwrap();
+            }
         }
     }
     // Every signal this `LoomApp` just spawned looks "Changed" to a patch
@@ -379,6 +548,7 @@ fn generate_resume(out: &mut String, component: &Component) {
 enum BindingShape {
     TextI32,
     ListString,
+    InputString,
 }
 
 fn collect_binding_shapes(node: &JsxNode) -> Vec<BindingShape> {
@@ -387,11 +557,17 @@ fn collect_binding_shapes(node: &JsxNode) -> Vec<BindingShape> {
         match node {
             JsxNode::TextBinding { .. } => shapes.push(BindingShape::TextI32),
             JsxNode::ListBinding { .. } => shapes.push(BindingShape::ListString),
+            JsxNode::InputBinding { .. } => shapes.push(BindingShape::InputString),
             JsxNode::Element { children, .. } => {
                 for c in children {
                     walk(c, shapes);
                 }
             }
+            // Conditionals register their own per-site reconcile function
+            // inline in `lower_node` (each site's spawned content differs,
+            // so there's no single shared System to add here the way
+            // `list_reconcile_k_system` is for every `ListBinding`).
+            JsxNode::CondBinding { .. } => {}
             JsxNode::StaticText(_) | JsxNode::RowItemText => {}
         }
     }
@@ -402,13 +578,25 @@ fn collect_binding_shapes(node: &JsxNode) -> Vec<BindingShape> {
 fn collect_actions(node: &JsxNode) -> Vec<ClickAction> {
     let mut actions = Vec::new();
     fn walk(node: &JsxNode, actions: &mut Vec<ClickAction>) {
-        if let JsxNode::Element { action, children, .. } = node {
-            if let Some(a) = action {
-                actions.push(a.clone());
+        match node {
+            JsxNode::Element { action, children, .. } => {
+                if let Some(a) = action {
+                    actions.push(a.clone());
+                }
+                for c in children {
+                    walk(c, actions);
+                }
             }
-            for c in children {
-                walk(c, actions);
+            // Synthesized, not user-written — every `InputBinding` implies
+            // exactly one `SetString` action, the same way `collect_actions`
+            // finds one `ClickAction` per `onClick`-bearing `Element`. Not
+            // reachable via `Element`'s own `action` field since
+            // `InputBinding` is its own `JsxNode` variant (see that type's
+            // doc comment for why).
+            JsxNode::InputBinding { signal } => {
+                actions.push(ClickAction::SetString { signal: signal.clone() });
             }
+            _ => {}
         }
     }
     walk(node, &mut actions);
@@ -418,13 +606,36 @@ fn collect_actions(node: &JsxNode) -> Vec<ClickAction> {
 struct CodegenCtx {
     node_counter: u32,
     signal_entities: Vec<(String, String)>, // (signal name, rust var holding its Entity)
+    /// Counts `ActionN` variants in the exact tree order `collect_actions`
+    /// (in `generate()`) assigned them — incremented by *both* the
+    /// `Element` arm (onClick) and the `InputBinding` arm (synthesized
+    /// `SetString`), since `collect_actions` counts both in one pass. Must
+    /// stay a single shared counter, not two independent ones, or an
+    /// `InputBinding` sitting between two onClick elements in the tree would
+    /// desync this arm's `ActionN` naming from `collect_actions`'s.
     action_index: usize,
+    cond_site_index: usize,
+    /// Source of each `CondBinding` site's generated reconcile function,
+    /// appended to `out` once at the end of `generate()` (top-level
+    /// functions can't be emitted inline mid-`setup()`).
+    cond_site_fns: String,
+    /// (cond signal name, generated function name) — `generate_resume`
+    /// needs this to register the *same* per-site function `setup()` used,
+    /// not the generic `cond_reconcile_f_system` (which doesn't know this
+    /// site's actual static content) — see `generate_resume`'s `Bool` arm.
+    cond_site_fn_names: Vec<(String, String)>,
 }
 
 impl CodegenCtx {
     fn fresh_node_var(&mut self) -> String {
         let name = format!("node_{}", self.node_counter);
         self.node_counter += 1;
+        name
+    }
+
+    fn fresh_cond_site_fn(&mut self) -> String {
+        let name = format!("cond_reconcile_site_{}", self.cond_site_index);
+        self.cond_site_index += 1;
         name
     }
 }
@@ -507,6 +718,167 @@ fn lower_node(
             writeln!(out, "    dom.set_attribute({parent_var}, \"data-loom-id\", {signal:?});").unwrap();
             ctx.signal_entities.push((signal.clone(), entity_var));
         }
+        // `{cond() && <tag>...</tag>}` — RQ1 Track T candidate F
+        // (`cond_reconcile_f_system`), but this compiler-generated site
+        // needs its *own* reconcile function rather than reusing that
+        // generic System: F's benchmark variant hardcodes its spawn content
+        // (a fixed `<span>0</span>` per child, standing in for "whatever a
+        // conditional subtree contains" for measurement purposes), whereas
+        // a real compiled site has real, different static content per call
+        // site. So the function generated below literally replicates F's
+        // control flow (see cond.rs's doc comment) with this site's actual
+        // `StaticText` children inlined as `DomWrite::AppendStaticText`
+        // calls, instead of parameterizing `cond_reconcile_f_system` itself
+        // — keeps that already-tested/benchmarked System untouched.
+        JsxNode::CondBinding { cond, then_branch } => {
+            let JsxNode::Element {
+                tag,
+                class,
+                action,
+                children,
+            } = then_branch.as_ref()
+            else {
+                panic!("loomc internal error: CondBinding's then_branch must be an Element");
+            };
+            if action.is_some() {
+                panic!(
+                    "loomc: Phase 1 conditional content may not carry its own `onClick` — `{{{cond}() && <{tag} onClick=...>}}` is out of scope (the toggle button must be a separate sibling element, see codegen.rs's CondBinding arm)"
+                );
+            }
+            let texts: Vec<&str> = children
+                .iter()
+                .map(|c| match c {
+                    JsxNode::StaticText(t) => t.as_str(),
+                    other => panic!(
+                        "loomc internal error: conditional content must be static-only (lower.rs should already reject this) — got {other:?}"
+                    ),
+                })
+                .collect();
+
+            let init = &component
+                .signals
+                .iter()
+                .find(|s| &s.name == cond)
+                .unwrap_or_else(|| panic!("loomc internal error: unknown signal {cond}"))
+                .init;
+            let SignalInit::Bool(initial) = init else {
+                panic!("loomc: `{{{cond}() && ...}}` requires a Bool signal");
+            };
+
+            // The wrapper is created eagerly, same as any other static
+            // element — it just starts with no children when `initial` is
+            // `false` (an empty element is indistinguishable from "hidden"
+            // without any extra bookkeeping, matching the hand-written
+            // `ssr_render_full_app` proof this replaces). Its *content* is
+            // spawned lazily, on the site's own reconcile function's first
+            // `true` observation, exactly like `cond_reconcile_f_system`.
+            let node_var = ctx.fresh_node_var();
+            let class_arg = match class {
+                Some(c) => format!("Some({c:?})"),
+                None => "None".to_string(),
+            };
+            writeln!(
+                out,
+                "    let {node_var} = dom.create_element({parent_var}, {tag:?}, {class_arg});"
+            )
+            .unwrap();
+            writeln!(out, "    dom.set_attribute({node_var}, \"data-loom-id\", {cond:?});").unwrap();
+
+            let entity_var = format!("{cond}_entity");
+            writeln!(
+                out,
+                "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({initial}), ::loom_runtime::CondBlock::with_size({size}), ::loom_runtime::DomTarget({node_var}))).id();",
+                size = texts.len()
+            )
+            .unwrap();
+            ctx.signal_entities.push((cond.clone(), entity_var));
+
+            let fn_name = ctx.fresh_cond_site_fn();
+            let mut site_fn = String::new();
+            writeln!(site_fn, "fn {fn_name}(").unwrap();
+            writeln!(
+                site_fn,
+                "    mut q: ::bevy_ecs::prelude::Query<(&::loom_runtime::Signal<bool>, &mut ::loom_runtime::CondBlock, &::loom_runtime::DomTarget), ::bevy_ecs::prelude::Changed<::loom_runtime::Signal<bool>>>,"
+            )
+            .unwrap();
+            writeln!(site_fn, "    mut commands: ::bevy_ecs::prelude::Commands,").unwrap();
+            writeln!(
+                site_fn,
+                "    mut pending: ::bevy_ecs::prelude::ResMut<::loom_runtime::PendingDomWrites>,"
+            )
+            .unwrap();
+            writeln!(site_fn, ") {{").unwrap();
+            writeln!(site_fn, "    for (cond, mut block, anchor) in &mut q {{").unwrap();
+            writeln!(site_fn, "        if block.children.is_empty() {{").unwrap();
+            writeln!(site_fn, "            if cond.0 {{").unwrap();
+            for text in &texts {
+                writeln!(
+                    site_fn,
+                    "                pending.0.push(::loom_runtime::DomWrite::AppendStaticText {{ parent: anchor.0, text: {text:?}.to_string() }});"
+                )
+                .unwrap();
+                writeln!(site_fn, "                block.children.push(commands.spawn(()).id());").unwrap();
+            }
+            writeln!(site_fn, "            }}").unwrap();
+            writeln!(site_fn, "        }} else {{").unwrap();
+            writeln!(
+                site_fn,
+                "            pending.0.push(::loom_runtime::DomWrite::SetVisible {{ node: anchor.0, visible: cond.0 }});"
+            )
+            .unwrap();
+            writeln!(site_fn, "        }}").unwrap();
+            writeln!(site_fn, "    }}").unwrap();
+            writeln!(site_fn, "}}").unwrap();
+            writeln!(site_fn).unwrap();
+            ctx.cond_site_fns.push_str(&site_fn);
+            ctx.cond_site_fn_names.push((cond.clone(), fn_name.clone()));
+
+            writeln!(out, "    app.add_systems({fn_name});").unwrap();
+        }
+        // `<input value={s()} onInput={(e) => s.set(e.target.value)}/>` —
+        // created eagerly like any static element (its initial `value` is
+        // set via the same `set_attribute` path `class`/`data-loom-id` use
+        // — see `DomOps::set_input_value`'s doc comment for why *ongoing*
+        // writes need a different, property-setting operation instead).
+        JsxNode::InputBinding { signal } => {
+            let init = &component
+                .signals
+                .iter()
+                .find(|s| &s.name == signal)
+                .unwrap_or_else(|| panic!("loomc internal error: unknown signal {signal}"))
+                .init;
+            let SignalInit::Str(initial) = init else {
+                panic!("loomc: <input> binding requires a Str signal");
+            };
+
+            let node_var = ctx.fresh_node_var();
+            writeln!(out, "    let {node_var} = dom.create_element({parent_var}, \"input\", None);").unwrap();
+            writeln!(out, "    dom.set_attribute({node_var}, \"value\", {initial:?});").unwrap();
+            writeln!(out, "    dom.set_attribute({node_var}, \"data-loom-id\", {signal:?});").unwrap();
+
+            let entity_var = format!("{signal}_entity");
+            writeln!(
+                out,
+                "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({initial:?}.to_string()), ::loom_runtime::InputValueTarget, ::loom_runtime::DomTarget({node_var}))).id();"
+            )
+            .unwrap();
+            ctx.signal_entities.push((signal.clone(), entity_var));
+
+            // Shares `ctx.action_index` with the `Element` arm below rather
+            // than keeping a separate counter — `collect_actions` (in
+            // `generate()`) walks the tree in this exact same order and
+            // counts *both* onClick-bearing Elements and InputBindings as it
+            // goes (see that function), so incrementing one shared counter
+            // at both sites is what keeps this arm's variant name in sync
+            // with the `ActionN` name `collect_actions` already assigned
+            // this exact `SetString` action. No capture needed (Str is
+            // DOM-recovered, see `generate_resume`'s `SignalInit::Str` arm).
+            let variant = format!("Action{}", ctx.action_index);
+            ctx.action_index += 1;
+            let lref = format!("{}_chunk|{variant}|", component.name);
+            writeln!(out, "    dom.set_attribute({node_var}, \"data-loom-lref\", {lref:?});").unwrap();
+            writeln!(out, "    input_actions.push(({node_var}, Action::{variant}));").unwrap();
+        }
         JsxNode::Element {
             tag,
             class,
@@ -537,11 +909,17 @@ fn lower_node(
                 let variant = format!("Action{}", ctx.action_index);
                 ctx.action_index += 1;
                 let value = match action {
-                    ClickAction::Increment { .. } | ClickAction::Rotate { .. } => {
+                    ClickAction::Increment { .. } | ClickAction::Rotate { .. } | ClickAction::Toggle { .. } => {
                         format!("Action::{variant}")
                     }
                     ClickAction::Append { literal, .. } => {
                         format!("Action::{variant}({literal:?}.to_string())")
+                    }
+                    ClickAction::SetString { .. } => {
+                        unreachable!(
+                            "SetString is synthesized only for JsxNode::InputBinding (see collect_actions), \
+                             never attached as an Element's own onClick action"
+                        )
                     }
                 };
                 writeln!(out, "    actions.push(({node_var}, {value}));").unwrap();

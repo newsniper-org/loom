@@ -23,6 +23,15 @@ pub struct MockDom {
     /// descendants that node has (RQ1 Track T's subtree-size claim for F).
     pub visibility_writes: u32,
     pub attributes: std::collections::HashMap<u32, Vec<(String, String)>>,
+    /// `<input>` two-way binding's live value, written by
+    /// `patch_input_system` via `DomOps::set_input_value` — separate from
+    /// `text` (which models text-node/`textContent` content, not an input's
+    /// `value` property).
+    pub input_values: std::collections::HashMap<u32, String>,
+    /// Count of `set_input_value` calls, independent of which node — lets
+    /// tests assert exactly how many reactive writes a patch tick produced
+    /// (same pattern as `visibility_writes`).
+    pub input_value_writes: u32,
 }
 
 impl MockDom {
@@ -119,5 +128,25 @@ impl DomOps for MockDom {
             .iter()
             .map(|&id| (NodeHandle(id), self.text.get(&id).cloned().unwrap_or_default()))
             .collect()
+    }
+
+    fn set_input_value(&mut self, node: NodeHandle, value: &str) {
+        self.input_values.insert(node.0, value.to_string());
+        self.input_value_writes += 1;
+    }
+
+    fn get_input_value(&mut self, node: NodeHandle) -> String {
+        // Prefers a live value (set via `set_input_value`) over the
+        // creation-time `value` *attribute* — mirrors the real distinction
+        // `DomOps::set_input_value`'s doc comment describes (property vs
+        // attribute), so a test seeding only the initial attribute (via
+        // `set_attribute`, the same path codegen's `setup()` uses) still
+        // gets a sensible read before any reactive write has happened.
+        self.input_values.get(&node.0).cloned().unwrap_or_else(|| {
+            self.attributes
+                .get(&node.0)
+                .and_then(|attrs| attrs.iter().rev().find(|(k, _)| k == "value").map(|(_, v)| v.clone()))
+                .unwrap_or_default()
+        })
     }
 }

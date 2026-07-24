@@ -105,6 +105,8 @@ fn try_lower_signal_decl(decl: &VarDeclarator) -> Option<SignalDecl> {
         .unwrap_or_else(|| panic!("loomc: signal() requires one argument"));
     let init = match unwrap_paren(&arg.expr) {
         Expr::Lit(Lit::Num(Number { value, .. })) => SignalInit::I32(*value as i32),
+        Expr::Lit(Lit::Bool(b)) => SignalInit::Bool(b.value),
+        Expr::Lit(Lit::Str(s)) => SignalInit::Str(s.value.to_string_lossy().into_owned()),
         Expr::Array(ArrayLit { elems, .. }) => {
             let items = elems
                 .iter()
@@ -123,7 +125,7 @@ fn try_lower_signal_decl(decl: &VarDeclarator) -> Option<SignalDecl> {
             SignalInit::StringList(items)
         }
         other => panic!(
-            "loomc: signal(...) initializer must be a number or string-array literal, got: {other:?}"
+            "loomc: signal(...) initializer must be a number, boolean, string, or string-array literal, got: {other:?}"
         ),
     };
     Some(SignalDecl {
@@ -140,6 +142,10 @@ fn lower_element(el: &JSXElement, signals: &[SignalDecl], row_var: Option<&str>)
         panic!("loomc: only plain tag names are supported, got: {:?}", el.opening.name);
     };
     let tag = tag.to_string();
+
+    if tag == "input" {
+        return lower_input_binding(el, signals);
+    }
 
     let mut class = None;
     let mut action = None;
@@ -176,6 +182,164 @@ fn lower_element(el: &JSXElement, signals: &[SignalDecl], row_var: Option<&str>)
         action,
         children,
     }
+}
+
+/// `<input value={s()} onInput={(e) => s.set(e.target.value)}/>` — Phase 1's
+/// two-way text binding. Handled as its own `JsxNode` (not a generic
+/// `Element`, which has no slot for "this element's value and its update
+/// handler are the same binding site") — the same reason `{cond() && <X/>}`
+/// got its own `JsxNode::CondBinding` rather than riding on `Element`.
+fn lower_input_binding(el: &JSXElement, signals: &[SignalDecl]) -> JsxNode {
+    let mut value_signal: Option<String> = None;
+    let mut oninput_signal: Option<String> = None;
+    for attr in &el.opening.attrs {
+        let JSXAttrOrSpread::JSXAttr(attr) = attr else {
+            panic!("loomc: spread attributes are not supported");
+        };
+        let JSXAttrName::Ident(IdentName { sym: name, .. }) = &attr.name else {
+            panic!("loomc: namespaced attributes are not supported");
+        };
+        match name.as_ref() {
+            "value" => value_signal = Some(lower_input_value_attr(attr, signals)),
+            "onInput" => oninput_signal = Some(lower_input_oninput_attr(attr, signals)),
+            other => panic!(
+                "loomc: <input> only supports `value`/`onInput` (Phase 1 scope: two-way text binding only), got `{other}`"
+            ),
+        }
+    }
+    let value_signal =
+        value_signal.unwrap_or_else(|| panic!("loomc: <input> requires a `value={{signalName()}}` attribute"));
+    let oninput_signal = oninput_signal.unwrap_or_else(|| {
+        panic!("loomc: <input> requires an `onInput={{(e) => signalName.set(e.target.value)}}` attribute")
+    });
+    assert_eq!(
+        value_signal, oninput_signal,
+        "loomc: <input>'s `value` and `onInput` must reference the same signal, got `{value_signal}` and `{oninput_signal}`"
+    );
+    JsxNode::InputBinding { signal: value_signal }
+}
+
+fn lower_input_value_attr(attr: &JSXAttr, signals: &[SignalDecl]) -> String {
+    let Some(JSXAttrValue::JSXExprContainer(JSXExprContainer {
+        expr: JSXExpr::Expr(expr),
+        ..
+    })) = &attr.value
+    else {
+        panic!("loomc: <input>'s `value` must be `{{signalName()}}`");
+    };
+    let Expr::Call(CallExpr {
+        callee: Callee::Expr(callee),
+        args,
+        ..
+    }) = unwrap_paren(expr)
+    else {
+        panic!("loomc: <input>'s `value` must be a bare `signalName()` call");
+    };
+    if !args.is_empty() {
+        panic!("loomc: `signalName()` in <input>'s `value` must take no arguments");
+    }
+    let Expr::Ident(Ident { sym, .. }) = callee.as_ref() else {
+        panic!("loomc: <input>'s `value` must call a bare signal identifier");
+    };
+    let name = sym.to_string();
+    let signal = signals
+        .iter()
+        .find(|s| s.name == name)
+        .unwrap_or_else(|| panic!("loomc: <input>'s `value` references unknown signal `{name}`"));
+    assert!(
+        matches!(signal.init, SignalInit::Str(_)),
+        "loomc: <input>'s `value` requires a Str signal, `{name}` is not one"
+    );
+    name
+}
+
+fn lower_input_oninput_attr(attr: &JSXAttr, signals: &[SignalDecl]) -> String {
+    let Some(JSXAttrValue::JSXExprContainer(JSXExprContainer {
+        expr: JSXExpr::Expr(expr),
+        ..
+    })) = &attr.value
+    else {
+        panic!("loomc: <input>'s `onInput` must be `{{(e) => ...}}`");
+    };
+    let Expr::Arrow(ArrowExpr { body, params, .. }) = unwrap_paren(expr) else {
+        panic!("loomc: <input>'s `onInput` must be an arrow function");
+    };
+    let [Pat::Ident(BindingIdent { id: event_param, .. })] = params.as_slice() else {
+        panic!("loomc: <input>'s `onInput` arrow must take exactly one parameter, e.g. `(e) => ...`");
+    };
+    let event_name = event_param.sym.to_string();
+    let BlockStmtOrExpr::Expr(body_expr) = body.as_ref() else {
+        panic!("loomc: <input>'s `onInput` arrow body must be a single expression `(e) => signal.set(e.target.value)` (not a block `{{ ... }}`)");
+    };
+    let Expr::Call(CallExpr {
+        callee: Callee::Expr(callee),
+        args,
+        ..
+    }) = unwrap_paren(body_expr)
+    else {
+        panic!("loomc: <input>'s `onInput` body must be a single `signal.set(...)` call");
+    };
+    let Expr::Member(MemberExpr { obj, prop, .. }) = callee.as_ref() else {
+        panic!("loomc: <input>'s `onInput` body must call a method on a signal, e.g. `signal.set(...)`");
+    };
+    let Expr::Ident(Ident { sym: signal_name, .. }) = obj.as_ref() else {
+        panic!("loomc: <input>'s `onInput` target must be a bare signal identifier");
+    };
+    let signal_name = signal_name.to_string();
+    let MemberProp::Ident(IdentName { sym: method, .. }) = prop else {
+        panic!("loomc: unsupported method reference in <input>'s `onInput`");
+    };
+    if method != "set" {
+        panic!("loomc: <input>'s `onInput` must call `.set(...)`, got `.{method}(...)`");
+    }
+    let arg = args
+        .first()
+        .unwrap_or_else(|| panic!("loomc: `.set(...)` requires one argument, `e.target.value`"));
+    let Expr::Member(MemberExpr {
+        obj: target_obj,
+        prop: value_prop,
+        ..
+    }) = unwrap_paren(&arg.expr)
+    else {
+        panic!("loomc: <input>'s `.set(...)` argument must be `{event_name}.target.value`");
+    };
+    let MemberProp::Ident(IdentName { sym: value_sym, .. }) = value_prop else {
+        panic!("loomc: <input>'s `.set(...)` argument must be `{event_name}.target.value`");
+    };
+    if value_sym != "value" {
+        panic!("loomc: <input>'s `.set(...)` argument must end in `.value`, got `.{value_sym}`");
+    }
+    let Expr::Member(MemberExpr {
+        obj: event_obj,
+        prop: target_prop,
+        ..
+    }) = target_obj.as_ref()
+    else {
+        panic!("loomc: <input>'s `.set(...)` argument must be `{event_name}.target.value`");
+    };
+    let MemberProp::Ident(IdentName { sym: target_sym, .. }) = target_prop else {
+        panic!("loomc: <input>'s `.set(...)` argument must be `{event_name}.target.value`");
+    };
+    if target_sym != "target" {
+        panic!("loomc: <input>'s `.set(...)` argument must be `{event_name}.target.value`, got `.{target_sym}` instead of `.target`");
+    }
+    let Expr::Ident(Ident { sym: event_ref, .. }) = event_obj.as_ref() else {
+        panic!("loomc: <input>'s `.set(...)` argument must reference the arrow's own event parameter `{event_name}`");
+    };
+    if event_ref.as_ref() != event_name {
+        panic!(
+            "loomc: <input>'s `.set(...)` argument must reference the arrow's own event parameter `{event_name}`, got `{event_ref}`"
+        );
+    }
+    let signal = signals
+        .iter()
+        .find(|s| s.name == signal_name)
+        .unwrap_or_else(|| panic!("loomc: <input>'s `onInput` references unknown signal `{signal_name}`"));
+    assert!(
+        matches!(signal.init, SignalInit::Str(_)),
+        "loomc: <input>'s `onInput` requires a Str signal, `{signal_name}` is not one"
+    );
+    signal_name
 }
 
 fn lower_click_action(attr: &JSXAttr, signals: &[SignalDecl]) -> ClickAction {
@@ -249,7 +413,14 @@ fn lower_click_action(attr: &JSXAttr, signals: &[SignalDecl]) -> ClickAction {
                 literal: s.value.to_string_lossy().into_owned(),
             }
         }
-        other => panic!("loomc: unsupported signal method `.{other}()` (supported: increment, append, rotate)"),
+        "toggle" => {
+            assert!(
+                matches!(signal.init, SignalInit::Bool(_)),
+                "loomc: `.toggle()` requires a Bool signal, `{signal_name}` is not one"
+            );
+            ClickAction::Toggle { signal: signal_name }
+        }
+        other => panic!("loomc: unsupported signal method `.{other}()` (supported: increment, append, rotate, toggle)"),
     }
 }
 
@@ -280,6 +451,55 @@ fn lower_expr_container(expr: &Expr, signals: &[SignalDecl], row_var: Option<&st
     match unwrap_paren(expr) {
         // `{item}` inside a list row template.
         Expr::Ident(Ident { sym, .. }) if row_var == Some(sym.as_ref()) => JsxNode::RowItemText,
+
+        // `{cond() && <tag>...</tag>}` — compiles to RQ1 Track T candidate F.
+        Expr::Bin(BinExpr {
+            op: BinaryOp::LogicalAnd,
+            left,
+            right,
+            ..
+        }) => {
+            let Expr::Call(CallExpr {
+                callee: Callee::Expr(callee),
+                args,
+                ..
+            }) = unwrap_paren(left)
+            else {
+                panic!("loomc: conditional's left side must be a bare `signalName()` boolean read");
+            };
+            if !args.is_empty() {
+                panic!("loomc: `signalName()` in a conditional must take no arguments");
+            }
+            let Expr::Ident(Ident { sym: cond_name, .. }) = callee.as_ref() else {
+                panic!("loomc: conditional's left side must be a bare signal identifier call");
+            };
+            let cond_name = cond_name.to_string();
+            let signal = signals
+                .iter()
+                .find(|s| s.name == cond_name)
+                .unwrap_or_else(|| panic!("loomc: `{{{cond_name}() && ...}}` references unknown signal `{cond_name}`"));
+            assert!(
+                matches!(signal.init, SignalInit::Bool(_)),
+                "loomc: `&&`-conditional requires a Bool signal, `{cond_name}` is not one"
+            );
+
+            let Expr::JSXElement(then_el) = unwrap_paren(right) else {
+                panic!("loomc: conditional's right side must be a single JSX element");
+            };
+            let then_branch = lower_element(then_el, signals, row_var);
+            let JsxNode::Element { children, .. } = &then_branch else {
+                unreachable!()
+            };
+            if !children.iter().all(|c| matches!(c, JsxNode::StaticText(_))) {
+                panic!(
+                    "loomc: Phase 1 conditional content must be static-only (no nested {{...}} bindings yet) — got {children:?}"
+                );
+            }
+            JsxNode::CondBinding {
+                cond: cond_name,
+                then_branch: Box::new(then_branch),
+            }
+        }
 
         // `{signalName()}` — a bare zero-arg call to a known signal.
         Expr::Call(CallExpr {

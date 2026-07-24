@@ -58,6 +58,13 @@ impl std::fmt::Display for ItemId {
 
 enum Workload {
     Swap,
+    /// W2 (RQ1-benchmark-protocol.md §3.1) — full Fisher-Yates permutation,
+    /// as opposed to `Shuffle10`'s partial relabeling. Added alongside the
+    /// row-depth axis specifically because RQ1 §9's D-rejection gate (iii)
+    /// needs `{W1,W2,W3,W4}×{R1,R2}` — W2 didn't exist in this harness
+    /// before (stated plainly: the core grid measured so far only ever
+    /// covered W1/W3/W4/W5/remove_middle).
+    Shuffle,
     Shuffle10,
     HeadInsert,
     Append,
@@ -65,8 +72,9 @@ enum Workload {
 }
 
 impl Workload {
-    const ALL: [Workload; 5] = [
+    const ALL: [Workload; 6] = [
         Workload::Swap,
+        Workload::Shuffle,
         Workload::Shuffle10,
         Workload::HeadInsert,
         Workload::Append,
@@ -76,6 +84,7 @@ impl Workload {
     fn name(&self) -> &'static str {
         match self {
             Workload::Swap => "swap",
+            Workload::Shuffle => "shuffle",
             Workload::Shuffle10 => "shuffle10",
             Workload::HeadInsert => "head_insert",
             Workload::Append => "append",
@@ -83,16 +92,30 @@ impl Workload {
         }
     }
 
+    /// Fisher-Yates, using the shared per-rep `Rng` so every candidate in a
+    /// rep sees the identical target permutation (same pairing discipline
+    /// as `Shuffle10`).
+    fn fisher_yates<T>(v: &mut [T], rng: &mut Rng) {
+        for i in (1..v.len()).rev() {
+            let j = rng.below(i + 1);
+            v.swap(i, j);
+        }
+    }
+
     /// Applies this workload to a *fresh copy* of the baseline list, using
-    /// `rng` only where randomness is called for (Shuffle10/inserts) so
-    /// every candidate sees the identical target sequence for a given rep.
-    /// `fresh` mints a never-seen-before item for insert-shaped workloads.
+    /// `rng` only where randomness is called for (Shuffle/Shuffle10/inserts)
+    /// so every candidate sees the identical target sequence for a given
+    /// rep. `fresh` mints a never-seen-before item for insert-shaped
+    /// workloads.
     fn apply<T: Clone>(&self, baseline: &[T], rng: &mut Rng, fresh: impl Fn(u64) -> T) -> Vec<T> {
         let mut v = baseline.to_vec();
         match self {
             Workload::Swap => {
                 let last = v.len() - 1;
                 v.swap(0, last);
+            }
+            Workload::Shuffle => {
+                Self::fisher_yates(&mut v, rng);
             }
             Workload::Shuffle10 => {
                 let moves = (v.len() / 10).max(1);
@@ -156,10 +179,12 @@ fn make_k<T: Send + Sync + Clone + ToString + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
+    row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "K");
     let (mut dom, handle) = BrowserDom::new(document.clone(), root);
     let mut app = LoomApp::new();
+    app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_k_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
@@ -170,10 +195,12 @@ fn make_c<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
+    row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "C");
     let (mut dom, handle) = BrowserDom::new(document.clone(), root);
     let mut app = LoomApp::new();
+    app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_c_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
@@ -184,10 +211,12 @@ fn make_d<T: Send + Sync + Clone + ToString + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
+    row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "D");
     let (mut dom, handle) = BrowserDom::new(document.clone(), root);
     let mut app = LoomApp::new();
+    app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_d_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
@@ -198,10 +227,12 @@ fn make_e<T: Send + Sync + Clone + ToString + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
+    row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "E");
     let (mut dom, handle) = BrowserDom::new(document.clone(), root);
     let mut app = LoomApp::new();
+    app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_e_system::<T>);
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
@@ -217,10 +248,12 @@ fn make_d_lis<T: Send + Sync + Clone + ToString + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
+    row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "D-LIS");
     let (mut dom, handle) = BrowserDom::new(document.clone(), root);
     let mut app = LoomApp::new();
+    app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_d_lis_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
@@ -232,10 +265,12 @@ fn make_e_lis<T: Send + Sync + Clone + ToString + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
+    row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "E-LIS");
     let (mut dom, handle) = BrowserDom::new(document.clone(), root);
     let mut app = LoomApp::new();
+    app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_e_lis_system::<T>);
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
@@ -243,7 +278,7 @@ fn make_e_lis<T: Send + Sync + Clone + ToString + 'static>(
     Candidate { name: "E-LIS", app, dom, entity, _marker: std::marker::PhantomData }
 }
 
-type Maker<T> = fn(&web_sys::Document, &web_sys::Node, Vec<T>) -> Candidate<T>;
+type Maker<T> = fn(&web_sys::Document, &web_sys::Node, Vec<T>, usize) -> Candidate<T>;
 
 /// All 6 Track L candidates, measured together every time so every result
 /// set shares the same page load / hardware / JIT-warmup conditions.
@@ -266,6 +301,7 @@ fn run_combination<T, F>(
     reps: u32,
     initial: Vec<T>,
     fresh: F,
+    row_bindings: usize,
     out: &mut String,
     first_entry: &mut bool,
 ) where
@@ -278,7 +314,7 @@ fn run_combination<T, F>(
 
     let mut candidates: Vec<Candidate<T>> = all_makers()
         .iter()
-        .map(|maker| maker(document, &combo_node, initial.clone()))
+        .map(|maker| maker(document, &combo_node, initial.clone(), row_bindings))
         .collect();
 
     for workload in &Workload::ALL {
@@ -302,11 +338,12 @@ fn run_combination<T, F>(
                 .collect::<Vec<_>>()
                 .join(", ");
             out.push_str(&format!(
-                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"reps\": {}, \"samples_ms\": [{}]}}",
+                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"samples_ms\": [{}]}}",
                 candidate.name,
                 workload.name(),
                 type_name,
                 n,
+                row_bindings,
                 reps,
                 samples_json
             ));
@@ -330,9 +367,12 @@ pub fn start() -> Result<(), JsValue> {
     let mut report = String::from("[\n");
     let mut first_entry = true;
 
-    // String (heap) axis: full N-scaling. REPS shrinks as n grows so total
-    // wall time stays bounded — small n needs more reps to see through
-    // measurement noise, large n's signal dominates noise on fewer reps.
+    // String (heap) axis: full N-scaling, row depth R1 (default, 1 binding
+    // per row — RQ1-benchmark-protocol.md §3.2). REPS shrinks as n grows so
+    // total wall time stays bounded — small n needs more reps to see
+    // through measurement noise, large n's signal dominates noise on fewer
+    // reps. Now also covers W2 (full shuffle) alongside the original 5
+    // workloads — RQ1 §9's D-rejection gate (iii) needs `{W1,W2,W3,W4}`.
     for &(n, reps) in &[(100usize, 30u32), (1000, 15), (10000, 6)] {
         let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
         run_combination(
@@ -343,6 +383,7 @@ pub fn start() -> Result<(), JsValue> {
             reps,
             initial,
             |seed| format!("new-{seed}"),
+            1, // R1
             &mut report,
             &mut first_entry,
         );
@@ -362,6 +403,31 @@ pub fn start() -> Result<(), JsValue> {
             15,
             initial,
             |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
+            1, // R1
+            &mut report,
+            &mut first_entry,
+        );
+    }
+
+    // Row-depth axis: R2 ("binding 8개", RQ1-benchmark-protocol.md §3.2) at
+    // n=1,000 String(heap) — needed specifically for RQ1 §9's D-rejection
+    // gate (iii), which requires `{W1,W2,W3,W4}×{R1,R2}`. Not a full
+    // N-scaling sweep at R2 (stated plainly, matching the POD axis's own
+    // partial-coverage precedent) — the D-vs-K decision this axis exists to
+    // inform doesn't need one (see research-questions/
+    // RQ1-dynamic-control-flow-scheduling.md's row-depth write-up).
+    {
+        let n = 1000;
+        let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
+        run_combination(
+            &document,
+            &container_node,
+            "String(heap)",
+            n,
+            15,
+            initial,
+            |seed| format!("new-{seed}"),
+            8, // R2
             &mut report,
             &mut first_entry,
         );

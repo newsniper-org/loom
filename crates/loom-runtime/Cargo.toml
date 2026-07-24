@@ -8,7 +8,7 @@ bevy_ecs = "0.14"
 js-sys = { version = "0.3.103", optional = true }
 smallvec = "1"
 wasm-bindgen = { version = "0.2.126", optional = true }
-web-sys = { version = "0.3.103", features = ["Document", "Element", "Window", "Node", "NodeList", "HtmlElement", "Event", "MouseEvent", "EventTarget", "DomTokenList", "console", "Text", "CssStyleDeclaration"], optional = true }
+web-sys = { version = "0.3.103", features = ["Document", "Element", "Window", "Node", "NodeList", "HtmlElement", "HtmlInputElement", "Event", "MouseEvent", "EventTarget", "DomTokenList", "console", "Text", "CssStyleDeclaration"], optional = true }
 
 [dev-dependencies]
 

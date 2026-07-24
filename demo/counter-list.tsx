@@ -9,6 +9,8 @@ import { signal } from "loom";
 export function App() {
   const count = signal(0);
   const items = signal(["a", "b", "c"]);
+  const details = signal(false);
+  const name = signal("");
 
   return (
     <div>
@@ -22,6 +24,9 @@ export function App() {
       </ul>
       <button onClick={() => items.append("new")}>append</button>
       <button onClick={() => items.rotate()}>rotate</button>
+      <button onClick={() => details.toggle()}>toggle details</button>
+      {details() && <p class="details">shown!</p>}
+      <input value={name()} onInput={(e) => name.set(e.target.value)} />
     </div>
   );
 }

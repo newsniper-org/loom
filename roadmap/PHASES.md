@@ -85,8 +85,28 @@ client=server 동일 프로세스(Node나 WASM 테스트 하네스) 가정.
      거의 매회 0 초과) F는 같은 크기에서도 여전히 사실상 0(0-3% 표본만 0 초과)
      — **F의 토글 비용이 서브트리 크기와 무관하게 O(1)이라는 RQ1의 핵심 주장이
      실측으로 확정됨**. 상세는 RQ1 문서 "트랙 T 재실측" 절, 원시 데이터
-     `research-questions/data/rq1-phase1-track-t-toggle-v2-*.json`. RQ1 자체의
-     잠정 선택(트랙 L/T 모두)은 여전히 미착수.
+     `research-questions/data/rq1-phase1-track-t-toggle-v2-*.json`.
+
+**row 깊이 축 구현 + RQ1-benchmark-protocol.md §9 실제 적용 (2026-07-24)**:
+row 깊이(R1/R2) 축을 실제로 구현·측정(`RowBindings` Resource,
+`crates/loom-bench`에 W2(전체 shuffle) 워크로드 신설)하고, §9의 채택/기각
+조건을 **기계적으로 적용**함. 결과: **D/E가 "조건부 채택(FV 계류)" 상태로
+격상됨** — R2(n=1,000)에서 D·E가 K를 paired bootstrap 99% CI로 확실하게
+이기는 셀이 다수 확인돼(swap/shuffle10 양쪽 브라우저) D의 §9 채택 양성
+조건이 충족되고 기각 조건 (iii)도 미발동, 다만 §5 FV 계류(flush 규약 v0의
+공식 검증, Phase 5 몫)라는 선결 조건이 아직 안 끝나 "조건부"에 머무름. **C는
+반대로 이전 세션의 "채택 조건 충족" 서술을 이번에 정정함** — W2를 실제로
+추가해 정확한 4셀을 갖추고 재확인한 결과 head_insert에서 C가 D에 열세임이
+드러나(paired bootstrap 확정) §9의 "전 셀 동등 이상" 조건이 깨져, C의 상태는
+"채택"이 아니라 **판정 비결정**이 정직한 서술. 상세는 RQ1 문서의 "row 깊이
+축 구현 + RQ1 §9 실제 적용" 절, 원시 데이터 `research-questions/data/
+rq1-phase1-track-l-core-grid-v6-*.json`, 분석 스크립트
+`research-questions/analysis/rq1-row-depth-bootstrap.py`. **B/F는 여전히
+판정 불가** — §9가 요구하는 초당 토글 빈도(f) 축 자체가 하네스에 없음(이번
+라운드도 스코프 밖으로 명시).
+
+RQ1 자체의 잠정 선택은 이제 완전 미착수는 아니다 — D/E는 조건부 채택,
+C/B/F는 판정 비결정(또는 판정 불가)이라는, 이전보다 훨씬 구체화된 상태다.
   3. **저작 표면(TSX)은 examples/counter-island.sample.tsx보다 훨씬 좁은
      부분집합.** `signal(리터럴)`, `{signal()}`, `{signal().map((x) => <tag>{x}</tag>)}`,
      `onClick={() => signal.increment()/.append("literal")/.rotate()}`만
@@ -286,6 +306,110 @@ plan.md §3.1 "1차 재검토" 그대로:**
   게 다음 우선순위. 원시 데이터: `research-questions/data/
   rq6-phase2-baseline-chromium.json`.
 - 상세는 RQ6-verification-plan.md "§3.1 실행" 절 참고.
+
+**조건부(`{cond() && <X/>}`)의 컴파일러 통합 (2026-07-24, RQ1 후보 확정과 같은
+세션) — 위 "여전히 안 한 것" 항목 해소:**
+
+- **된 것**: `ir.rs`에 `SignalInit::Bool`/`ClickAction::Toggle`/`JsxNode::
+  CondBinding{cond, then_branch}` 추가, `lower.rs`가 `Expr::Bin(LogicalAnd)`
+  패턴(`.map()` 탐지의 자매 패턴)으로 `{cond() && <tag>...}` 을 실제로 파싱.
+  **`codegen.rs`는 F(`cond_reconcile_f_system`)를 파라미터화하지 않고, 사이트별로
+  F의 제어 흐름(빈 children이면 첫 `true`에 스폰, 아니면 `SetVisible`)을 그대로
+  복제해 그 사이트의 실제 정적 자식을 인라인한 새 top-level 함수를 생성**
+  (`cond_reconcile_site_N`, `app.add_systems`로 `setup()`/`resume()` 양쪽에
+  등록) — 이미 테스트·벤치마크된 `cond_reconcile_f_system` 자체는 손대지 않음
+  (RQ1 §2.3 "코드젠 동형 손코딩" 규약과 다른 선택이지만, 사이트마다 다른 정적
+  콘텐츠를 제네릭 System 하나로 표현할 방법이 없어 이 방향이 필요했음 — 코드젠
+  주석에 이유 기록).
+- **재개(resume)**: 캡처 없이 DOM에서 직접 shown/hidden 복구 —
+  `dom.adopt_children(wrapper)`가 비어있으면 아직 한 번도 보인 적 없음(hidden),
+  아니면 이미 보인 적 있음(shown)으로 판정. 이게 완전한 이유: `setup()`과
+  `resume()`의 정착(settle) tick 사이에 아무도 `Bool` 시그널을 건드리지 않으므로
+  실제 SSR 출력이 낼 수 있는 상태는 이 두 가지뿐(→ "한 번 보였다가 다시 숨겨진"
+  스냅샷은 이 파이프라인이 아예 만들 수 없는 상태 — 코드젠 주석에 명시, 조용히
+  누락한 게 아님). `format_i32_capture_for_action`은 `Bool` 시그널을 무조건
+  캡처 없음으로 처리(`StringList`와 동일 근거 — DOM 복구형).
+- **의도적 스코프 제한(숨기지 않음)**: `then_branch`는 정적 텍스트 자식만 허용
+  (중첩 `{...}` 바인딩 불가, `lower.rs`가 거부) + **자기 자신의 `onClick`도 불가**
+  (`codegen.rs`가 명시적으로 panic) — 토글 버튼은 항상 별도 형제 엘리먼트여야 함.
+  내부에 자기 `Signal<i32>` 상태를 갖는 조건부(F가 "토글에도 상태 보존" 주장을
+  증명하는 실제 사례)는 여전히 컴파일러로 못 만듦 — `crates/loom-resume-demo::
+  cond_resume`이 이 더 깊은 케이스의 손코딩 증명으로 남음(중첩 바인딩 지원은
+  별도 후속 과제).
+- **대체된 손코딩**: `demo/counter-list.tsx`에 `details` Bool 시그널 + 토글
+  버튼 + `{details() && <p class="details">shown!</p>}` 추가 → 이제
+  `generated::setup()`/`resume()`이 이 조건부를 직접 생성. 기존
+  `ssr_render_full_app`/`ResumedCond`(RQ6 §4.1 전체-앱 픽스처의 손코딩 조건부
+  절반)는 완전히 삭제하고 컴파일러 생성 경로로 교체. `bootstrap.js`의
+  `symbol === "CondToggle"` 특수 분기(손코딩 `ResumedCond` 클래스로 라우팅하던
+  기존 코드)도 제거 — 토글 액션이 이제 다른 모든 액션과 똑같이 `ResumedComponent`/
+  `resume_action_by_symbol`을 그대로 타므로 특수 취급이 필요 없어짐.
+- **RQ6 §3.1 베이스라인에 대한 영향(투명하게 기록)**: 위 §3.1 M1 실측(청크
+  382,504B raw 등)은 옛 손코딩 조건부 기준이었다 — 이번 교체로 실제 wasm 바이너리
+  구성이 달라졌으므로(기능 자체는 동일: 카운터+리스트+조건부), 그 수치는 지금의
+  바이너리를 정확히 반영하지 않는다. 재측정은 하지 않음(§3.1은 이미 "1차
+  재검토"로 완료 처리됐고, Phase 3 §3.2가 어차피 전체를 다시 실측함) — 다음
+  §3.2 실측 라운드에서 새 베이스라인으로 자동 갱신됨.
+- **검증**: `cargo test --workspace`(loom-compiler 신규 10개 조건부 테스트 포함)
+  + Playwright 실브라우저 — 라이브 데모(토글 3회 연속 클릭, hide/show 상태와
+  텍스트 보존 확인, 기존 카운터/리스트 기능 무손상 확인)와 재개 데모(SSR 셸이
+  이미 빈 wrapper를 보여줌 → 첫 클릭에 청크 materialize + 표시 → 재사용 인스턴스로
+  두 번째 클릭에 숨김 → 무관한 +1 버튼도 독립적으로 정상 재개) 둘 다 통과.
+
+**폼 입력 양방향 바인딩의 컴파일러 통합 (2026-07-24, 같은 세션 — 1단계 마지막
+항목) — 위 §4.1 "폼 입력은 제외" 항목 해소:**
+
+- **된 것**: `ir.rs`에 `SignalInit::Str`/`JsxNode::InputBinding{signal}` 추가.
+  `lower.rs`가 `<input value={s()} onInput={(e) => s.set(e.target.value)}/>`을
+  실제로 파싱(`value`/`onInput`가 같은 시그널을 참조하는지 교차 검증,
+  `onInput`이 정확히 `{event_param}.target.value`를 읽는지까지 구조 검증).
+  `loom-runtime`에 실제로 새로 필요했던 능력: `DomOps::set_input_value`(속성이
+  아니라 `.value` **프로퍼티**를 씀 — 사용자가 한 번이라도 타이핑하면 속성
+  갱신은 화면에 반영 안 됨), `DomOps::get_input_value`(재개용, DOM에서 현재
+  값을 직접 읽음), `InputValueTarget` 마커 + `patch_input_system`(비제네릭,
+  `Signal<String>` 전용, 마커로 게이팅 — 미래에 `TextBinding`이 `String`을
+  지원하게 될 때 크로스매치 방지). `BrowserDom`/`StringDom`/`MockDom` 셋 다
+  구현·테스트.
+- **`SetString` 액션 — 새 메커니즘을 만들지 않고 기존 것에 편입**: 새
+  `ClickAction::SetString{signal}`을 만들되, `Action`/`apply_action`/
+  `resume_action_by_symbol`을 파라미터화하지 않고 `collect_actions`가
+  `InputBinding`을 만나면 이 액션을 합성해 **기존 `ActionN` 넘버링에 끼워
+  넣는** 방식 채택 — `setup()`의 새 세 번째 반환값
+  `Vec<(NodeHandle, fn(String) -> Action)>`이 라이브 경로(loom-demo)의 실제
+  `input` DOM 리스너 배선에 쓰임(`Action::ActionN` 튜플 variant 생성자 자체가
+  이미 `fn(String) -> Action`이라 클로저 불필요).
+- **실제로 발견해 고친 버그(구현 도중, 가정 아님)**: `lower_node`의
+  `Element`(onClick) 분기가 자체 `ctx.action_index` 카운터로 `ActionN` 이름을
+  매겼는데, `collect_actions`(같은 이름을 `generate()`에서 미리 계산하는 쪽)는
+  트리 순서상 `InputBinding`도 함께 세면서 두 카운터가 어긋날 수 있는 구조였음
+  — "onClick 버튼 사이에 `<input>`이 끼는" 실제 케이스로 재현(테스트로 고정:
+  `action_numbering_stays_in_sync_when_an_input_sits_between_two_click_actions`)
+  하여 발견, `ctx.action_index` 하나를 두 분기가 공유하도록 고쳐 해소. 처음엔
+  시그널 이름으로 조회하는 별도 매핑(`input_action_variants`)을 만들었었는데
+  이 버그를 고치며 불필요해져 삭제함(더 단순한 설계로 수렴).
+- **재개(resume)**: 캡처가 원리적으로 불가능한 유일한 사례 — SSR 시점엔
+  사용자가 아직 아무것도 안 쳤으므로 "미래에 타이핑할 값"을 캡처에 실을 수
+  없음. `dom.get_input_value(node)`로 DOM에서 직접 현재 값을 읽어와
+  `Signal<String>` + `InputValueTarget` + `DomTarget`으로 스폰. `SetString`은
+  심볼만으로 결정되지 않는 유일한 액션이라 `resume_action_by_symbol`에
+  `string_arg: &str` 매개변수가 새로 추가됨(다른 모든 액션은 무시) —
+  `ResumedComponent::dispatch`도 `value: Option<String>`을 받도록 확장
+  (`None` = click처럼 값이 필요 없는 액션, `Some` = `input` 이벤트).
+  `bootstrap.js`에 `input` 이벤트 리스너 신설(click과 청크
+  materialize-and-cache 로직 공유, `dispatchLref` 헬퍼로 통합).
+- **`demo/counter-list.tsx`**: `name = signal("")` + `<input value={name()}
+  onInput={(e) => name.set(e.target.value)} />` 추가 — RQ6 §4.1 픽스처가
+  요구하는 4요소(카운터+리스트+조건부+폼 입력) 중 마지막 하나가 이제 실제로
+  컴파일러 산출물로 존재함(다만 아직 `loom-resume-demo`의 별도 전용 픽스처로
+  승격은 안 함 — `demo/full-app.tsx` 신설은 이후 라운드로 미룸, 지금은
+  `counter-list.tsx` 하나로 충분히 커버됨).
+- **검증**: `cargo test --workspace`(loom-compiler 신규 7개 폼 입력 테스트 +
+  loom-runtime 신규 `patch_input_system` 네이티브 테스트 포함) + Playwright
+  실브라우저 — 라이브 데모(타이핑 반영, 무관한 +1 클릭이 입력값을 안 건드림
+  확인 — `Changed<Signal<String>>` 게이팅 검증)와 재개 데모(SSR 셸이 빈
+  `<input>`을 미리 보여줌 → 첫 keystroke에 청크 materialize + 값 반영 → 이후
+  keystroke는 같은 인스턴스 재사용·청크 재요청 없음(네트워크 요청 수 직접
+  카운트) → 무관한 +1 버튼의 독립적 재개도 입력값을 안 건드림) 둘 다 통과.
 
 ## Phase 3 — Islands
 

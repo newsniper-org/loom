@@ -41,7 +41,7 @@ pub fn start() -> Result<(), JsValue> {
 
     let (mut dom, mount_handle) = BrowserDom::new(document, mount_node);
     let mut app = LoomApp::new();
-    let (signals, actions) = generated::setup(&mut app, &mut dom, mount_handle);
+    let (signals, actions, input_actions) = generated::setup(&mut app, &mut dom, mount_handle);
 
     // Render the initial mount (Signal::Added counts as Changed — see
     // loom-runtime's doc comment) before wiring any events.
@@ -63,6 +63,27 @@ pub fn start() -> Result<(), JsValue> {
             .expect("add_event_listener_with_callback failed");
         // Intentionally leaked: these listeners must live for the page's
         // whole lifetime, and Phase 1's demo never tears the app down.
+        closure.forget();
+    }
+
+    // `<input>` two-way bindings: `make_action` is a bare tuple-variant
+    // constructor (`Action::ActionN`, itself a real `fn(String) -> Action`,
+    // no closure — see codegen.rs's `setup()` doc comment), applied to the
+    // just-typed value read straight off the real `input` DOM event.
+    for (handle, make_action) in input_actions {
+        let state = Rc::clone(&state);
+        let element = state.borrow().dom.element(handle);
+        let closure = Closure::<dyn FnMut(_)>::new(move |event: web_sys::Event| {
+            let input: web_sys::HtmlInputElement = event.target().expect("input event has no target").unchecked_into();
+            let action = make_action(input.value());
+            let mut state = state.borrow_mut();
+            let AppState { app, dom, signals } = &mut *state;
+            generated::apply_action(app, signals, &action);
+            app.tick(dom);
+        });
+        element
+            .add_event_listener_with_callback("input", closure.as_ref().unchecked_ref())
+            .expect("add_event_listener_with_callback failed");
         closure.forget();
     }
 

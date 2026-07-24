@@ -36,6 +36,7 @@ pub fn list_reconcile_c_system<T>(
     mut slots: Query<(&mut SlotValue, &DomTarget)>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
+    row_bindings: Res<crate::RowBindings>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
@@ -70,9 +71,13 @@ pub fn list_reconcile_c_system<T>(
                     entity,
                     parent: anchor.0,
                     tag: "li",
-                    text,
+                    text: text.clone(),
                     before: None, // growing the tail always appends.
                 });
+                let extra = crate::extra_binding_texts(row_bindings.0, &text);
+                if !extra.is_empty() {
+                    pending.0.push(DomWrite::AppendStaticChildren { row: entity, texts: extra });
+                }
             }
         } else if new_len < old_len {
             for stale in rows.0.split_off(new_len) {
@@ -152,7 +157,13 @@ fn match_keys(old_order: &[(String, Entity)], new_keys: &[String]) -> Matched {
 /// re-run this fix produced). `Chain`'s `next_of`/`unlink`/`insert_before`
 /// are all O(1), so adjacency checks and moves no longer cost more than the
 /// handful of rows that actually move.
-fn place_in_order(parent: NodeHandle, current: &[Entity], target: &[Slot], pending: &mut PendingDomWrites) {
+fn place_in_order(
+    parent: NodeHandle,
+    current: &[Entity],
+    target: &[Slot],
+    pending: &mut PendingDomWrites,
+    row_bindings: usize,
+) {
     let mut chain = Chain::from_slice(current);
     let mut next_anchor: Option<Entity> = None;
 
@@ -166,6 +177,10 @@ fn place_in_order(parent: NodeHandle, current: &[Entity], target: &[Slot], pendi
                     text: text.clone(),
                     before: next_anchor,
                 });
+                let extra = crate::extra_binding_texts(row_bindings, text);
+                if !extra.is_empty() {
+                    pending.0.push(DomWrite::AppendStaticChildren { row: *entity, texts: extra });
+                }
                 chain.insert_before(*entity, next_anchor);
                 *entity
             }
@@ -330,6 +345,7 @@ fn place_in_order_lis(
     current: &[Entity],
     target: &[Slot],
     pending: &mut PendingDomWrites,
+    row_bindings: usize,
 ) {
     let old_index_of: std::collections::HashMap<Entity, usize> =
         current.iter().enumerate().map(|(i, &e)| (e, i)).collect();
@@ -372,6 +388,10 @@ fn place_in_order_lis(
                     text: text.clone(),
                     before: next_anchor,
                 });
+                let extra = crate::extra_binding_texts(row_bindings, text);
+                if !extra.is_empty() {
+                    pending.0.push(DomWrite::AppendStaticChildren { row: *entity, texts: extra });
+                }
                 chain.insert_before(*entity, next_anchor);
                 *entity
             }
@@ -429,6 +449,7 @@ pub fn list_reconcile_d_system<T>(
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
+    row_bindings: Res<crate::RowBindings>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
@@ -474,7 +495,7 @@ pub fn list_reconcile_d_system<T>(
             })
             .collect();
 
-        place_in_order(anchor.0, &current, &target, &mut pending);
+        place_in_order(anchor.0, &current, &target, &mut pending, row_bindings.0);
 
         rows.0 = target
             .iter()
@@ -498,6 +519,7 @@ pub fn list_reconcile_d_lis_system<T>(
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
+    row_bindings: Res<crate::RowBindings>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
@@ -536,7 +558,7 @@ pub fn list_reconcile_d_lis_system<T>(
             })
             .collect();
 
-        place_in_order_lis(anchor.0, &current, &target, &mut pending);
+        place_in_order_lis(anchor.0, &current, &target, &mut pending, row_bindings.0);
 
         rows.0 = target
             .iter()
@@ -594,6 +616,7 @@ pub fn list_reconcile_e_system<T>(
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
+    row_bindings: Res<crate::RowBindings>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
@@ -653,7 +676,7 @@ pub fn list_reconcile_e_system<T>(
             }
         }
 
-        place_in_order(anchor.0, &current, &target, &mut pending);
+        place_in_order(anchor.0, &current, &target, &mut pending, row_bindings.0);
 
         members.0 = target
             .iter()
@@ -676,6 +699,7 @@ pub fn list_reconcile_e_lis_system<T>(
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
+    row_bindings: Res<crate::RowBindings>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
@@ -728,7 +752,7 @@ pub fn list_reconcile_e_lis_system<T>(
             }
         }
 
-        place_in_order_lis(anchor.0, &current, &target, &mut pending);
+        place_in_order_lis(anchor.0, &current, &target, &mut pending, row_bindings.0);
 
         members.0 = target
             .iter()

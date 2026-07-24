@@ -65,24 +65,32 @@ loom-research/
     ├── loom-runtime/                Layer 2 반응성 코어: Signal<T>/DomTarget Component,
     │                                 Changed<T> 게이팅 patch System, RQ1 트랙 L 후보
     │                                 K/C/D/E/D-LIS/E-LIS(src/list.rs)·트랙 T 후보 B/F
-    │                                 (src/cond.rs, 서브트리 크기 축 지원) 전부 구현,
+    │                                 (src/cond.rs, 서브트리 크기 축 지원)·<input> 양방향
+    │                                 바인딩(InputValueTarget/patch_input_system) 전부 구현,
     │                                 web feature로 브라우저 DomOps 공유(src/web.rs,
-    │                                 adopt_children/set_attribute 등 resume 지원 포함)
+    │                                 adopt_children/set_attribute/get_input_value 등
+    │                                 resume 지원 포함)
     ├── loom-compiler/                SWC 기반 TSX → IR → Rust codegen ("loomc") —
     │                                 setup/apply_action(Phase 1 라이브)뿐 아니라
     │                                 resume/resume_action_by_symbol(Phase 2 재개)도
-    │                                 생성, LRef 최소 캡처 계산 포함(src/codegen.rs)
+    │                                 생성, LRef 최소 캡처 계산 포함(src/codegen.rs) —
+    │                                 {signal()}/.map()/{cond&&}/<input> 네 가지 바인딩
+    │                                 표면 전부 지원
     ├── loom-demo/                    wasm-bindgen 진입점 — build.rs가 loomc를 호출해
     │                                 demo/counter-list.tsx를 컴파일, web_sys DOM에 마운트
     ├── loom-bench/                   RQ1 트랙 L 6후보(K/C/D/E/D-LIS/E-LIS) + 트랙 T
     │                                 (B/F, 서브트리 크기 축) 실측 하네스
     │                                 (demo/list_bench.html, Chromium+Firefox)
     └── loom-resume-demo/             Phase 2 — SSR(src/bin/ssr.rs, 네이티브) + lazy wasm
-                                       청크(컴파일러 생성 카운터+리스트 + 손코딩 조건부
-                                       토글, RQ6 §4.1 전체-앱 픽스처) + 전역 delegation
-                                       리스너(demo/resume/bootstrap.js, stale-chunk
-                                       리로드 폴백 포함), 실제 네트워크 요청 감시로
-                                       "상호작용 전 client JS 0 실행" 검증
+                                       청크(컴파일러 생성 카운터+리스트+조건부+폼 입력,
+                                       RQ6 §4.1 전체-앱 픽스처 4요소 전부 — 조건부·폼
+                                       입력은 2026-07-24 컴파일러 통합으로 손코딩에서
+                                       대체됨, 내부 상태를 가진 더 깊은 조건부 재개
+                                       증명만 cond_resume에 손코딩으로 남음) + 전역
+                                       delegation 리스너(demo/resume/
+                                       bootstrap.js, stale-chunk 리로드 폴백 포함),
+                                       실제 네트워크 요청 감시로 "상호작용 전 client JS
+                                       0 실행" 검증
 ```
 
 ## 읽는 순서 (Claude Code 기준)

@@ -546,3 +546,118 @@ mod candidate_e_lis {
         assert_eq!(dom.child_texts(root), vec!["e", "c", "new", "a"]);
     }
 }
+
+// ============================================================================
+// RQ1 row-depth axis (R1/R2) — RowBindings applies uniformly across all six
+// candidates (`LoomApp::set_row_bindings`), stressed here against K (fully
+// recreates every row's content, so its cost should genuinely scale with
+// depth) and D (never touches a retained row's content, so depth shouldn't
+// change its behavior at all beyond newly-created rows).
+// ============================================================================
+
+mod row_bindings_axis {
+    use super::*;
+    use loom_runtime::list_reconcile_k_system;
+
+    #[test]
+    fn default_row_bindings_is_r1_no_extra_children() {
+        let (mut dom, root) = MockDom::new_root();
+        let mut app = LoomApp::new(); // no set_row_bindings call -> default R1 (1)
+        app.add_systems(list_reconcile_k_system::<String>);
+        app.world
+            .spawn((Signal(vec!["a".to_string()]), ListRows::default(), DomTarget(root)));
+        app.tick(&mut dom);
+
+        let rows = dom.child_handles(root);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            dom.children[&rows[0].0].len(),
+            0,
+            "R1 (default) must add no extra static children per row"
+        );
+    }
+
+    #[test]
+    fn r2_gives_every_k_row_the_configured_extra_static_children() {
+        let (mut dom, root) = MockDom::new_root();
+        let mut app = LoomApp::new();
+        app.set_row_bindings(8); // RQ1-benchmark-protocol.md §3.2's R2: "binding 8개"
+        app.add_systems(list_reconcile_k_system::<String>);
+        app.world.spawn((
+            Signal(vec!["a".to_string(), "b".to_string()]),
+            ListRows::default(),
+            DomTarget(root),
+        ));
+        app.tick(&mut dom);
+
+        let rows = dom.child_handles(root);
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            assert_eq!(
+                dom.children[&row.0].len(),
+                7,
+                "each row must carry 7 extra static children (8 total bindings, 1 primary)"
+            );
+        }
+    }
+
+    #[test]
+    fn r2_extra_children_are_recreated_on_every_k_full_respawn() {
+        // K always despawns+respawns everything, so its row-depth cost is
+        // paid again on every tick — this is exactly what makes R2 stress
+        // K harder than D/E (see DomWrite::AppendStaticChildren's doc
+        // comment on what this axis does and doesn't model).
+        let (mut dom, root) = MockDom::new_root();
+        let mut app = LoomApp::new();
+        app.set_row_bindings(4);
+        app.add_systems(list_reconcile_k_system::<String>);
+        let e = app
+            .world
+            .spawn((Signal(vec!["a".to_string()]), ListRows::default(), DomTarget(root)))
+            .id();
+        app.tick(&mut dom);
+
+        // A second, unrelated change (growing the list) still fully clears
+        // and respawns *every* row, including the untouched one — so its
+        // extra children get recreated too, not just the new row's.
+        set_items(&mut app, e, &["a", "b"]);
+        app.tick(&mut dom);
+        assert_eq!(dom.child_handles(root).len(), 2);
+        for row in dom.child_handles(root) {
+            assert_eq!(dom.children[&row.0].len(), 3, "every respawned row must carry all 3 extra children again");
+        }
+    }
+
+    #[test]
+    fn r2_does_not_touch_retained_rows_content_for_candidate_d() {
+        // D never revisits a retained row's content — depth only affects
+        // genuinely *new* rows, never a pure reorder of existing ones. This
+        // is the asymmetry RQ1 §9's D-vs-K rejection gate at R2 needs.
+        let (mut dom, root) = MockDom::new_root();
+        let mut app = LoomApp::new();
+        app.set_row_bindings(5);
+        app.add_systems(list_reconcile_d_system::<String>);
+        let e = app
+            .world
+            .spawn((Signal(vec!["a".to_string(), "b".to_string()]), ListRows::default(), DomTarget(root)))
+            .id();
+        app.tick(&mut dom);
+        for row in dom.child_handles(root) {
+            assert_eq!(dom.children[&row.0].len(), 4, "initial rows still get their 4 extra children once");
+        }
+
+        // Pure swap of the two existing rows (no new/removed keys) must not
+        // re-touch either row's already-created extra children.
+        let repositions_before = dom.repositions;
+        set_items(&mut app, e, &["b", "a"]);
+        app.tick(&mut dom);
+        assert!(dom.repositions > repositions_before, "the swap itself must still reposition something");
+        for row in dom.child_handles(root) {
+            assert_eq!(
+                dom.children[&row.0].len(),
+                4,
+                "a pure reorder must not add/remove any retained row's extra children"
+            );
+        }
+    }
+}

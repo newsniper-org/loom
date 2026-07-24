@@ -20,9 +20,14 @@ Solid의 컴파일 전략처럼, JSX 트리를 컴파일타임에 **static 부�
    `Query<Changed<Signal<T>>>` 형태로 게이팅되고, 참이면 저장된 DOM 노드 핸들에 직접
    `node.textContent = ...` 류의 최소 연산만 수행. **범용 diff 알고리즘이 존재하지 않음** —
    이게 No-VDOM의 실제 구현 지점.
-4. **제어 흐름 특수형**: `{items.map(...)}`, 삼항 조건부 등은 범용 System으로 표현 불가능
-   (엔티티 개수 자체가 동적). RQ1 참고 — archetype 템플릿 방식으로 별도 처리 예정,
-   아직 미확정.
+4. **제어 흐름 특수형**: `{items.map(...)}`, `{cond() && <X/>}` 등은 범용 System으로
+   표현 불가능(엔티티 개수/존재 자체가 동적). **`.map()`은 RQ1 트랙 L 후보
+   K/C/D/E(+LIS 변형)로, `{cond() && <X/>}`는 RQ1 트랙 T 후보 F로 각각 해소됨
+   (2026-07-24)** — 단 후자는 범용 System을 파라미터화하는 대신, 사이트마다
+   F의 제어 흐름을 복제해 실제 정적 콘텐츠를 인라인한 전용 함수를 코드젠이
+   생성하는 방식(`crates/loom-compiler/src/codegen.rs`의 `CondBinding` 처리
+   참고). **삼항 조건부(`cond ? <A/> : <B/>`)는 여전히 미착수** — 두 개의
+   `{cond&&}` 바인딩으로 desugar 가능하다는 설계만 있고 구현은 후속 과제.
 
 ## 핵심 설계 결정: Component는 반드시 POD(plain data)여야 함
 
@@ -49,7 +54,18 @@ pass만 새로 작성하는 게 맞음.
 
 ## 미해결
 
-- 제어 흐름 특수형의 정확한 컴파일 타겟 (RQ1)
+- ~~제어 흐름 특수형의 정확한 컴파일 타겟 (RQ1)~~ → **`.map()`/`{cond&&}` 둘 다
+  해소됨(2026-07-24, 위 "컴파일 단계" 4번 참고)**. 남은 것: 삼항 조건부(미착수).
+- ~~폼 입력 양방향 바인딩~~ → **해소됨(2026-07-24)**: `<input value={s()}
+  onInput={(e) => s.set(e.target.value)}/>`가 `JsxNode::InputBinding`으로
+  실제로 컴파일됨. 재개(resume)는 캡처가 아니라 `DomOps::get_input_value`로
+  DOM에서 직접 현재 값을 읽어옴(리스트/조건부 재개와 같은 원리) — 이유는
+  캡처 방식으로는 원리적으로 불가능: SSR 시점엔 사용자가 아직 아무것도 안
+  쳤으므로 "미래에 타이핑할 값"을 캡처에 실을 수 없음. `SetString` 액션은
+  기존 `Action`/`apply_action`/`resume_action_by_symbol` 기계를 그대로
+  재사용하되, 유일하게 그 심볼만으로 결정되지 않는 액션이라
+  `resume_action_by_symbol`이 `string_arg` 런타임 인자를 새로 받음(다른 모든
+  액션은 무시) — `crates/loom-compiler/src/codegen.rs` 모듈 문서 참고.
 - ~~LRef 캡처 시 "이 핸들러가 참조하는 최소 Component 집합"을 정적으로 어떻게
   계산할지~~ → **현재 IR 범위에서 해소됨(2026-07-24)**: `ClickAction` 각 variant가
   정확히 시그널 하나만 참조하고 `apply_action`의 해당 match arm도 그 시그널만

@@ -10,7 +10,8 @@ mod support;
 use support::MockDom;
 
 use loom_runtime::{
-    list_reconcile_k_system, patch_text_system, DomOps, DomTarget, ListRows, LoomApp, Signal,
+    list_reconcile_k_system, patch_input_system, patch_text_system, DomOps, DomTarget, InputValueTarget, ListRows,
+    LoomApp, Signal,
 };
 
 #[test]
@@ -137,6 +138,42 @@ fn counter_and_list_coexist_in_the_same_schedule() {
     assert_eq!(dom.text[&counter_node.0], "42");
     // List must not have been touched by the counter's mutation.
     assert_eq!(dom.child_texts(list_anchor), vec!["x"]);
+}
+
+#[test]
+fn input_value_patches_only_on_change_and_ignores_plain_string_signals() {
+    let (mut dom, root) = MockDom::new_root();
+    let mut app = LoomApp::new();
+    app.add_systems(patch_input_system);
+
+    let input_node = dom.create_element(root, "input", None);
+    dom.set_attribute(input_node, "value", "hello");
+    let name_entity = app
+        .world
+        .spawn((Signal("hello".to_string()), InputValueTarget, DomTarget(input_node)))
+        .id();
+
+    // A `Signal<String>` with no `InputValueTarget` marker must be ignored
+    // by `patch_input_system` entirely — this is the exact cross-match
+    // `InputValueTarget`'s doc comment says the marker exists to prevent
+    // (relevant once/if a plain-text `Signal<String>` binding ever exists).
+    let plain_node = dom.create_element(root, "span", None);
+    app.world.spawn((Signal("not an input".to_string()), DomTarget(plain_node)));
+
+    app.tick(&mut dom); // Added counts as Changed -> first tick writes "hello".
+    assert_eq!(dom.input_values[&input_node.0], "hello");
+    assert_eq!(dom.input_value_writes, 1, "the plain Signal<String> must not have been patched as an input");
+
+    // No mutation -> true no-op, same Changed<T> gating every other patch
+    // System here is tested for.
+    app.tick(&mut dom);
+    assert_eq!(dom.input_value_writes, 1);
+
+    // Simulates what `apply_action`'s generated `SetString` arm does.
+    app.world.get_mut::<Signal<String>>(name_entity).unwrap().0 = "world".to_string();
+    app.tick(&mut dom);
+    assert_eq!(dom.input_values[&input_node.0], "world");
+    assert_eq!(dom.input_value_writes, 2);
 }
 
 #[test]
