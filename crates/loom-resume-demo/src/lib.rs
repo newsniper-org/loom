@@ -101,6 +101,16 @@ impl StringDom {
             }
             return;
         }
+        if tag == RAW_HTML_TAG {
+            // Already-rendered HTML (see `append_static_html`'s doc
+            // comment on `DomOps`) — emitted verbatim, NOT re-escaped
+            // (unlike `TEXT_NODE_TAG` above, which holds literal text that
+            // still needs escaping).
+            if let Some(html) = &self.text[idx] {
+                out.push_str(html);
+            }
+            return;
+        }
         out.push('<');
         out.push_str(tag);
         for (name, value) in &self.attrs[idx] {
@@ -132,6 +142,11 @@ fn html_escape(s: &str) -> String {
 /// tag. Never a real HTML tag name, so it can't collide with one.
 const TEXT_NODE_TAG: &str = "#text-wrapper";
 
+/// Sentinel "tag" marking a node as a pre-rendered raw HTML blob (see
+/// `DomOps::append_static_html`) — `render_node` emits its stored text
+/// verbatim, no escaping, no wrapping tag.
+const RAW_HTML_TAG: &str = "#raw-html";
+
 impl DomOps for StringDom {
     fn create_element(&mut self, parent: NodeHandle, tag: &str, class: Option<&str>) -> NodeHandle {
         let handle = self.alloc(tag);
@@ -145,6 +160,12 @@ impl DomOps for StringDom {
     fn append_static_text(&mut self, parent: NodeHandle, text: &str) {
         let handle = self.alloc(TEXT_NODE_TAG);
         self.text[handle.0 as usize] = Some(text.to_string());
+        self.children[parent.0 as usize].push(handle.0 as usize);
+    }
+
+    fn append_static_html(&mut self, parent: NodeHandle, html: &str) {
+        let handle = self.alloc(RAW_HTML_TAG);
+        self.text[handle.0 as usize] = Some(html.to_string());
         self.children[parent.0 as usize].push(handle.0 as usize);
     }
 

@@ -96,6 +96,31 @@ pub trait DomOps {
     /// Creates a literal, never-patched text node as the last child of
     /// `parent`. Only for purely static text content.
     fn append_static_text(&mut self, parent: NodeHandle, text: &str);
+    /// Inserts a **whole pre-rendered static subtree** as the last child(ren)
+    /// of `parent` in one call, given its final HTML verbatim — `html` is
+    /// not escaped again here, it must already be well-formed markup (the
+    /// caller, `codegen.rs`, builds it at compile time from a subtree that
+    /// has no dynamic binding anywhere in it, escaping each static text run
+    /// exactly once at that point).
+    ///
+    /// **Why this exists (docs/02's original design, actually implemented
+    /// now)**: docs/02 always said purely static markup should be "SSR용
+    /// HTML 템플릿 문자열로 직접 방출" — emitted directly as a template
+    /// string, not walked node-by-node at runtime. Until 2026-07-24, Phase
+    /// 1's actual codegen didn't do this: every static `<tag>`/text run
+    /// went through its own `create_element`/`append_static_text` call, the
+    /// same one-node-at-a-time path dynamic bindings use. That's a real,
+    /// previously-undocumented gap from the stated design, not a No-VDOM
+    /// violation (nothing was ever diffed — see docs/03's No-VDOM
+    /// criteria), but it meant a page with N static nodes paid N runtime
+    /// calls to render, once per SSR, exactly like every other framework's
+    /// naive path. `append_static_html` is the fix: `codegen.rs` now
+    /// collapses any maximal fully-static subtree into one HTML string
+    /// *at compile time* and emits a single call here — turning "N calls,
+    /// O(n) runtime work" into "1 call" regardless of how large that
+    /// static subtree is (see `research-questions/data/rq6-m11-isr-partial-regen.json`
+    /// for the measured effect this has on ISR-style regeneration cost).
+    fn append_static_html(&mut self, parent: NodeHandle, html: &str);
     /// Sets an element's entire text content in one call (`Node.textContent`
     /// semantics: replaces whatever children it had). This is the one
     /// operation every dynamic patch in Phase 1 performs — no VDOM diff.

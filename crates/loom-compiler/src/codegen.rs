@@ -649,6 +649,52 @@ impl CodegenCtx {
 /// documenting the row shape (Phase 1's row instantiation itself is handled
 /// generically at runtime by `list_reconcile_k_system`, not per binding
 /// site — see loom-runtime's doc comment on that function).
+/// Escapes exactly the same four characters `StringDom`'s own `html_escape`
+/// does (`loom-fic`/`loom-resume-demo`) — kept in lockstep on purpose so a
+/// blob rendered here at codegen time is byte-for-byte identical to what
+/// the old node-by-node path would have produced through that runtime
+/// escaping, for the same static content.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// Returns `Some(html)` if `node` — and everything inside it — is fully
+/// static: no `TextBinding`/`ListBinding`/`CondBinding`/`InputBinding`
+/// anywhere, and no `Element` carrying an `onClick` action anywhere. Such a
+/// subtree can be pre-rendered into one HTML string *at codegen time* and
+/// handed to `DomOps::append_static_html` as a single call, instead of
+/// walking it node-by-node at runtime — see that trait method's doc
+/// comment for why this exists (docs/02's originally-stated design,
+/// actually implemented as of 2026-07-24). `None` means "this node needs
+/// its own `NodeHandle`/individual runtime calls" (it's a binding site, an
+/// action target, or contains one) — `lower_node`'s normal per-kind match
+/// handles those unchanged.
+fn try_render_fully_static(node: &JsxNode) -> Option<String> {
+    match node {
+        JsxNode::StaticText(text) => Some(html_escape(text)),
+        JsxNode::Element {
+            tag,
+            class,
+            action: None,
+            children,
+        } => {
+            let mut html = format!("<{tag}");
+            if let Some(c) = class {
+                html.push_str(&format!(" class=\"{}\"", html_escape(c)));
+            }
+            html.push('>');
+            for child in children {
+                html.push_str(&try_render_fully_static(child)?);
+            }
+            html.push_str("</");
+            html.push_str(tag);
+            html.push('>');
+            Some(html)
+        }
+        _ => None,
+    }
+}
+
 fn lower_node(
     out: &mut String,
     node: &JsxNode,
@@ -656,6 +702,20 @@ fn lower_node(
     component: &Component,
     ctx: &mut CodegenCtx,
 ) {
+    // Collapse a whole fully-static `Element` subtree into one
+    // `append_static_html` call instead of recursing node-by-node — see
+    // `try_render_fully_static`'s doc comment. Deliberately scoped to
+    // `Element` only (not a bare top-level `StaticText`, which stays on
+    // the existing `append_static_text` path below — that single-text-run
+    // case is already O(1) per call, so there's nothing to collapse, and
+    // keeping it on its original method avoids changing that arm's
+    // observable call shape for no benefit).
+    if matches!(node, JsxNode::Element { .. }) {
+        if let Some(html) = try_render_fully_static(node) {
+            writeln!(out, "    dom.append_static_html({parent_var}, {html:?});").unwrap();
+            return;
+        }
+    }
     match node {
         JsxNode::StaticText(text) => {
             writeln!(out, "    dom.append_static_text({parent_var}, {text:?});").unwrap();

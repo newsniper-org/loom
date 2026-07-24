@@ -101,6 +101,17 @@ impl DomOps for BrowserDom {
         // Never patched again, so no handle is kept for it.
     }
 
+    fn append_static_html(&mut self, parent: NodeHandle, html: &str) {
+        // One native call parses `html` and inserts the resulting nodes —
+        // this is the actual point of `append_static_html` (see that
+        // trait method's doc comment): a whole precomputed static subtree,
+        // however many nodes it contains, becomes exactly one DOM API call
+        // instead of one call per node.
+        let el: web_sys::Element = self.node(parent).clone().unchecked_into();
+        el.insert_adjacent_html("beforeend", html)
+            .expect("insert_adjacent_html failed");
+    }
+
     fn set_text_content(&mut self, target: NodeHandle, text: &str) {
         self.node(target).set_text_content(Some(text));
     }

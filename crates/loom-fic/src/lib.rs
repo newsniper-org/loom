@@ -102,6 +102,10 @@ struct StringDom {
 }
 
 const TEXT_NODE_TAG: &str = "#text-wrapper";
+/// Sentinel "tag" marking a node as a pre-rendered raw HTML blob (see
+/// `DomOps::append_static_html`) — `render_node` emits its stored text
+/// verbatim, no escaping, no wrapping tag.
+const RAW_HTML_TAG: &str = "#raw-html";
 
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
@@ -134,6 +138,12 @@ impl StringDom {
         if tag == TEXT_NODE_TAG {
             if let Some(text) = &self.text[idx] {
                 out.push_str(&html_escape(text));
+            }
+            return;
+        }
+        if tag == RAW_HTML_TAG {
+            if let Some(html) = &self.text[idx] {
+                out.push_str(html);
             }
             return;
         }
@@ -172,6 +182,12 @@ impl DomOps for StringDom {
     fn append_static_text(&mut self, parent: NodeHandle, text: &str) {
         let handle = self.alloc(TEXT_NODE_TAG);
         self.text[handle.0 as usize] = Some(text.to_string());
+        self.children[parent.0 as usize].push(handle.0 as usize);
+    }
+
+    fn append_static_html(&mut self, parent: NodeHandle, html: &str) {
+        let handle = self.alloc(RAW_HTML_TAG);
+        self.text[handle.0 as usize] = Some(html.to_string());
         self.children[parent.0 as usize].push(handle.0 as usize);
     }
 

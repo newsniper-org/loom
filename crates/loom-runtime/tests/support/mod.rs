@@ -32,6 +32,19 @@ pub struct MockDom {
     /// tests assert exactly how many reactive writes a patch tick produced
     /// (same pattern as `visibility_writes`).
     pub input_value_writes: u32,
+    /// Raw HTML blobs passed to `append_static_html`, keyed by the
+    /// synthetic child node id MockDom allocated for each one (not parsed
+    /// into individual child nodes — this mock doesn't have an HTML parser,
+    /// it only needs to prove *that one call carried the whole blob*, which
+    /// is exactly what `append_static_html`'s contract is about). Separate
+    /// from `text` so a test can tell "one `append_static_html` call" apart
+    /// from "N `append_static_text` calls that happen to concatenate to the
+    /// same string."
+    pub raw_html: std::collections::HashMap<u32, String>,
+    /// Count of `append_static_html` calls — lets tests assert a static
+    /// subtree collapsed into exactly one call regardless of how many
+    /// nodes it logically contains (same pattern as `visibility_writes`).
+    pub static_html_writes: u32,
 }
 
 impl MockDom {
@@ -78,6 +91,13 @@ impl DomOps for MockDom {
         let handle = self.alloc();
         self.children.get_mut(&parent.0).unwrap().push(handle.0);
         self.text.insert(handle.0, text.to_string());
+    }
+
+    fn append_static_html(&mut self, parent: NodeHandle, html: &str) {
+        let handle = self.alloc();
+        self.children.get_mut(&parent.0).unwrap().push(handle.0);
+        self.raw_html.insert(handle.0, html.to_string());
+        self.static_html_writes += 1;
     }
 
     fn set_text_content(&mut self, target: NodeHandle, text: &str) {

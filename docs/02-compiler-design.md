@@ -11,7 +11,18 @@ Solid의 컴파일 전략처럼, JSX 트리를 컴파일타임에 **static 부�
 ## 컴파일 단계
 
 1. **정적 분석**: JSX 트리를 순회하며 각 노드/표현식을 분류
-   - 순수 정적 마크업 → SSR용 HTML 템플릿 문자열로 직접 방출 (client에 아무 코드도 안 감)
+   - 순수 정적 마크업 → SSR용 HTML 템플릿 문자열로 직접 방출 (client에 아무 코드도 안 감).
+     **2026-07-24 정정**: 이 문장은 처음부터 있었지만 Phase 1 실제 코드젠은 최근까지
+     이걸 안 지켰다 — 정적 엘리먼트조차 동적 바인딩과 똑같이 `DomOps::create_element`/
+     `append_static_text` 런타임 호출을 노드 하나당 하나씩 냈다(문서 따로, 구현 따로
+     — 조용히 방치하지 않고 이번에 실제로 맞춤). 지금은 `codegen.rs`의
+     `try_render_fully_static`이 액션도 없고 동적 바인딩도 없는 최대 정적 서브트리를
+     찾아 **컴파일타임에 하나의 HTML 문자열로 미리 렌더**하고, `DomOps::
+     append_static_html` 호출 하나로 방출한다 — 이 문장이 원래 말한 그대로.
+     RQ6 §4.5.1(M11, ISR 부분 재생성 측정)에서 실측한 효과: 정적 구간 하나당
+     런타임 비용이 대략 7~14배 감소(하지만 0으로 가진 않음 — 여전히 O(n), Island의
+     "그 바이트를 아예 안 건드림"과는 질적으로 다름, `research-questions/data/
+     rq6-m11-isr-partial-regen.json` 참고).
    - 동적 바인딩 지점(interpolation, 속성, 조건부, 리스트) → binding site로 등록
    - 이벤트 핸들러 → LRef(지연 참조, 04 참고)로 변환
 2. **Entity 그래프 생성**: 각 컴포넌트 인스턴스 = World 안의 Entity spawn 호출 하나.

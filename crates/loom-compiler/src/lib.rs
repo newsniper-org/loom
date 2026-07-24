@@ -77,11 +77,99 @@ mod tests {
         assert!(rust.contains("pub fn apply_action("));
         assert!(rust.contains("list_reconcile_k_system::<String>"));
         assert!(rust.contains("patch_text_system::<i32>"));
-        assert!(rust.contains("dom.append_static_text"));
+        // The `<span class="label">count:</span>` wrapper is fully static
+        // (no action, no dynamic binding inside it) -> collapsed into one
+        // `append_static_html` call at codegen time (see codegen.rs's
+        // `try_render_fully_static`), not the old node-by-node
+        // create_element+append_static_text pair.
+        assert!(rust.contains(r#"dom.append_static_html(node_0, "<span class=\"label\">count:</span>")"#));
+        // A button's own text ("+1") is still a bare StaticText child of an
+        // *action-bearing* element (not itself fully static, since it has
+        // an onClick) -> stays on the original append_static_text path.
+        assert!(rust.contains(r#"dom.append_static_text(node_2, "+1")"#));
         // 3 buttons -> 3 actions collected in source order.
         assert!(rust.contains("Action0"));
         assert!(rust.contains("Action1(String)"));
         assert!(rust.contains("Action2"));
+    }
+
+    mod static_html_collapse {
+        use super::*;
+
+        #[test]
+        fn nested_fully_static_subtree_collapses_into_one_call() {
+            let source = r#"
+                export function App() {
+                  const count = signal(0);
+                  return (
+                    <div>
+                      <header class="top"><h1>Title</h1><p>subtitle text</p></header>
+                      <span>{count()}</span>
+                    </div>
+                  );
+                }
+            "#;
+            let rust = compile_tsx_to_rust(source);
+            assert!(rust.contains(
+                r#"dom.append_static_html(node_0, "<header class=\"top\"><h1>Title</h1><p>subtitle text</p></header>")"#
+            ));
+            // Only one call for the whole 3-element subtree, not three.
+            assert_eq!(rust.matches("dom.create_element").count(), 2, "only the outer <div> and the dynamic <span> should call create_element, got: {rust}");
+        }
+
+        #[test]
+        fn element_with_an_action_is_not_collapsed_even_if_its_own_children_are_static() {
+            let source = r#"
+                export function App() {
+                  const count = signal(0);
+                  return (
+                    <div>
+                      <span>{count()}</span>
+                      <button onClick={() => count.increment()}>+1</button>
+                    </div>
+                  );
+                }
+            "#;
+            let rust = compile_tsx_to_rust(source);
+            assert!(
+                !rust.contains("append_static_html"),
+                "an action-bearing element must never be collapsed (it needs its own NodeHandle for the LRef), got: {rust}"
+            );
+            assert!(rust.contains(r#"dom.append_static_text(node_2, "+1")"#));
+        }
+
+        #[test]
+        fn element_wrapping_a_nested_dynamic_binding_is_not_collapsed() {
+            // `<p>text <span>{count()}</span></p>` is a *different* shape
+            // from `rejects_mixed_static_and_dynamic_children`'s case (a
+            // bare `{binding}` sitting directly alongside other children in
+            // the *same* element) — here the binding is one level deeper,
+            // wrapped in its own `<span>`, which Phase 1 already allows (the
+            // "mixes a dynamic binding" check only looks at an element's
+            // *direct* children). This confirms `try_render_fully_static`
+            // still correctly refuses to collapse `<p>` here (it must not
+            // silently flatten away the nested `<span>`'s own binding into
+            // dead static text) — it falls through to the normal per-node
+            // path instead, so both the static text run and the `<span>`'s
+            // own binding remain individually addressable.
+            let source = r#"
+                export function App() {
+                  const count = signal(0);
+                  return (
+                    <div>
+                      <p>count is <span>{count()}</span></p>
+                    </div>
+                  );
+                }
+            "#;
+            let rust = compile_tsx_to_rust(source);
+            assert!(
+                !rust.contains(r#"append_static_html(node_1, "<p>"#),
+                "the <p> wrapping a nested dynamic binding must not be collapsed, got: {rust}"
+            );
+            assert!(rust.contains(r#"dom.append_static_text(node_1, "count is")"#));
+            assert!(rust.contains(r#"data-loom-id", "count""#));
+        }
     }
 
     #[test]
