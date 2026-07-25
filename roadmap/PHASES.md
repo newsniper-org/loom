@@ -628,6 +628,47 @@ new`의 페이지 전역 쿼리 취약점과 대조). M9 — cross-widget 정확
 규모 축, 호스트 간섭 3패턴(§5.3), M2-M4·M7·M10, §4.1 Island 팔. 전부 판정이
 아니라 데이터 등록 — §7 정식 판정은 Phase 6 전유.
 
+## Task #27 실행 상태 (1부, 2026-07-25) — bench/e2e 인프라 + M7 + 교차브라우저 + N-스케일링
+
+상세는 `research-questions/RQ6-verification-plan.md`의 "§3.5 실행" 절 +
+`research-questions/data/rq6-task27-part1-e2e-infra-and-nscaling.json`(원시
+데이터) — 여기선 요지만.
+
+**`bench/e2e/` 신설**: 이 저장소 최초의 커밋된 Node/Playwright 하네스(Chromium/
+Firefox/WebKit 3 프로젝트). WebKit은 호스트(Arch/CachyOS)에서 Playwright 내장
+바이너리가 직접 실행 안 됨(Ubuntu 24.04 전용 prebuilt가 요구하는 구버전
+SONAME이 롤링 릴리스 배포판에 부재 — 패키지 추가 설치로 해소 안 되는 진짜
+불일치) — Docker/Podman 컨테이너(`--network=host`)로 우회(`bench/e2e/
+run-webkit-in-docker.sh`).
+
+**M7(호스트 간섭) 최초 실측**: 3개 브라우저 전부 3패턴 10/10 통과. 단, 간섭-2
+테스트 중 `registry.js`의 MutationObserver 기반 감지가 순수 DOM 재배치를
+detach로 오탐하는 실제 결함을 발견(10/10 재현, 3개 브라우저 동일) — 이번
+라운드는 발견·기록만, 미수정.
+
+**M6 조건 B/M8/M9 Firefox·WebKit 교차 확인**: Chromium과 완전히 동일한 결과.
+
+**M4 + M6 N-스케일링 결합 셀(N∈{1,10,50}) 신규 실측 — 실제 버그 발견 및 수정**:
+N=50 픽스처가 "같은 wasm 청크를 가리키는 client:load Island 여럿이 동시
+activate()"되는, 이 저장소가 이제껏 만든 적 없는 조건을 처음 재현 →
+wasm-bindgen의 `__wbg_init` 초기화 가드가 check-then-act이라 락이 없어 동시
+호출마다 별도 `WebAssembly.Instance`가 생기고 가장 늦게 끝난 것이 공유 바인딩을
+덮어써 먼저 만들어진 인스턴스들이 조용히 오작동(클릭 무반응)하는 실제 레이스를
+발견 — `registry.js`의 `activate()`에 `chunkInitPromises` 메모이제이션을
+추가해 청크당 import+init을 정확히 한 번만 공유하도록 수정. 수정 후 기존
+M7/M8/M9/M6-조건B 스펙 전체를 3개 브라우저에서 재실행해 무회귀 확인(14/14).
+**M4 결과**: N=1/10/50 → 1280.0/1344.0/1728.0 KiB(3개 브라우저 완전히 동일값,
+N에 비례 증가 — 공유 인스턴스 가설의 직접 증거). **M6 결합 셀 결과(사전 가설과
+반대)**: 무작위 위치에 실제 panic 주입 후에도 다른 인스턴스 전부 생존 — wasm
+트랩이 선형 메모리 자체를 파괴하지 않고, 주입한 패닉이 어떤 공유 상태도 건드리지
+않았기 때문. 단 이 프로브는 "한 인스턴스가 자기 자신의 상태 변경 도중 패닉"하는
+더 위험한 시나리오는 검증하지 않음(미실측으로 명시 이관).
+
+**여전히 남은 것(숨기지 않음)**: 간섭-2 MutationObserver 오탐 미수정, M6의
+"자기 상태 변경 중 패닉" 시나리오 미실측, `crates/loom-rq6-fixture-gen`(계획
+명시) 대신 Node 스크립트로 N-스케일링 픽스처 생성(병익님 미확인 판단), M1/M2/M3/
+원본 앱 규모 축/M10 전부 이번 라운드 미착수(Task #27 나머지 몫).
+
 ## Phase 4 — 백엔드 어댑터
 
 - FIC 확정 (05)

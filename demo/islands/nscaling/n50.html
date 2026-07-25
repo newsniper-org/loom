@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8" /><title>RQ6 §4.4 N-스케일링 (N=50)</title></head>
+<body>
+  <!--
+    Task #27 — N개의 독립 QuantityPicker 인스턴스(client:load), 전부
+    같은 data-loom-chunk="quantity_picker" 청크를 가리킴. crates/
+    loom-widget-embed의 __loom_debug_memory_bytes()로 wasm 선형 메모리
+    총량을 관찰(M4), 무작위 하나를 panic_now 유사 방식으로 실패시켜
+    나머지 생존율을 관찰(M6 결합 셀). 오늘의 registry.js/wasm-bindgen
+    구성상 같은 chunk를 가리키는 인스턴스는 브라우저의 ES 모듈 캐시 덕에
+    같은 WebAssembly.Instance(같은 선형 메모리)를 공유한다는 게 이 축의
+    핵심 가설 — 실측으로 확인한다.
+  -->
+  <div id="app">
+  <div id="qp-0" data-loom-island data-loom-island-id="quantity-picker-0" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-1" data-loom-island data-loom-island-id="quantity-picker-1" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-2" data-loom-island data-loom-island-id="quantity-picker-2" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-3" data-loom-island data-loom-island-id="quantity-picker-3" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-4" data-loom-island data-loom-island-id="quantity-picker-4" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-5" data-loom-island data-loom-island-id="quantity-picker-5" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-6" data-loom-island data-loom-island-id="quantity-picker-6" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-7" data-loom-island data-loom-island-id="quantity-picker-7" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-8" data-loom-island data-loom-island-id="quantity-picker-8" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-9" data-loom-island data-loom-island-id="quantity-picker-9" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-10" data-loom-island data-loom-island-id="quantity-picker-10" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-11" data-loom-island data-loom-island-id="quantity-picker-11" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-12" data-loom-island data-loom-island-id="quantity-picker-12" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-13" data-loom-island data-loom-island-id="quantity-picker-13" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-14" data-loom-island data-loom-island-id="quantity-picker-14" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-15" data-loom-island data-loom-island-id="quantity-picker-15" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-16" data-loom-island data-loom-island-id="quantity-picker-16" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-17" data-loom-island data-loom-island-id="quantity-picker-17" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-18" data-loom-island data-loom-island-id="quantity-picker-18" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-19" data-loom-island data-loom-island-id="quantity-picker-19" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-20" data-loom-island data-loom-island-id="quantity-picker-20" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-21" data-loom-island data-loom-island-id="quantity-picker-21" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-22" data-loom-island data-loom-island-id="quantity-picker-22" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-23" data-loom-island data-loom-island-id="quantity-picker-23" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-24" data-loom-island data-loom-island-id="quantity-picker-24" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-25" data-loom-island data-loom-island-id="quantity-picker-25" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-26" data-loom-island data-loom-island-id="quantity-picker-26" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-27" data-loom-island data-loom-island-id="quantity-picker-27" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-28" data-loom-island data-loom-island-id="quantity-picker-28" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-29" data-loom-island data-loom-island-id="quantity-picker-29" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-30" data-loom-island data-loom-island-id="quantity-picker-30" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-31" data-loom-island data-loom-island-id="quantity-picker-31" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-32" data-loom-island data-loom-island-id="quantity-picker-32" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-33" data-loom-island data-loom-island-id="quantity-picker-33" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-34" data-loom-island data-loom-island-id="quantity-picker-34" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-35" data-loom-island data-loom-island-id="quantity-picker-35" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-36" data-loom-island data-loom-island-id="quantity-picker-36" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-37" data-loom-island data-loom-island-id="quantity-picker-37" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-38" data-loom-island data-loom-island-id="quantity-picker-38" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-39" data-loom-island data-loom-island-id="quantity-picker-39" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-40" data-loom-island data-loom-island-id="quantity-picker-40" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-41" data-loom-island data-loom-island-id="quantity-picker-41" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-42" data-loom-island data-loom-island-id="quantity-picker-42" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-43" data-loom-island data-loom-island-id="quantity-picker-43" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-44" data-loom-island data-loom-island-id="quantity-picker-44" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-45" data-loom-island data-loom-island-id="quantity-picker-45" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-46" data-loom-island data-loom-island-id="quantity-picker-46" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-47" data-loom-island data-loom-island-id="quantity-picker-47" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-48" data-loom-island data-loom-island-id="quantity-picker-48" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  <div id="qp-49" data-loom-island data-loom-island-id="quantity-picker-49" data-loom-activation="load" data-loom-chunk="quantity_picker" data-loom-ctor="QuantityPickerIsland">
+    <button data-loom-lref="QuantityPicker_chunk|Action0|cart_count:0">+</button>
+    <span data-loom-id="cart_count">0</span>
+  </div>
+  </div>
+  <script src="../../resume/shared-store.js"></script>
+  <script src="../../resume/registry.js"></script>
+</body>
+</html>

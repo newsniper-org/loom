@@ -1179,6 +1179,81 @@ MiniDashboard 카운터+리스트 추가 동작. `demo/islands/compiled/index.ht
 독 코멘트, `crates/loom-island-compiled/src/lib.rs`의 `render_html_flat`/그 테스트,
 `roadmap/PHASES.md` Task #26 절.
 
+### §3.5 "Task #27 (1부) — bench/e2e 인프라 + M7/교차브라우저/N-스케일링" 실행 (2026-07-25)
+
+**신규 인프라**: `bench/e2e/` — 이 저장소 최초의 커밋된 Node/Playwright 하네스
+(Chromium/Firefox/WebKit 3 프로젝트, `fullyParallel: false`). WebKit은 호스트
+(Arch/CachyOS)에서 Playwright 내장 바이너리가 직접 실행 안 됨 — Ubuntu 24.04
+전용 prebuilt가 요구하는 구버전 SONAME(`libxml2.so.2` 등)이 롤링 릴리스 배포판에
+부재(`ldd`로 확인, 패키지 추가 설치로 해소 안 됨 — 진짜 SONAME 불일치). 병익님
+제안으로 `mcr.microsoft.com/playwright:v1.61.0-noble` 컨테이너(`--network=host`,
+호스트의 데모 서버에 직접 접속)에서 WebKit만 실행하는 방식(`bench/e2e/
+run-webkit-in-docker.sh`)으로 해결 — 이후 WebKit 결과는 전부 이 경로로 재현됨.
+
+**M7(호스트 간섭 3패턴) 최초 실측**: `demo/widget-embed/index.html` 기준, 3개
+브라우저 전부 3개 패턴 10/10 통과. **간섭-2(DOM 재배치) 테스트 중 실제 결함
+발견**: `registry.js`의 `watchForHostInitiatedRemoval()`(MutationObserver 기반)이
+순수 `insertBefore` 재배치를 오탐하여 detach 처리함 — 10/10 재현, 3개 브라우저
+전부 동일. RQ3 "알려진 약점 6번 완화" 코드가 "제거 vs 재배치"를 구분 못 하는
+실제 결함. **이번 라운드에서는 발견·기록만 하고 수정하지 않음**(범위 밖으로
+명시 등록, 아래 데이터 파일의 `open_issues_carried_forward` 참고).
+
+**M6 조건 B/M8/M9 Firefox·WebKit 교차 확인**: Task #26의 Chromium 전용 결과를
+재실행 — 3개 브라우저 완전히 동일한 결과(풀링·평균 없이 개별 기록).
+
+**M4(상주 메모리) + M6 N-스케일링 결합 셀 신규 실측**: `bench/e2e/fixtures/
+gen-nscaling-page.mjs`로 N∈{1,10,50}개의 독립 QuantityPicker Island(전부 같은
+`data-loom-chunk="quantity_picker"`)를 생성. `crates/loom-widget-embed`에
+`__loom_debug_memory_bytes()`(RQ1 §7 M5와 동일한 1차 근사)/
+`__loom_debug_panic_shared_instance()`(fault-injection용 자유 함수) 신규 export.
+
+**실제로 발견하고 고친 진짜 버그(N-스케일링이 이 저장소 최초로 노출시킴)**:
+같은 wasm 청크를 가리키는 N개의 `client:load` Island가 같은 tick에 동시에
+`activate()`되는 조건은 이전 어떤 픽스처도 만든 적이 없었음. wasm-bindgen이
+생성하는 `__wbg_init`의 초기화 가드가 `if (wasm !== undefined) return wasm;`
+형태의 check-then-act이고 진행 중 초기화에 대한 락이 없어, N개의 동시 호출이
+각자 독립적으로 fetch+instantiate를 시작 → 서로 다른 `WebAssembly.Instance`가
+여러 개 생기고 가장 늦게 끝난 것이 모듈 레벨 `wasm` 바인딩을 덮어씀 → 그 전에
+그 바인딩을 참조해 생성된 인스턴스들은 이후 아무 에러 없이 조용히 오작동(클릭이
+무반응). `registry.js`의 `activate()`에 `chunkInitPromises` 메모이제이션을
+추가해 같은 청크를 가리키는 모든 호출이 import+init을 정확히 한 번만 공유하도록
+수정 — 수정 후 M4/M6 둘 다 의미 있는 값을 낸다(수정 전엔 클릭 자체가 무반응이라
+측정이 불가능했음). `m7-host-interference.spec.ts`/`m8-m9-widget-embed-island.spec.ts`
+/`m6-condition-b-fault-isolation.spec.ts` 전체를 3개 브라우저에서 재실행해 무회귀
+확인(14/14).
+
+**M4 결과**: N=1/10/50에서 각각 1280.0/1344.0/1728.0 KiB — 3개 브라우저 완전히
+동일한 바이트 수(wasm 선형 메모리 크기는 엔진 무관 결정값이므로 예상된 일치).
+N에 비례해 실제로 증가 — "N개의 같은-타입 인스턴스가 하나의 `WebAssembly.Instance`
+를 공유한다"는 가설의 직접 증거.
+
+**M6 결합 셀 결과 — 사전 가설과 반대**: 무작위(#25) 위치에 진짜 panic을 주입한
+뒤 #0/#25/#49를 재확인 — 3개 브라우저 전부 셋 다 생존(정상 응답 계속). 코드
+주석에 먼저 적어뒀던 사전 가설("같은 인스턴스를 공유하므로 패닉 이후 다른
+인스턴스도 전부 응답 불가")은 **틀렸음** — wasm 트랩은 트랩을 일으킨 현재 호출
+스택만 되감을 뿐 선형 메모리 자체를 파괴하지 않고, 주입한 패닉 함수는 사전에
+어떤 공유 가변 상태도 건드리지 않은 채 즉시 panic하므로 트랩 시점에 이미 손상된
+상태가 없었음. **주의(과잉 일반화 금지)**: 이 프로브가 검증한 건 "이 인스턴스와
+무관한 임의 위치의 패닉"이지, 더 위험한 "한 인스턴스가 자기 자신의 상태를 막
+변경하던 도중(예: `RefCell::borrow_mut()` 도중) panic"하는 시나리오가 아님 —
+후자는 아직 미실측(다음 라운드로 명시 이관).
+
+**여전히 남은 것(숨기지 않음)**:
+1. 간섭-2의 MutationObserver 오탐 detach — 발견만, 미수정.
+2. M6 N-스케일링의 "자기 자신 변경 도중 패닉" 시나리오 — 미실측.
+3. `crates/loom-rq6-fixture-gen`(계획에 명시된 Rust 크레이트)을 만들지 않고
+   `bench/e2e/fixtures/gen-nscaling-page.mjs`(Node 스크립트)로 대체함 — N-스케일링은
+   이미 컴파일된 청크를 가리키는 HTML 반복일 뿐이라는 판단. **병익님께 아직 명시적
+   으로 확인받지 않은 판단**. 원본 앱 규모 축(§4.4)은 실제 컴파일이 필요하므로 이
+   대체가 적용되지 않고 별도 Rust 툴로 처리함.
+4. M1(H-Qwik 팔 실제 빌드+번들 비교)/M2/M3(TTI/wake-up payload)/원본 앱 규모 축/
+   M10(기능 매트릭스) — 전부 Task #27의 나머지 몫, 이번 라운드 미착수.
+
+**상세**: `research-questions/data/rq6-task27-part1-e2e-infra-and-nscaling.json`
+(원시 데이터), `demo/resume/registry.js`의 `chunkInitPromises` 주석, `crates/
+loom-widget-embed/src/lib.rs`의 두 신규 export 독 코멘트, `bench/e2e/`
+(스펙 파일 전체), `roadmap/PHASES.md` Task #27 (1부) 절.
+
 ---
 
 *교차 참조*: RQ6-are-islands-necessary.md(본 계획이 정식화하는 두 가설과 두 검증

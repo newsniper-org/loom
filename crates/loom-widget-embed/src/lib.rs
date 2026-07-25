@@ -22,6 +22,45 @@ pub mod generated_flat {
     include!(concat!(env!("OUT_DIR"), "/generated_flat.rs"));
 }
 
+/// RQ6 §6 M4(상주 메모리) — RQ1 §7 M5와 같은 "1차 근사" 방식(실제 힙 할당자
+/// 통계가 아니라 wasm 선형 메모리의 총 페이지 수) — 여러 Island 인스턴스가
+/// 이 wasm 모듈을 공유하는 N-스케일링 셀에서, 그 공유 선형 메모리 전체
+/// 크기를 관찰하기 위함(§6 M6의 "타입당 vs 인스턴스당 격리" 질문과 직접
+/// 연결됨 — 같은 타입의 인스턴스가 늘어날수록 이 값이 늘어난다면 그 자체가
+/// "공유 인스턴스" 증거).
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn __loom_debug_memory_bytes() -> u32 {
+    (core::arch::wasm32::memory_size(0) * 65536) as u32
+}
+
+/// RQ6 §6 M6 N-스케일링 결합 셀 전용 fault-injection — `QuantityPickerIsland`
+/// 자체는 codegen이 생성하므로 손으로 `panic_now()` 메서드를 얹을 수 없어,
+/// 같은 wasm 모듈/같은 선형 메모리를 공유하는 별도의 자유 함수로 노출한다.
+/// 이 함수가 패닉해도 *다른* `QuantityPickerIsland` 인스턴스가 계속 응답하는지
+/// 확인하는 것이 "조건 B가 타입당 격리인가 인스턴스당 격리인가"라는, §27
+/// 계획이 미리 등록해 둔 질문에 대한 실측이다.
+///
+/// **실측 결과는 사전 예상과 반대였다**: 같은 청크를 가리키는 N개 인스턴스가
+/// (오늘의 빌드 구성상) 실제로 하나의 `WebAssembly.Instance`/선형 메모리를
+/// 공유함(M4가 N에 비례해 메모리가 느는 것으로 이미 확인)에도 불구하고, 이
+/// 함수의 패닉 이후 *다른* 인스턴스들은 계속 정상 응답했다(아래
+/// research-questions/data/rq6-m6-nscaling.json 참고). 이유: wasm의 트랩은
+/// "그 트랩을 일으킨 현재 호출 스택"만 되감을 뿐, 인스턴스의 선형 메모리
+/// 자체를 파괴하지 않는다 — 이 함수는 어떤 공유 상태도 건드리지 않고 즉시
+/// panic하므로, 트랩 시점에 이미 손상된 상태가 하나도 없었다. **주의**: 이건
+/// "타입당 격리가 인스턴스당 격리만큼 안전하다"는 뜻이 아니다 — 이 프로브가
+/// 검증한 건 "이 인스턴스와 무관한 임의 위치에서 패닉이 나도 다른 인스턴스가
+/// 안전한가"이지, "한 인스턴스가 *자기 자신의* 상태를 변경하던 도중(예:
+/// `RefCell::borrow_mut()` 도중) panic해도 다른 인스턴스가 안전한가"가 아님
+/// — 후자가 진짜 위험한 시나리오이고, 이 픽스처는 그 경로를 아직 실측하지
+/// 않았다(미해결 항목으로 명시 기록, 아래 JSON의 "limitations" 참고).
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn __loom_debug_panic_shared_instance() {
+    panic!("loom-widget-embed: deliberate fault injection for RQ6 M6 N-scaling combined cell");
+}
+
 // A minimal native-only DomOps impl for producing this page's initial SSR
 // HTML — see crates/loom-island-compiled's identical copy for why this
 // isn't shared as a dependency (established one-crate-one-StringDom

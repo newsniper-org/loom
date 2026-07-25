@@ -7,3 +7,7 @@
 /demo/islands/condition-b/productcard
 /demo/islands/condition-b/quantitypicker
 __pycache__/
+/bench/e2e/node_modules
+/bench/e2e/test-results
+/bench/e2e/results
+/bench/e2e/playwright-report

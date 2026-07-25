@@ -1,0 +1,64 @@
+{
+  "date": "2026-07-25",
+  "round": "Task #27 (1부) - bench/e2e Playwright 인프라 신설 + M7 호스트 간섭 + M6/M8/M9 Firefox/WebKit 교차 확인 + M4/M6 N-스케일링",
+  "infra_note": "이 저장소 최초의 커밋된 Node/Playwright 하네스(bench/e2e/). 이전까지의 모든 Playwright 검증은 애드혹 실행이었음(조사로 확인) - 이번이 처음으로 재사용 가능한 스펙 파일들로 정착됨.",
+  "browsers": ["chromium", "firefox", "webkit"],
+  "webkit_environment_note": "호스트(Arch/CachyOS)에서 Playwright 내장 WebKit 바이너리 직접 실행 불가 - Ubuntu 24.04 전용 prebuilt가 요구하는 구버전 SONAME(libxml2.so.2, libWPEWebKit-2.0.so.1, libflite_cmu_* 등)이 롤링 릴리스 배포판에 부재(ldd로 확인, AUR로 icu74를 설치해도 해소 안 됨 - 패키지 누락이 아니라 SONAME 불일치). 병익님 제안으로 mcr.microsoft.com/playwright:v1.61.0-noble Docker/Podman 컨테이너(--network=host)에서 WebKit만 실행하는 방식으로 해결 - bench/e2e/run-webkit-in-docker.sh. 이후 WebKit 결과는 전부 이 경로로 재현됨.",
+
+  "m7_host_interference": {
+    "fixture": "demo/widget-embed/index.html",
+    "trials_per_pattern": 10,
+    "gate_note": "§7 이산 등가 규칙(0-1 trial 차이=동등, 2+=열등/우등) 대상은 간섭-1/간섭-2만. 간섭-3은 §9-8에 따라 참고용, §7 게이트 미포함.",
+    "간섭_1_host_attribute_mutation": { "chromium": "10/10 pass", "firefox": "10/10 pass", "webkit": "10/10 pass" },
+    "간섭_2_host_dom_reposition": {
+      "functional_result": { "chromium": "10/10 pass", "firefox": "10/10 pass", "webkit": "10/10 pass" },
+      "real_bug_found_not_fixed": "registry.js의 watchForHostInitiatedRemoval()(MutationObserver 기반)이 순수 insertBefore 재배치를 오탐하여 detach로 처리함 - 10/10 재현, 3개 브라우저 전부 동일. RQ3 '알려진 약점 6번 완화' 코드가 '제거 vs 재배치'를 구분하지 못하는 실제 결함. 이번 라운드에서는 발견/기록만 하고 수정하지 않음(범위 밖으로 명시 등록, 아래 open_issues 참고)."
+    },
+    "간섭_3_global_click_delegation_reference_only": { "chromium": "10/10 pass", "firefox": "10/10 pass", "webkit": "10/10 pass" }
+  },
+
+  "m6_condition_b_and_m8_m9_cross_browser": {
+    "note": "Task #26의 Chromium 전용 결과(rq6-phase3-widget-embed-chromium.json 등가)를 Firefox/WebKit에서 재실행. 브라우저 간 결과 완전히 동일 - 풀링/평균 없이 개별 기록.",
+    "m6_condition_b_fault_isolation": { "chromium": "pass", "firefox": "pass", "webkit": "pass" },
+    "m8_consistency_4_scenarios": { "chromium": "4/4 pass", "firefox": "4/4 pass", "webkit": "4/4 pass" },
+    "m9_cross_widget_reactivity": { "chromium": "pass", "firefox": "pass", "webkit": "pass" }
+  },
+
+  "m4_resident_memory_nscaling": {
+    "fixture": "demo/islands/nscaling/n{N}.html - N개의 독립 QuantityPicker Island, 전부 data-loom-chunk=\"quantity_picker\" 공유",
+    "methodology": "core::arch::wasm32::memory_size(0) * 65536 (RQ1 §7 M5와 동일한 1차 근사 - 실제 힙 할당자 통계 아님)",
+    "results_bytes": {
+      "n1": { "chromium": 1310720, "firefox": 1310720, "webkit": 1310720 },
+      "n10": { "chromium": 1376256, "firefox": 1376256, "webkit": 1376256 },
+      "n50": { "chromium": 1769472, "firefox": 1769472, "webkit": 1769472 }
+    },
+    "results_kib": { "n1": 1280.0, "n10": 1344.0, "n50": 1728.0 },
+    "interpretation": "세 브라우저 모두 완전히 동일한 바이트 수 - wasm 선형 메모리 크기는 엔진과 무관한 결정적 값이므로 예상된 일치. N에 비례해 메모리가 실제로 증가함(1280 -> 1344 -> 1728 KiB) - 이 자체가 'N개의 같은-타입 인스턴스가 하나의 WebAssembly.Instance/선형 메모리를 공유한다'는 가설의 직접 증거(격리된 인스턴스라면 N과 무관하게 인스턴스당 고정 크기여야 함). 마진: N=1->10(+9개)에 +65536바이트(+1 wasm 페이지), N=10->50(+40개)에 +393216바이트(+6 페이지) - 인스턴스당 평균 증가량이 매우 작음(64KiB 페이지 단위로 양자화되어 있어 세밀한 선형성은 이 측정으로 판별 불가)."
+  },
+
+  "m6_nscaling_combined_cell": {
+    "fixture": "demo/islands/nscaling/n50.html, __loom_debug_panic_shared_instance() (crates/loom-widget-embed 신규 export)",
+    "procedure": "N=50 전부 attached 상태 도달 대기 -> #0/#25/#49 클릭해 baseline(1건 증가) 확인 -> #25 위치 무관한 독립 free function에서 실제 panic 주입 -> 동일 3개 인스턴스 재클릭",
+    "result": { "chromium": { "panic_threw": true, "survived_0": true, "survived_25": true, "survived_49": true },
+                "firefox": { "panic_threw": true, "survived_0": true, "survived_25": true, "survived_49": true },
+                "webkit": { "panic_threw": true, "survived_0": true, "survived_25": true, "survived_49": true } },
+    "interpretation_important_caveat": "사전 가설(코드 주석에 먼저 적어뒀던 것)은 '같은 WebAssembly.Instance를 공유하므로 패닉 이후 다른 인스턴스도 전부 응답 불가'였음 - 실측 결과는 정반대: 패닉 후에도 3개 인스턴스 전부 정상 응답. 이유: wasm 트랩은 트랩을 일으킨 현재 호출 스택만 되감을 뿐 선형 메모리 자체를 파괴하지 않고, 이 패닉 함수는 사전에 어떤 공유 가변 상태도 건드리지 않은 채 즉시 panic하므로 트랩 시점에 이미 손상된 상태가 없었음.",
+    "limitations": "이 프로브가 실제로 검증한 건 '이 인스턴스와 무관한 임의 위치에서 패닉이 나도 다른 인스턴스가 안전한가'이지, 훨씬 더 위험한 시나리오인 '한 인스턴스가 자기 자신의 상태를 막 변경하던 도중(예: Rc<RefCell<IslandState>>의 borrow_mut() 도중) panic해도 다른 인스턴스가 안전한가'가 아님. 후자는 RQ3의 condition B(별도 wasm 인스턴스, crates/loom-island-productcard 등)에서는 이미 완전 격리로 확인됐지만, N-스케일링처럼 여러 인스턴스가 진짜 같은 WebAssembly.Instance를 공유하는 조건에서는 아직 실측되지 않음 - 다음 라운드로 명시 이관."
+  },
+
+  "real_bug_found_and_fixed_this_round": {
+    "title": "wasm-bindgen 동시 초기화 레이스 (registry.js)",
+    "discovered_via": "N=50 N-스케일링 픽스처가 이 저장소 최초로 '같은 wasm 청크를 가리키는 client:load Island 2개 이상이 같은 tick에 동시 activate()됨'을 만들어냄 - 이전까지 어떤 픽스처도 이 조건을 재현한 적 없었음.",
+    "root_cause": "wasm-bindgen이 생성하는 __wbg_init의 초기화 가드가 'if (wasm !== undefined) return wasm;' 형태의 check-then-act이고, 진행 중인 초기화에 대한 락/공유 Promise가 없음. N개의 concurrent activate() 호출이 각자 독립적으로 fetch+instantiate를 시작해 서로 다른 WebAssembly.Instance가 여러 개 생기고, 가장 늦게 끝난 것이 모듈 레벨 wasm 바인딩을 마지막으로 덮어씀 - 그 전에 이미 그 바인딩을 참조해 생성된 인스턴스들은 이후 아무 에러 없이 조용히 오작동(클릭이 아무 효과도 없음).",
+    "fix": "demo/resume/registry.js의 activate()에 chunkInitPromises Map을 추가해, 같은 청크를 가리키는 모든 activate() 호출이 import+init 시퀀스를 정확히 한 번만 공유하도록 함(서로 다른 청크끼리는 여전히 병렬 로드).",
+    "verification": "수정 전: N=50에서 모든 클릭이 무반응(cart_count가 계속 0). 수정 후: M4 메모리 측정이 N에 비례해 실제로 증가(수정 전엔 N과 무관하게 항상 동일한 값이었을 것 - 애초에 클릭 자체가 안 됐으므로 M4/M6 둘 다 이 버그 없이는 의미있는 측정이 불가능했음). 3개 브라우저 전부 재확인.",
+    "regression_check": "m7-host-interference.spec.ts/m8-m9-widget-embed-island.spec.ts/m6-condition-b-fault-isolation.spec.ts 전체 재실행 - 3개 브라우저 전부 14/14 무회귀."
+  },
+
+  "open_issues_carried_forward": [
+    "간섭-2의 MutationObserver 오탐 detach(순수 재배치를 제거로 오인) - 발견만 하고 아직 안 고침",
+    "M6 N-스케일링 결합 셀의 '자기 자신의 상태 변경 도중 패닉' 시나리오는 아직 미실측",
+    "crates/loom-rq6-fixture-gen(계획에 명시된 Rust 크레이트)을 만들지 않고 bench/e2e/fixtures/gen-nscaling-page.mjs(Node 스크립트)로 대체함 - N-스케일링은 이미 컴파일된 청크를 가리키는 HTML 템플릿 반복일 뿐이라 컴파일러 재구동이 불필요하다는 판단. 병익님께 아직 명시적으로 확인받지 않은 판단 - 원본 앱 규모 축(§4.4)은 실제 컴파일이 필요하므로 이 대체가 적용되지 않고 별도 Rust 툴로 처리함.",
+    "M1(번들 크기, H-Qwik 팔 실제 빌드)/M2/M3(TTI/wake-up payload)/원본 앱 규모 축/M10(기능 매트릭스) 전부 이번 라운드에 미착수 - Task #27의 나머지 몫"
+  ]
+}

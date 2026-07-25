@@ -1,0 +1,13 @@
+{
+  "name": "loom-rq6-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "RQ6 위젯-임베드 픽스처 실브라우저 측정 하네스 (Task #27) — 이 저장소 최초의 committed Playwright 인프라. 이전까지 모든 'Playwright 검증'은 애드혹으로 실행되고 결과만 문서에 남았음(research-questions/RQ6-verification-plan.md/roadmap/PHASES.md 참고) — 이번에 처음으로 재사용 가능한 하네스를 만든다.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

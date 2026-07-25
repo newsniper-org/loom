@@ -17,6 +17,24 @@
 window.__loomRegistry = (() => {
   const entries = new Map(); // id -> { host, state, chunk, ctorName, instance }
 
+  // 실제로 발견한 버그(RQ6 §4.4 N-스케일링 실측 중, N=50 동시 client:load
+  // 재현): wasm-bindgen이 생성하는 초기화 함수(`quantity_picker.js`의
+  // `__wbg_init` 등)는 `if (wasm !== undefined) return wasm;`라는
+  // check-then-act 패턴만 쓰고, "이미 초기화 진행 중"인 경우의 락/공유
+  // Promise가 없다 — 같은 청크를 가리키는 N개의 `client:load` Island가
+  // 전부 같은 tick에 activate()를 fire-and-forget으로 호출하면(아래
+  // bootstrapIslands 참고), 첫 번째 초기화가 끝나기 *전에* 나머지 N-1개가
+  // 전부 자기만의 fetch+instantiate를 또 시작해버려 서로 다른
+  // WebAssembly.Instance가 여러 개 생기고, 그 중 가장 늦게 끝난 것이
+  // 모듈 레벨 `wasm` 바인딩을 마지막으로 덮어씀 — 그 전에 이미 그 바인딩을
+  // 참조해 생성된 인스턴스(닫힌 클로저가 아니라 재할당 가능한 바인딩을
+  // 참조하므로)들은 이후 아무 에러 없이 조용히 오작동한다(클릭이 그냥
+  // 아무 효과도 없음 — 실측: N=50에서 재현, 우연이 아니라 100% 재현됨).
+  // 이 메모이제이션이 그 레이스를 원천 차단 — 같은 청크를 가리키는 모든
+  // activate() 호출이 "import+init" 시퀀스를 정확히 한 번만 공유하게 함
+  // (서로 다른 청크끼리는 여전히 병렬로 로드됨, 불필요한 직렬화 없음).
+  const chunkInitPromises = new Map(); // chunk name -> Promise<module>
+
   function register(id, host, chunk, ctorName) {
     if (entries.has(id)) {
       throw new Error(`[registry] island "${id}" registered twice`);
@@ -41,8 +59,19 @@ window.__loomRegistry = (() => {
     console.log(`[registry] activating island "${id}" (chunk "${e.chunk}")`);
     let mod, instance;
     try {
-      mod = await import(`../islands/chunks/${e.chunk}.js`);
-      await mod.default(); // wasm-bindgen's init(): fetches + instantiates the .wasm
+      // 위 chunkInitPromises 주석 참고 — 같은 청크를 가리키는 동시
+      // activate() 호출들이 import+init을 정확히 한 번만 공유하도록.
+      if (!chunkInitPromises.has(e.chunk)) {
+        chunkInitPromises.set(
+          e.chunk,
+          (async () => {
+            const m = await import(`../islands/chunks/${e.chunk}.js`);
+            await m.default(); // wasm-bindgen's init(): fetches + instantiates the .wasm
+            return m;
+          })()
+        );
+      }
+      mod = await chunkInitPromises.get(e.chunk);
       const ctor = mod[e.ctorName];
       instance = new ctor(e.host);
     } catch (err) {
