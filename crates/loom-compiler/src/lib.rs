@@ -808,6 +808,35 @@ mod tests {
             let module = parse_tsx(source);
             lower::lower_module(&module); // must not panic
         }
+
+        #[test]
+        #[should_panic(expected = "component prop value must be a number, boolean, string, or string-array literal")]
+        fn component_ref_prop_cannot_carry_a_live_signal_value() {
+            // RQ6 §6 M10 / RQ3 "알려진 약점" 3번 실측(Task #27) — "중첩 island
+            // 간 동적 데이터 전달 부재(SSR prop 동결)"가 실제로 재현되는지
+            // 직접 확인: 부모의 살아있는 시그널 값을 자식 Island의 prop으로
+            // 넘기려 하면(literal이 아니라 `parentCount()` 호출식) 컴파일
+            // 시점에 거부된다 — `lower_prop_literal`이 리터럴 형태만 받고
+            // 그 외 표현식은 전부 panic시키기 때문. 이 문서가 말하는 "SSR
+            // prop 동결"은 완화책이 아니라 이 컴파일러의 구조적 한계임을
+            // 실측으로 확인.
+            let source = r#"
+                function Widget(props) {
+                  const count = signal(0);
+                  return <button onClick={() => count.increment()}>{count()}</button>;
+                }
+                export function App() {
+                  const parentCount = signal(1);
+                  return (
+                    <div>
+                      <Widget client:load initial={parentCount()} />
+                    </div>
+                  );
+                }
+            "#;
+            let module = parse_tsx(source);
+            lower::lower_module(&module);
+        }
     }
 
     /// Task #26 — `sharedSignal()`/`sharedValue()` (RQ4 cross-widget, pulled

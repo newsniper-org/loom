@@ -736,6 +736,32 @@ wake-up?"(RQ1 트랙 R S2(a))에 대한 답은 그렇다. **실질적 발견**: 
 
 **남은 것**: 원본 앱 규모 축, M10(기능 매트릭스) 미착수.
 
+## Task #27 실행 상태 (4부·마지막, 2026-07-25) — 원본 앱 규모 축 + M10
+
+상세는 `research-questions/RQ6-verification-plan.md`의 "§3.8 실행" 절 +
+`research-questions/data/rq6-task27-largeapp-axis-and-m10.json` — 요지만.
+
+**원본 앱 규모 축**: 합성 그래프(TargetWidget 1개 + filler N개, N=0/50)를
+`crates/loom-largeapp-axis-flat`(Flatten, 전체)와 `crates/
+loom-largeapp-axis-island-target`(같은 N=50 그래프에서 TargetWidget만 추출)
+로 실제 빌드해 비교. **결과: 가설 확인** — H-Qwik 번들은 원본 앱 규모에
+비례해 실제로 샌다(N=0→50에서 +24,699바이트, 컴포넌트당 +494바이트).
+Island의 단일 추출은 filler 개수와 무관하게 일정(327,160 vs 324,706바이트,
+잡음 수준). 이번 라운드에서 H-04 쪽에 유리한 유일한 정량 결과 — 단 극단순
+합성 필러 기반이라 과잉 일반화 금지(명시).
+
+**M10(기능 매트릭스)**: RQ3 "알려진 약점" 8건 재검토. 신규 실측: (3) 동적
+prop 전달 부재 — 컴파일러 유닛 테스트로 구조적 거부 확인. (6) 호스트발 직접
+제거의 좀비 위험 — 새 스펙으로 `el.remove()` 직접 호출 시나리오를 재현,
+MutationObserver가 정상 감지해 `detached`로 전이함을 3개 브라우저 확인.
+기존 데이터 재인용: (1) panic 봉쇄, (4) 상주 승격 단조 증가. 정성 기록: (2)
+crash 시 상태 전손(정책 미결), (5) 비동기 정리(해당 없음), (7)(8) 미착수로
+정직하게 기록.
+
+**Task #27 종합**: bench/e2e 인프라, M7, Firefox/WebKit 교차 확인, N-스케일링
+M4/M6, M1, M2/M3, 원본 앱 규모 축, M10 — 계획이 등록한 항목 전부 최소 1회
+데이터 등록 완료. §7 정식 판정은 Task #29 몫으로 남김.
+
 ## Phase 4 — 백엔드 어댑터
 
 - FIC 확정 (05)

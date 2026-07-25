@@ -1,0 +1,75 @@
+{
+  "date": "2026-07-25",
+  "round": "Task #27 - 원본 앱 규모 축(§4.4) + M10(기능 매트릭스) 실측",
+
+  "largeapp_scale_axis": {
+    "question": "§4.4/§9-9: 위젯 하나만 추출·재배포할 때 H-Qwik 팔의 M1 marginal 분리분이 위젯 자체 크기에 수렴하는지, 원본 앱 크기에 비례해 새는지",
+    "methodology": "합성 그래프(1개 TargetWidget + N개의 무관한 filler 컴포넌트, 전부 client:load) - N=0(소규모)과 N=50(대규모, §4.4 N-스케일링과 동일한 N 재사용). crates/loom-largeapp-axis-flat(GraphMode::Flatten, 그래프 전체) vs crates/loom-largeapp-axis-island-target(같은 N=50 그래프에서 generate_single_island_client로 TargetWidget 하나만 추출). release+wasm-opt+gzip9, M1과 동일 관행.",
+    "results_bytes": {
+      "flat_n0_small": { "raw": 324706, "gzip9": 119388 },
+      "flat_n50_large": { "raw": 349405, "gzip9": 122598 },
+      "flat_delta_for_50_extra_components": { "raw": 24699, "gzip9": 3210, "per_component_raw": 494, "per_component_gzip9": 64 },
+      "island_target_extracted_from_n50_graph": { "raw": 327160, "gzip9": 119828 }
+    },
+    "interpretation": "가설이 참으로 확인됨: H-Qwik(Flatten)의 번들 크기는 원본 앱 규모에 비례해 실제로 샌다(N=0->50에서 +24,699바이트, 컴포넌트당 평균 +494바이트, gzip 후에도 +3,210바이트/+64바이트 - 반복적인 filler 구조라 gzip 압축률이 raw보다 훨씬 좋지만 그래도 0이 아니게 증가). Island의 단일-컴포넌트 추출은 원본 그래프에 filler가 0개든 50개든 사실상 동일(327,160 vs 324,706 - 차이 2,454바이트는 크레이트 구조 차이에서 오는 잡음 수준, N에 대한 실질적 추세 없음). 이게 RQ6 H-04의 핵심 주장(위젯 하나만 재배포할 때 원본 앱 크기와 무관해야 한다) 중 이번 라운드에서 유일하게 H-04에 유리한 방향으로 나온 정량 결과 - 단, 컴포넌트당 494바이트는 이 합성 픽스처(아주 단순한 카운터 반복)의 marginal 비용이라 실제 프로덕션 컴포넌트의 marginal 비용은 이보다 훨씬 클 수 있음(명시, 과잉 일반화 금지).",
+    "caveats": [
+      "50개 filler는 전부 구조적으로 거의 동일한 아주 단순한 카운터(현실적인 다양성 없음) - LLVM/wasm-opt의 코드 병합(identical code folding)이 marginal 비용을 실제보다 낮게 보이게 할 가능성 배제 못 함",
+      "N=0/50 두 점만 측정 - 실제 스케일링이 선형인지 다른 형태인지는 이 두 점만으로 확정 못 함(참고용 추세)"
+    ]
+  },
+
+  "m10_feature_matrix": {
+    "note": "RQ3-island-supervision-interaction.md의 '알려진 약점' 8건 각각이 widget-embed 픽스처에서 실제로 재현/개선되는지 - M1-M5 비용 비교와 분리해 카탈로그화(RQ1 M8과 동형이나 여긴 손실 카탈로그).",
+    "items": [
+      {
+        "n": 1,
+        "title": "wasm panic 봉쇄 (조건 A/B/C)",
+        "status": "실측 완료",
+        "evidence": "m6-condition-b-fault-isolation.spec.ts(조건 B, 완전 격리 확인 3개 브라우저) + m4-m6-nscaling.spec.ts(조건 A/공유 인스턴스, 무관한 패닉은 생존하나 자기 상태 변경 중 패닉은 미실측)"
+      },
+      {
+        "n": 2,
+        "title": "crash 시 상태 전손(no-restart) - failed island 노출 정책 미결",
+        "status": "부분 재현 확인, 정책은 여전히 미결",
+        "evidence": "조건 B 테스트에서 패닉난 QuantityPicker 인스턴스 자신은 wasm-bindgen의 WasmRefCell borrow-poison으로 영구 응답 불능(RQ3 Q4의 no-restart/failed 상태와 정합) - 다만 '동결 vs 폴백 마크업' 사용자 노출 정책 자체는 이번 라운드에서도 미결로 남음(설계 질문이라 벤치마크로 답이 안 나옴)"
+      },
+      {
+        "n": 3,
+        "title": "중첩 island 간 동적 데이터 전달 부재(SSR prop 동결)",
+        "status": "구조적 제약으로 실측 확인",
+        "evidence": "loom-compiler 신규 유닛 테스트(component_ref_prop_cannot_carry_a_live_signal_value) - 부모의 살아있는 시그널 값을 자식 Island의 prop으로 넘기려 하면(literal이 아닌 호출식) 컴파일 시점에 명확히 거부됨(lower_prop_literal이 리터럴 형태만 허용). '완화책 있음'이 아니라 '이 컴파일러의 구조적 한계'임을 실측으로 확인"
+      },
+      {
+        "n": 4,
+        "title": "상주 승격으로 활성 actor 단조 증가(hibernation 없음)",
+        "status": "실측 완료",
+        "evidence": "M4 N-스케일링(N=1/10/50) - wasm 선형 메모리가 N에 비례해 실제로 증가(1280->1344->1728 KiB), hibernation 메커니즘 부재 확인(rq6-task27-part1-e2e-infra-and-nscaling.json)"
+      },
+      {
+        "n": 5,
+        "title": "비동기 정리 타임아웃 시 강제 drop 의미론 미정",
+        "status": "해당 없음(이번 구현엔 비동기 정리 자체가 없음)",
+        "evidence": "registry.js의 finishDetach 주석: 'This minimal Phase 3 slice has no in-flight async cleanup work to actually wait for' - 발생 조건 자체가 아직 이 구현에 존재하지 않아 재현/미재현을 논할 대상이 없음"
+      },
+      {
+        "n": 6,
+        "title": "호스트발 제거(명시 unmount API 미준수)의 좀비 위험 - MutationObserver 보강 미설계",
+        "status": "이번 세션에 실제로 개선 + 신규 실측 완료",
+        "evidence": "(a) m10-feature-matrix.spec.ts: 호스트가 detachAndRemove() 없이 el.remove()로 직접 제거해도 MutationObserver가 잡아 registry 상태가 detached로 정상 전이(좀비 아님) - 3개 브라우저 확인. (b) 이번 세션 중 발견해 고친 관련 버그: 같은 MutationObserver가 순수 DOM 재배치(재제거 아님)를 오탐 detach 처리하던 문제를 hostEl.isConnected 재확인으로 수정(M7 간섭-2, 별도 커밋)"
+      },
+      {
+        "n": 7,
+        "title": "크로스 임베드 DOM 중첩(05) 미정의",
+        "status": "미검증 - 이번 라운드 범위 밖",
+        "evidence": "이 픽스처는 단일 loom 앱 내 중첩 Island(ProductCard 안 QuantityPicker)만 다룸 - 서로 다른 loom 배포본이 한 호스트 페이지에 나란히 임베드되는 시나리오(예: 두 개의 독립적인 registry.js 인스턴스 공존) 자체를 아직 픽스처로 안 만듦"
+      },
+      {
+        "n": 8,
+        "title": "Layer 2 제거 op의 Registry 조회가 컴파일타임 플래그로 얼마나 생략되는지 미실측",
+        "status": "미실측 - 이번 라운드 범위 밖",
+        "evidence": "이 질문에 답하려면 전용 마이크로벤치마크(Islands 완전 미사용 빌드 vs 사용 빌드의 patch 경로 바이너리 비교)가 필요 - 이번 라운드에 만들지 않음, 명시적으로 미착수 상태로 기록"
+      }
+    ],
+    "summary": "8건 중 4건 실측 완료(1,3,4,6), 1건 부분 재현+정책 미결(2), 1건 해당 없음(5), 2건 미착수(7,8) - 전부 판정이 아니라 카탈로그, §7 정식 판정은 Task #29 몫."
+  }
+}

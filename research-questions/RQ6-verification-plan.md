@@ -1350,6 +1350,51 @@ M1(번들 크기)은 앱 규모에 비례해 커지지만, M3(wake-up 시 필요
 데이터), `demo/widget-embed/flat/`(신규 페이지+bootstrap), `bench/e2e/specs/
 m2-m3-tti-wakeup.spec.ts`.
 
+### §3.8 "Task #27 — 원본 앱 규모 축 + M10(기능 매트릭스)" 실행 (2026-07-25)
+
+**원본 앱 규모 축(§4.4/§9-9)**: 합성 그래프(TargetWidget 1개 + filler
+컴포넌트 N개, 전부 무관한 독립 카운터) — N=0(소규모)과 N=50(대규모, §4.4
+N-스케일링과 같은 N 재사용, CLAUDE.md 2-1). `crates/loom-largeapp-axis-flat`
+(GraphMode::Flatten, 그래프 전체)와 `crates/loom-largeapp-axis-island-target`
+(같은 N=50 그래프에서 `generate_single_island_client`로 TargetWidget 하나만
+추출) 신규 크레이트로 실제 release+wasm-opt 빌드해 비교.
+
+**결과 — 가설이 참으로 확인됨**: H-Qwik(Flatten)의 번들 크기는 원본 앱
+규모에 비례해 실제로 샌다(N=0→50에서 raw 324,706→349,405바이트, 컴포넌트당
+평균 +494바이트, gzip9도 119,388→122,598바이트로 0이 아니게 증가). Island의
+단일-컴포넌트 추출은 filler가 0개든 50개든 사실상 동일(327,160 vs
+324,706바이트 — 차이는 크레이트 구조 잡음 수준, 실질적 추세 없음). 이번
+라운드에서 H-04 쪽에 유리하게 나온 유일한 정량 결과 — 단 이 합성 필러들은
+극도로 단순한 반복 구조라 marginal 비용(컴포넌트당 494바이트)이 실제
+프로덕션 컴포넌트보다 낮게 측정됐을 가능성 배제 못 함(과잉 일반화 금지,
+2개 지점만 측정했다는 한계도 명시).
+
+**M10(기능 매트릭스)**: RQ3 "알려진 약점" 8건 각각을 재검토. **신규로 직접
+실측한 것**: (3) 중첩 island 간 동적 데이터 전달 부재 — `loom-compiler` 신규
+유닛 테스트(`component_ref_prop_cannot_carry_a_live_signal_value`)로, 부모의
+살아있는 시그널 값을 자식 prop으로 넘기려 하면 컴파일 시점에 명확히 거부됨을
+확인(완화책이 아니라 구조적 한계). (6) 호스트발 제거 좀비 위험 — 새 스펙
+`m10-feature-matrix.spec.ts`로 "레거시 스크립트가 `detachAndRemove()` 없이
+`el.remove()`로 직접 제거"를 재현, `MutationObserver`가 잡아 registry 상태가
+정상적으로 `detached`로 전이함을 3개 브라우저에서 확인(좀비 아님) — 이
+메커니즘 자체는 §3.5에서 오탐 버그를 고쳤으므로 이번엔 진짜 제거 케이스로도
+검증됨. **기존 데이터 재인용**: (1) panic 봉쇄(§3.5/§3.2 데이터), (4) 상주
+승격 단조 증가(§3.5의 M4 N-스케일링). **정성 판단**: (2) crash 시 상태 전손 —
+부분 재현되나 사용자 노출 정책은 여전히 미결(설계 질문). (5) 비동기 정리
+타임아웃 — 이 구현엔 비동기 정리 자체가 없어 "해당 없음". (7)(8) 크로스
+임베드 DOM 중첩 / Registry 조회 컴파일타임 생략 — 이번 라운드도 미착수로
+정직하게 기록.
+
+**상세**: `research-questions/data/rq6-task27-largeapp-axis-and-m10.json`
+(원시 데이터), `crates/loom-largeapp-axis-{flat,island-target}`(신규
+크레이트), `bench/e2e/specs/m10-feature-matrix.spec.ts`,
+`crates/loom-compiler/src/lib.rs`의 신규 유닛 테스트.
+
+**Task #27 종합**: 이것으로 §27 계획이 등록한 항목(bench/e2e 인프라, M7,
+Firefox/WebKit 교차 확인, N-스케일링 M4/M6, M1, M2/M3, 원본 앱 규모 축,
+M10) 전부 최소 1회 데이터가 등록됐다. §7 정식 판정(등가 대역·이산 규칙 적용)
+은 Task #29의 몫으로 명시적으로 남겨둔다 — 이번 라운드는 데이터 등록까지만.
+
 ---
 
 *교차 참조*: RQ6-are-islands-necessary.md(본 계획이 정식화하는 두 가설과 두 검증
