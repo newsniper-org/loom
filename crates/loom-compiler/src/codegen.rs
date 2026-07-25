@@ -497,6 +497,120 @@ fn generate_island_entry_body(tag: &IslandTag, has_shared: bool) -> String {
     out
 }
 
+/// RQ6 §6 M1 real per-Island code splitting — Task #27. Empirically found
+/// (not assumed): every artifact `generate_islands` produces — regardless
+/// of which `--out-name` wasm-pack is told to use — contains **every**
+/// component's `#[wasm_bindgen]`-exported Island struct, since they all
+/// still live in the one crate/cdylib target that name merely relabels.
+/// `--out-name` never controlled *what code* gets compiled, only what the
+/// resulting files are called — a previously-undocumented gap, more severe
+/// than the already-known "chunk directory sharing" issue, bearing
+/// directly on RQ6 H-04's cost profile (a supposed benefit of Islands —
+/// "loading one widget doesn't pull in every other widget's code" — was
+/// not actually true of any Island fixture built so far). This function
+/// generates ONE target Island's client-side code alone (`Signals`/
+/// `Action`/`apply_action`/`resume_action_by_symbol`/`resume`/Island
+/// entry) — a crate whose generated code is *only* this function's output
+/// compiles to a wasm binary containing exactly that one Island's exported
+/// symbols, nothing else.
+///
+/// **Why `setup()` doesn't need to be complete here**: client-side wasm
+/// never calls `setup()` at all (SSR is native-only, driven by the full
+/// `ComponentGraph` elsewhere, e.g. `render_html()`) — only `resume()`/
+/// `apply_action()` run in the browser, and neither ever references a
+/// `ComponentRef` (see `collect_binding_shapes`'s empty `ComponentRef`
+/// arm) — so real per-Island isolation is unaffected by `setup()`'s
+/// content. The one wrinkle: `generate_component` unconditionally emits
+/// `setup()`'s text too (shared code path with the native/SSR path, not
+/// worth forking just for this), and if the target's own tree contains a
+/// `ComponentRef` (e.g. `ProductCard` nesting `QuantityPicker`), that
+/// text calls `super::{sibling}_generated::setup(...)` — a module that
+/// genuinely doesn't exist in this standalone crate. `generate_stub_for_
+/// component_ref` fills exactly that gap: a same-shaped, `unreachable!()`
+/// -bodied stand-in purely so rustc's type/borrow checker is satisfied;
+/// since nothing ever calls the real `setup()` client-side, this stub is
+/// itself dead code and never actually runs.
+pub fn generate_single_island_client(graph: &ComponentGraph, island_component_name: &str) -> String {
+    let components_with_shared_bindings: HashSet<String> = graph
+        .components
+        .iter()
+        .filter(|c| !c.shared_bindings.is_empty())
+        .map(|c| c.name.clone())
+        .collect();
+    let component = graph.components.iter().find(|c| c.name == island_component_name).unwrap_or_else(|| {
+        panic!("loomc: generate_single_island_client: no component named `{island_component_name}` in this graph")
+    });
+    let activation = graph.activation_for(&component.name).unwrap_or_else(|| {
+        panic!(
+            "loomc: generate_single_island_client: component `{island_component_name}` is not Island-activated"
+        )
+    });
+    let has_shared = !component.shared_bindings.is_empty();
+    let tag = island_tag_for(component, activation);
+
+    let mut out = String::new();
+    for ref_name in collect_component_refs(&component.root) {
+        out.push_str(&generate_stub_for_component_ref(
+            &ref_name,
+            components_with_shared_bindings.contains(&ref_name),
+        ));
+    }
+    writeln!(out, "pub mod {}_generated {{", sanitize_mod_name(&component.name)).unwrap();
+    writeln!(out, "    use ::wasm_bindgen::JsCast as _;").unwrap();
+    out.push_str(&generate_component(component, Some(&tag), has_shared, &components_with_shared_bindings));
+    out.push_str(&generate_island_entry_body(&tag, has_shared));
+    writeln!(out, "}}").unwrap();
+    out
+}
+
+/// Every `ComponentRef` target named anywhere in `node`'s subtree — used by
+/// `generate_single_island_client` to know which sibling stub modules a
+/// standalone Island crate needs (see that function's doc comment).
+fn collect_component_refs(node: &JsxNode) -> Vec<String> {
+    let mut names = Vec::new();
+    fn walk(node: &JsxNode, names: &mut Vec<String>) {
+        match node {
+            JsxNode::ComponentRef { component, .. } => names.push(component.clone()),
+            JsxNode::Element { children, .. } => {
+                for c in children {
+                    walk(c, names);
+                }
+            }
+            JsxNode::ListBinding { row, .. } => walk(row, names),
+            JsxNode::CondBinding { then_branch, .. } => walk(then_branch, names),
+            JsxNode::StaticText(_) | JsxNode::TextBinding { .. } | JsxNode::RowItemText | JsxNode::InputBinding { .. } | JsxNode::SharedValueBinding { .. } => {}
+        }
+    }
+    walk(node, &mut names);
+    names
+}
+
+/// A same-shaped, always-`unreachable!()` stand-in for a sibling Island's
+/// `_generated` module — see `generate_single_island_client`'s doc comment
+/// for why this is safe (the real `setup()` referencing it is itself dead
+/// code in a client-only build).
+fn generate_stub_for_component_ref(ref_name: &str, has_shared: bool) -> String {
+    let mod_name = sanitize_mod_name(ref_name);
+    let mut out = String::new();
+    writeln!(out, "pub mod {mod_name}_generated {{").unwrap();
+    writeln!(out, "    pub struct Signals;").unwrap();
+    writeln!(out, "    pub enum Action {{}}").unwrap();
+    let sig = if has_shared {
+        "    pub fn setup(_app: &mut ::loom_runtime::LoomApp, _dom: &mut impl ::loom_runtime::DomOps, _mount: ::loom_runtime::NodeHandle, _shared: &mut impl ::loom_runtime::SharedStore) -> (Signals, ::std::vec::Vec<(::loom_runtime::NodeHandle, Action)>, ::std::vec::Vec<(::loom_runtime::NodeHandle, fn(String) -> Action)>) {"
+    } else {
+        "    pub fn setup(_app: &mut ::loom_runtime::LoomApp, _dom: &mut impl ::loom_runtime::DomOps, _mount: ::loom_runtime::NodeHandle) -> (Signals, ::std::vec::Vec<(::loom_runtime::NodeHandle, Action)>, ::std::vec::Vec<(::loom_runtime::NodeHandle, fn(String) -> Action)>) {"
+    };
+    writeln!(out, "{sig}").unwrap();
+    writeln!(
+        out,
+        "        unreachable!(\"generate_single_island_client stub: setup() is dead code in a client-only Island build\")"
+    )
+    .unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    out
+}
+
 pub fn generate(component: &Component) -> String {
     let has_shared = !component.shared_bindings.is_empty();
     generate_component(component, None, has_shared, &HashSet::new())

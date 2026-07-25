@@ -669,8 +669,47 @@ N에 비례 증가 — 공유 인스턴스 가설의 직접 증거). **M6 결합
 
 **여전히 남은 것(숨기지 않음)**: M6의
 "자기 상태 변경 중 패닉" 시나리오 미실측, `crates/loom-rq6-fixture-gen`(계획
-명시) 대신 Node 스크립트로 N-스케일링 픽스처 생성(병익님 미확인 판단), M1/M2/M3/
+명시) 대신 Node 스크립트로 N-스케일링 픽스처 생성(병익님 미확인 판단), M2/M3/
 원본 앱 규모 축/M10 전부 이번 라운드 미착수(Task #27 나머지 몫).
+
+## Task #27 실행 상태 (2부, 2026-07-25) — M1(번들 크기) 실측
+
+상세는 `research-questions/RQ6-verification-plan.md`의 "§3.6 실행" 절 +
+`research-questions/data/rq6-task27-m1-bundle-size.json`(원시 데이터) — 여기선
+요지만.
+
+**M1을 측정하려다 발견한 치명적 갭**: `crates/loom-widget-embed`의 4개
+"청크"(product_card/quantity_picker/checkout_form/mini_dashboard)와
+`GraphMode::Flatten` 번들이 `--out-name`만 다를 뿐 사실상 동일한 바이너리
+(~438KB, 4개 Island 생성자 + `ResumedFlatApp` 심볼 전부 포함)였다 —
+`generate_islands`가 그래프 전체를 항상 하나의 크레이트에 방출하고
+`#[wasm_bindgen]` export는 DCE 대상이 아니기 때문. Island의 핵심 이점("위젯
+하나만 로드하면 그 코드만 온다")이 오늘까지 실제로 구현된 적 없었다는, RQ6
+H-04의 비용 프로파일에 직접 걸리는 발견 — 병익님께 확인 후("컴파일러에 실제
+per-Island 코드분할 기능 추가") 진행.
+
+**수정**: `loom-compiler`에 `codegen::generate_single_island_client(graph,
+name)` 신설(대상 Island 하나의 코드만 방출, `ComponentRef`로 중첩된 형제
+Island는 client-side에서 죽은 코드인 `setup()`용 `unreachable!()` 스텁으로
+대체) + `lib.rs`의 `compile_tsx_to_single_island_rust()` 공개 + 신규 유닛
+테스트. `crates/loom-widget-embed-island-{product-card,quantity-picker,
+checkout-form,mini-dashboard}` 4개 신규 크레이트로 같은 `demo/widget-embed.tsx`
+에서 실제 분리 빌드(§4.1 정체성 통제 유지). `cargo test --workspace` 전체
+통과, 4개 크레이트 wasm32 `--lib` 체크 통과.
+
+**실측 결과**(raw/gzip9): Layer 0 — H-Qwik `bootstrap.js` 6085/2754, H-Island
+`registry.js`+`shared-store.js` 12781/5388(이번 세션 버그 수정 2건으로 이전보다
+커짐). 위젯별 분리 빌드 4개는 327~358KB로 서로 30KB 이내 — 위젯 로직은 몇 KB뿐,
+~300KB+가 모든 청크에 중복되는 공유 런타임(bevy_ecs+wasm-bindgen). **무상호작용
+페이지 로드**: Island는 client:load 위젯 3개가 무조건 즉시 다운로드됨
+(1,107,583/396,088바이트) vs H-Qwik은 첫 상호작용 전까지 0바이트(6,085/2,754) —
+약 182배/144배 차이(단 이 픽스처는 4/5가 client:load라 Island에 불리한 구성,
+대표성 미검증). **완전 관여**(4개 위젯 전부 상호작용): Island
+1,471,392/526,636 vs H-Qwik 473,110/158,847 — Island이 약 3.1배/3.3배 더
+무겁다(공유 런타임을 4번 중복 지불하기 때문).
+
+**여전히 남은 것**: 청크 간 공유 vendor 모듈(런타임 중복 제거) 미구현 — 효과
+미실측. 이 픽스처의 activation 구성 대표성 미검증. M2/M3/M10 미착수.
 
 ## Phase 4 — 백엔드 어댑터
 

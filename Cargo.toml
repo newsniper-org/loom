@@ -11,6 +11,10 @@ members = [
     "crates/loom-island-quantitypicker",
     "crates/loom-island-compiled",
     "crates/loom-widget-embed",
+    "crates/loom-widget-embed-island-product-card",
+    "crates/loom-widget-embed-island-quantity-picker",
+    "crates/loom-widget-embed-island-checkout-form",
+    "crates/loom-widget-embed-island-mini-dashboard",
     "crates/loom-fic",
 ]
 

@@ -776,6 +776,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-widget-embed-island-checkout-form"
+version = "0.0.1-phase1"
+dependencies = [
+ "bevy_ecs",
+ "console_error_panic_hook",
+ "getrandom 0.3.4",
+ "loom-compiler",
+ "loom-runtime",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "loom-widget-embed-island-mini-dashboard"
+version = "0.0.1-phase1"
+dependencies = [
+ "bevy_ecs",
+ "console_error_panic_hook",
+ "getrandom 0.3.4",
+ "loom-compiler",
+ "loom-runtime",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "loom-widget-embed-island-product-card"
+version = "0.0.1-phase1"
+dependencies = [
+ "bevy_ecs",
+ "console_error_panic_hook",
+ "getrandom 0.3.4",
+ "loom-compiler",
+ "loom-runtime",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "loom-widget-embed-island-quantity-picker"
+version = "0.0.1-phase1"
+dependencies = [
+ "bevy_ecs",
+ "console_error_panic_hook",
+ "getrandom 0.3.4",
+ "loom-compiler",
+ "loom-runtime",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

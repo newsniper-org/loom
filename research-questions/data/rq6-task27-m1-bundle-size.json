@@ -1,0 +1,59 @@
+{
+  "date": "2026-07-25",
+  "round": "Task #27 - M1(번들 크기) 실측, RQ6 §4.2 widget-embed 5-컴포넌트 픽스처 기준, 정체성 통제(§4.1) 충족",
+  "methodology": "release + wasm-opt(wasm-pack 내장 기본 옵션) + gzip -9, RQ1 §7 M5/이전 M1 라운드와 동일 관행. Chromium/Firefox/WebKit 무관 - 순수 정적 바이트 측정.",
+
+  "critical_gap_found_and_fixed_this_round": {
+    "title": "Island \"청크\"가 실제로는 코드분할이 안 되고 있었음 (M1 측정 시도 중 발견)",
+    "finding": "crates/loom-widget-embed에서 wasm-pack build --out-name X로 이름만 바꿔 4개 청크(product_card/quantity_picker/checkout_form/mini_dashboard)를 빌드했더니, 4개 전부 그리고 GraphMode::Flatten(H-Qwik) 번들까지 사실상 동일한 바이너리(~438KB, MD5는 메타데이터 차이로 다르지만 4개 Island 생성자 + ResumedFlatApp 심볼이 전부 모든 산출물에 존재)였다. `--out-name`은 wasm-bindgen 산출물의 파일 이름만 바꿀 뿐 어떤 코드가 컴파일되는지는 전혀 제어하지 않는다 - loom-compiler의 generate_islands는 그래프 전체(다른 모든 Island + Flatten 모드 코드까지)를 항상 한 크레이트/한 cdylib 산출물에 전부 방출한다. #[wasm_bindgen]로 export된 심볼은 LTO/DCE 대상이 아니므로(전부 wasm 모듈의 export 테이블에 남아야 함) 이미 이전부터 그랬을 것 - 이번이 이 크레이트로 실제 바이트 단위 M1을 측정한 첫 시도였기 때문에 지금까지 발견되지 않았다.",
+    "significance": "이미 문서화된 '청크 디렉토리 공유'(파일명 충돌) 갭보다 근본적 - Island 아키텍처가 내세우는 핵심 이점('위젯 하나만 로드하면 그 위젯 코드만 온다')이 오늘까지 실제로 구현된 적이 없었다는 뜻. RQ6 H-04의 비용 프로파일에 직접 걸리는 문제라 사용자에게 확인 후(AskUserQuestion) 컴파일러 기능으로 해결하기로 결정.",
+    "fix": "loom-compiler에 codegen::generate_single_island_client(graph, name) 신설 - 대상 Island 하나의 코드만 방출(Signals/Action/apply_action/resume_action_by_symbol/resume/Island 엔트리), 그 컴포넌트가 자기 트리 안에 ComponentRef로 다른 Island를 중첩하는 경우(ProductCard -> QuantityPicker) 그 형제 모듈의 setup()은 client-side에서 절대 호출되지 않는 죽은 코드이므로 unreachable!() 바디의 스텁 모듈로 대체(resume()/apply_action()은 ComponentRef를 아예 참조하지 않으므로 안전 - collect_binding_shapes의 빈 ComponentRef arm으로 이미 확인됨). lib.rs에 compile_tsx_to_single_island_rust() 공개. crates/loom-widget-embed-island-{product-card,quantity-picker,checkout-form,mini-dashboard} 4개 신규 크레이트로 실제 분리 빌드 - 같은 demo/widget-embed.tsx 소스, §4.1 정체성 통제 유지.",
+    "verification": "loom-compiler 신규 유닛 테스트(single_island_client_output_contains_only_the_target_island) + cargo test --workspace 전체 통과 + wasm32 타겟 --lib 체크 통과(4개 크레이트 전부, ProductCard의 스텁 경로 포함)."
+  },
+
+  "layer0_always_loaded": {
+    "note": "registry.js/shared-store.js는 이번 세션 중 실제 버그 수정 2건(chunkInitPromises, isConnected 재확인)으로 이전 라운드 대비 커짐 - 숨기지 않고 최신 값으로 재측정.",
+    "h_qwik_bootstrap_js": { "raw": 6085, "gzip9": 2754 },
+    "h_island_registry_plus_shared_store_js": { "raw": 12781, "gzip9": 5388 },
+    "overhead_pct_raw": 110.1,
+    "overhead_pct_gzip9": 95.6
+  },
+
+  "per_island_real_split_bundles": {
+    "note": "이번에 신설한 4개 독립 크레이트 - 진짜 코드분할. wasm(raw/gzip9) + js glue(raw/gzip9) + 합계.",
+    "product_card": { "wasm_raw": 344010, "wasm_gzip9": 125653, "js_raw": 19799, "js_gzip9": 4895, "combined_raw": 363809, "combined_gzip9": 130548 },
+    "quantity_picker": { "wasm_raw": 327540, "wasm_gzip9": 119969, "js_raw": 19123, "js_gzip9": 4852, "combined_raw": 346663, "combined_gzip9": 124821 },
+    "checkout_form": { "wasm_raw": 358090, "wasm_gzip9": 127606, "js_raw": 19813, "js_gzip9": 4898, "combined_raw": 377903, "combined_gzip9": 132504 },
+    "mini_dashboard": { "wasm_raw": 350411, "wasm_gzip9": 128473, "js_raw": 19825, "js_gzip9": 4902, "combined_raw": 370236, "combined_gzip9": 133375 },
+    "interpretation": "4개 위젯의 wasm 크기가 327~358KB로 서로 30KB 이내 차이 - 위젯 자신의 로직(버튼 핸들러 몇 개, 문자열 처리)은 실제로 몇 KB에 불과하고, ~300KB 이상은 모든 청크에 공통으로 중복되는 고정 런타임(bevy_ecs, wasm-bindgen 글루, panic 처리, 할당자)이라는 뜻. Island의 '위젯별 분리'가 치르는 진짜 비용은 앱 로직이 아니라 이 공유 런타임의 중복이다 - production에서 청크 간 공유 vendor 모듈로 이 중복을 줄일 여지가 있으나 오늘은 구현되어 있지 않음(향후 개선 여지로 기록, 이번 라운드 범위 밖)."
+  },
+
+  "h_qwik_flat_bundle": {
+    "note": "GraphMode::Flatten - 5개 컴포넌트 전부 병합된 단일 World/단일 payload. crates/loom-widget-embed에 신규 추가한 ResumedFlatApp(loom-resume-demo의 기존 ResumedComponent 패턴 재사용, CLAUDE.md 2-1) wasm 엔트리로 실제 빌드.",
+    "wasm_raw": 438588, "wasm_gzip9": 148900, "js_raw": 28437, "js_gzip9": 7193,
+    "combined_raw": 467025, "combined_gzip9": 156093
+  },
+
+  "scenario_comparisons": {
+    "zero_interaction_page_load": {
+      "description": "사용자가 스크롤도 클릭도 하지 않은 상태 - Island 팔은 client:load 위젯 3개(QuantityPicker/CheckoutForm/MiniDashboard)가 페이지 로드 시점에 무조건 활성화되어 그 wasm이 즉시 다운로드됨(client:visible인 ProductCard만 스크롤까지 유예). H-Qwik 팔은 정의상 첫 상호작용 전까지 wasm을 전혀 안 내려받음.",
+      "island_raw": 1107583, "island_gzip9": 396088,
+      "hqwik_raw": 6085, "hqwik_gzip9": 2754,
+      "ratio_raw": "~182x", "ratio_gzip9": "~144x",
+      "caveat": "이 픽스처는 4개 중 3개가 client:load(즉시 활성화)라 Island 쪽에 특히 불리한 구성 - 실제 앱에서 client:load 대 client:visible/idle 비율이 다르면 이 비율도 크게 달라짐. 이 구성 자체가 대표성 있는 표본인지는 검증되지 않음(명시)."
+    },
+    "full_engagement": {
+      "description": "사용자가 스크롤해 ProductCard도 보고 4개 위젯 전부와 상호작용하는 경우 - 결국 다운로드되는 총 바이트.",
+      "island_raw": 1471392, "island_gzip9": 526636,
+      "hqwik_raw": 473110, "hqwik_gzip9": 158847,
+      "ratio_raw": "~3.11x", "ratio_gzip9": "~3.32x",
+      "interpretation": "Island이 결국 더 무겁다 - per_island_real_split_bundles의 해석대로, 4개 위젯이 공유 런타임(bevy_ecs+wasm-bindgen)을 각자 따로 실어 나르기 때문. H-Qwik은 그 런타임을 한 번만 지불한다."
+    }
+  },
+
+  "limitations": [
+    "이 픽스처(5개 위젯, 4개 client:load + 1개 client:visible)의 activation 구성이 실제 프로덕션 앱을 대표하는지 검증되지 않음 - '원본 앱 규모 축'(Task #27 잔여 항목)이 이 우려를 부분적으로 다룰 예정",
+    "청크 간 공유 vendor 모듈(bevy_ecs/wasm-bindgen 글루를 한 번만 내려받게 하는) 최적화는 오늘 구현되어 있지 않음 - Island의 '중복 런타임' 비용이 이 최적화로 얼마나 줄어들지는 미실측",
+    "M2/M3(TTI/wake-up payload), M10(기능 매트릭스)은 여전히 이번 라운드 미착수"
+  ]
+}

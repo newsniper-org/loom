@@ -49,6 +49,21 @@ pub fn compile_tsx_to_rust_graph(source: &str, mode: GraphMode) -> String {
     codegen::generate_graph(&graph, mode)
 }
 
+/// RQ6 §6 M1 real per-Island code splitting (Task #27) — parses+lowers
+/// `source` into its full `ComponentGraph`, then generates ONLY
+/// `island_component_name`'s own client-side code, suitable for a
+/// standalone wasm crate whose compiled binary contains exactly that one
+/// Island's `#[wasm_bindgen]`-exported symbols — unlike
+/// `compile_tsx_to_rust_graph(..., GraphMode::Islands)`, which always
+/// emits every component in the graph into one artifact (see
+/// `codegen::generate_single_island_client`'s doc comment for the gap this
+/// closes and why it matters for RQ6).
+pub fn compile_tsx_to_single_island_rust(source: &str, island_component_name: &str) -> String {
+    let module = parse_tsx(source);
+    let graph = lower::lower_module(&module);
+    codegen::generate_single_island_client(&graph, island_component_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,6 +631,52 @@ mod tests {
             // since `widget_generated` is ProductCard's sibling, not its
             // child.
             assert!(out.contains("let _ = super::widget_generated::setup(app, dom,"), "{out}");
+        }
+
+        #[test]
+        fn single_island_client_output_contains_only_the_target_island() {
+            // RQ6 §6 M1 real per-Island code splitting: unlike
+            // `compile_tsx_to_rust_graph(..., GraphMode::Islands)` (which
+            // always emits every component in the graph — the empirically-
+            // found gap this function fixes), `compile_tsx_to_single_island_rust`
+            // must emit ONLY the requested Island's own wasm-bindgen struct,
+            // not its siblings'.
+            let source = r#"
+                function Widget() {
+                  const count = signal(0);
+                  return <button onClick={() => count.increment()}>{count()}</button>;
+                }
+                function ProductCard() {
+                  const details = signal(false);
+                  return (
+                    <div>
+                      <button onClick={() => details.toggle()}>show details</button>
+                      {details() && <p>Free shipping on orders over $50.</p>}
+                      <Widget client:load />
+                    </div>
+                  );
+                }
+                export function App() {
+                  return <div><ProductCard client:visible /></div>;
+                }
+            "#;
+            let widget_only = compile_tsx_to_single_island_rust(source, "Widget");
+            assert!(widget_only.contains("pub struct WidgetIsland"), "{widget_only}");
+            assert!(!widget_only.contains("ProductCardIsland"), "{widget_only}");
+            // A leaf Island (no ComponentRef of its own) needs no stub
+            // modules at all.
+            assert!(!widget_only.contains("_generated {\n    pub struct Signals;"), "{widget_only}");
+
+            let product_card_only = compile_tsx_to_single_island_rust(source, "ProductCard");
+            assert!(product_card_only.contains("pub struct ProductCardIsland"), "{product_card_only}");
+            assert!(!product_card_only.contains("WidgetIsland"), "{product_card_only}");
+            // ProductCard nests a ComponentRef to Widget, so its (dead-code,
+            // client-side-unused) `setup()` still textually references
+            // `super::widget_generated::setup(...)` — a stub must exist so
+            // this standalone crate still compiles.
+            assert!(product_card_only.contains("let _ = super::widget_generated::setup(app, dom,"), "{product_card_only}");
+            assert!(product_card_only.contains("pub mod widget_generated {\n    pub struct Signals;"), "{product_card_only}");
+            assert!(product_card_only.contains("unreachable!("), "{product_card_only}");
         }
 
         #[test]

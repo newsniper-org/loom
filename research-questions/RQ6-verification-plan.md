@@ -1257,6 +1257,65 @@ N에 비례해 실제로 증가 — "N개의 같은-타입 인스턴스가 하�
 loom-widget-embed/src/lib.rs`의 두 신규 export 독 코멘트, `bench/e2e/`
 (스펙 파일 전체), `roadmap/PHASES.md` Task #27 (1부) 절.
 
+### §3.6 "Task #27 — M1(번들 크기) 실측" 실행 (2026-07-25)
+
+**M1을 측정하려다 발견한 치명적 갭**: `crates/loom-widget-embed`에서
+`wasm-pack build --out-name X`로 이름만 바꿔 4개 "청크"를 빌드해보니, **4개
+전부와 `GraphMode::Flatten`(H-Qwik) 번들까지 사실상 동일한 바이너리(~438KB)**
+였다 — `--out-name`은 산출물 파일 이름만 바꿀 뿐 어떤 코드가 컴파일되는지는
+전혀 통제하지 않고, `generate_islands`는 그래프 전체(다른 모든 Island +
+Flatten 코드까지)를 항상 하나의 크레이트/cdylib에 방출한다. `#[wasm_bindgen]`
+export는 LTO/DCE 대상이 아니므로 4개 Island 생성자 + `ResumedFlatApp` 심볼이
+매 산출물에 전부 남아 있었다(grep으로 확인). 이미 문서화된 "청크 디렉토리
+공유"(파일명 충돌) 갭보다 근본적 — Island의 핵심 이점("위젯 하나만 로드하면 그
+코드만 온다")이 오늘까지 실제로 구현된 적 없었다는 뜻이며, RQ6 H-04의 비용
+프로파일에 직접 걸리는 문제라 병익님께 AskUserQuestion으로 확인 후("컴파일러에
+실제 per-Island 코드분할 기능 추가") 진행했다.
+
+**수정**: `loom-compiler`에 `codegen::generate_single_island_client(graph,
+name)` 신설 — 대상 Island 하나의 클라이언트측 코드만 방출(`Signals`/`Action`/
+`apply_action`/`resume_action_by_symbol`/`resume`/Island 엔트리). 대상이 자기
+트리 안에 `ComponentRef`로 다른 Island를 중첩하면(ProductCard → QuantityPicker)
+그 형제 모듈의 `setup()`은 client-side에서 절대 호출되지 않는 죽은 코드이므로
+`unreachable!()` 바디의 스텁 모듈로 대체 — `resume()`/`apply_action()`은
+`ComponentRef`를 전혀 참조하지 않으므로(`collect_binding_shapes`의 빈
+`ComponentRef` arm으로 이미 확인됨) 안전하다. `lib.rs`에
+`compile_tsx_to_single_island_rust()` 공개, 신규 유닛 테스트
+(`single_island_client_output_contains_only_the_target_island`)로 회귀 고정.
+`crates/loom-widget-embed-island-{product-card,quantity-picker,checkout-form,
+mini-dashboard}` 4개 신규 크레이트로 **같은** `demo/widget-embed.tsx`에서 실제
+분리 빌드(§4.1 정체성 통제 유지). `cargo test --workspace` 전체 통과, 4개
+크레이트 전부 wasm32 타겟 `--lib` 체크 통과(ProductCard의 스텁 경로 포함).
+
+**M1 실측 결과**: (raw/gzip9, release+wasm-opt 빌드)
+- Layer 0(항상 로드): H-Qwik `bootstrap.js` 6085/2754, H-Island
+  `registry.js`+`shared-store.js` 12781/5388(+110%/+96% — 이번 세션의 실제
+  버그 수정 2건으로 이전 라운드보다 커짐, 숨기지 않고 최신 값으로 재측정).
+- 위젯별 실제 분리 빌드 4개의 wasm 크기가 327~358KB로 서로 30KB 이내 —
+  위젯 자신의 로직은 몇 KB에 불과하고 ~300KB 이상은 모든 청크에 중복되는
+  고정 런타임(bevy_ecs, wasm-bindgen 글루, panic 처리, 할당자)이라는 뜻.
+- **무상호작용 페이지 로드**(스크롤도 클릭도 없음): Island는 `client:load`
+  위젯 3개(QuantityPicker/CheckoutForm/MiniDashboard)가 페이지 로드 시점에
+  무조건 활성화되어 그 wasm이 즉시 다운로드됨(1,107,583/396,088바이트) — 반면
+  H-Qwik은 정의상 첫 상호작용 전까지 wasm을 전혀 안 내려받음(6,085/2,754바이트,
+  약 182배/144배 차이). **단, 이 픽스처는 4개 중 3개가 client:load라 Island에
+  특히 불리한 구성 — 대표성은 검증되지 않음(명시)**.
+- **완전 관여**(스크롤해서 4개 위젯 전부와 상호작용): Island
+  1,471,392/526,636바이트 vs H-Qwik 473,110/158,847바이트 — Island이 약
+  3.1배/3.3배 더 무겁다. 4개 위젯이 공유 런타임(bevy_ecs+wasm-bindgen)을 각자
+  따로 실어 나르기 때문 — H-Qwik은 그 런타임을 한 번만 지불한다.
+
+**여전히 남은 것(숨기지 않음)**: 청크 간 공유 vendor 모듈(런타임 중복 제거)
+최적화는 오늘 구현되어 있지 않음 — 얼마나 줄어들지 미실측. 이 픽스처의
+activation 구성(4개 중 3개 client:load)이 실제 앱을 대표하는지 미검증 — "원본
+앱 규모 축"(Task #27 잔여)이 부분적으로 다룰 예정. M2/M3/M10 여전히 미착수.
+
+**상세**: `research-questions/data/rq6-task27-m1-bundle-size.json`(원시
+데이터), `crates/loom-compiler/src/codegen.rs`의 `generate_single_island_client`
+독 코멘트, `crates/loom-widget-embed-island-*`(4개 신규 크레이트),
+`crates/loom-widget-embed/src/lib.rs`의 `ResumedFlatApp`(H-Qwik 팔 wasm
+엔트리, `loom-resume-demo`의 `ResumedComponent` 패턴 재사용).
+
 ---
 
 *교차 참조*: RQ6-are-islands-necessary.md(본 계획이 정식화하는 두 가설과 두 검증
