@@ -44,7 +44,8 @@ test.describe("M7 간섭-2: 호스트 DOM 재배치", () => {
       await page.waitForTimeout(200);
       // registry.js의 watchForHostInitiatedRemoval()이 순수 재배치(제거 후
       // 같은 tick에 재삽입)를 오탐 detach로 처리하는지 함께 관찰 — RQ6 §27
-      // 계획에서 미리 지목한 위험.
+      // 계획에서 미리 지목한 위험. 실제로 재현됐고(10/10, 3개 브라우저),
+      // hostEl.isConnected 재확인으로 수정함 — 이 테스트가 그 회귀 게이트.
       const wrongfullyDetached = await page.evaluate(() => {
         return new Promise<boolean>((resolve) => {
           const host = document.querySelector("#app")!;
@@ -68,6 +69,7 @@ test.describe("M7 간섭-2: 호스트 DOM 재배치", () => {
     const falsePositives = observerFlags.filter(Boolean).length;
     console.log(`M7 간섭-2 (Chromium/Firefox 별도 기록): ${passCount}/${TRIALS} pass, MutationObserver 오탐 detach: ${falsePositives}/${TRIALS}`);
     expect(passCount).toBeGreaterThanOrEqual(TRIALS - 1);
+    expect(falsePositives).toBe(0); // hostEl.isConnected 수정 이후 회귀 게이트
   });
 });
 

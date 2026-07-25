@@ -1195,8 +1195,12 @@ run-webkit-in-docker.sh`)으로 해결 — 이후 WebKit 결과는 전부 이 �
 발견**: `registry.js`의 `watchForHostInitiatedRemoval()`(MutationObserver 기반)이
 순수 `insertBefore` 재배치를 오탐하여 detach 처리함 — 10/10 재현, 3개 브라우저
 전부 동일. RQ3 "알려진 약점 6번 완화" 코드가 "제거 vs 재배치"를 구분 못 하는
-실제 결함. **이번 라운드에서는 발견·기록만 하고 수정하지 않음**(범위 밖으로
-명시 등록, 아래 데이터 파일의 `open_issues_carried_forward` 참고).
+실제 결함. **병익님 지시로 같은 라운드 내에 수정**: MutationObserver 콜백은
+마이크로태스크라 실행 시점엔 재배치가 이미 끝나 있으므로, candidate host
+element의 `isConnected`를 콜백 안에서 재확인 — 아직 문서에 붙어 있으면(다른
+위치로 옮겨졌을 뿐) 진짜 제거가 아니므로 detach를 건너뛴다. 수정 후 재측정:
+3개 브라우저 전부 0/10 오탐(회귀 게이트로 테스트에 `expect(falsePositives).toBe(0)`
+고정).
 
 **M6 조건 B/M8/M9 Firefox·WebKit 교차 확인**: Task #26의 Chromium 전용 결과를
 재실행 — 3개 브라우저 완전히 동일한 결과(풀링·평균 없이 개별 기록).
@@ -1239,14 +1243,13 @@ N에 비례해 실제로 증가 — "N개의 같은-타입 인스턴스가 하�
 후자는 아직 미실측(다음 라운드로 명시 이관).
 
 **여전히 남은 것(숨기지 않음)**:
-1. 간섭-2의 MutationObserver 오탐 detach — 발견만, 미수정.
-2. M6 N-스케일링의 "자기 자신 변경 도중 패닉" 시나리오 — 미실측.
-3. `crates/loom-rq6-fixture-gen`(계획에 명시된 Rust 크레이트)을 만들지 않고
+1. M6 N-스케일링의 "자기 자신 변경 도중 패닉" 시나리오 — 미실측.
+2. `crates/loom-rq6-fixture-gen`(계획에 명시된 Rust 크레이트)을 만들지 않고
    `bench/e2e/fixtures/gen-nscaling-page.mjs`(Node 스크립트)로 대체함 — N-스케일링은
    이미 컴파일된 청크를 가리키는 HTML 반복일 뿐이라는 판단. **병익님께 아직 명시적
    으로 확인받지 않은 판단**. 원본 앱 규모 축(§4.4)은 실제 컴파일이 필요하므로 이
    대체가 적용되지 않고 별도 Rust 툴로 처리함.
-4. M1(H-Qwik 팔 실제 빌드+번들 비교)/M2/M3(TTI/wake-up payload)/원본 앱 규모 축/
+3. M1(H-Qwik 팔 실제 빌드+번들 비교)/M2/M3(TTI/wake-up payload)/원본 앱 규모 축/
    M10(기능 매트릭스) — 전부 Task #27의 나머지 몫, 이번 라운드 미착수.
 
 **상세**: `research-questions/data/rq6-task27-part1-e2e-infra-and-nscaling.json`

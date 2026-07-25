@@ -12,7 +12,7 @@
     "간섭_1_host_attribute_mutation": { "chromium": "10/10 pass", "firefox": "10/10 pass", "webkit": "10/10 pass" },
     "간섭_2_host_dom_reposition": {
       "functional_result": { "chromium": "10/10 pass", "firefox": "10/10 pass", "webkit": "10/10 pass" },
-      "real_bug_found_not_fixed": "registry.js의 watchForHostInitiatedRemoval()(MutationObserver 기반)이 순수 insertBefore 재배치를 오탐하여 detach로 처리함 - 10/10 재현, 3개 브라우저 전부 동일. RQ3 '알려진 약점 6번 완화' 코드가 '제거 vs 재배치'를 구분하지 못하는 실제 결함. 이번 라운드에서는 발견/기록만 하고 수정하지 않음(범위 밖으로 명시 등록, 아래 open_issues 참고)."
+      "real_bug_found_and_fixed_same_day": "registry.js의 watchForHostInitiatedRemoval()(MutationObserver 기반)이 순수 insertBefore 재배치를 오탐하여 detach로 처리함 - 최초 발견 시 10/10 재현, 3개 브라우저 전부 동일. RQ3 '알려진 약점 6번 완화' 코드가 '제거 vs 재배치'를 구분하지 못하는 실제 결함. 병익님 지시로 같은 라운드 내에 수정함: MutationObserver 콜백(마이크로태스크라 재배치가 이미 끝난 뒤 실행됨)에서 candidate host element의 `isConnected`를 재확인 - 아직 문서에 붙어 있으면(다른 위치로 옮겨졌을 뿐) 진짜 제거가 아니므로 detach를 건너뜀. 수정 후 재측정: 0/10 오탐, 3개 브라우저 전부."
     },
     "간섭_3_global_click_delegation_reference_only": { "chromium": "10/10 pass", "firefox": "10/10 pass", "webkit": "10/10 pass" }
   },
@@ -56,7 +56,6 @@
   },
 
   "open_issues_carried_forward": [
-    "간섭-2의 MutationObserver 오탐 detach(순수 재배치를 제거로 오인) - 발견만 하고 아직 안 고침",
     "M6 N-스케일링 결합 셀의 '자기 자신의 상태 변경 도중 패닉' 시나리오는 아직 미실측",
     "crates/loom-rq6-fixture-gen(계획에 명시된 Rust 크레이트)을 만들지 않고 bench/e2e/fixtures/gen-nscaling-page.mjs(Node 스크립트)로 대체함 - N-스케일링은 이미 컴파일된 청크를 가리키는 HTML 템플릿 반복일 뿐이라 컴파일러 재구동이 불필요하다는 판단. 병익님께 아직 명시적으로 확인받지 않은 판단 - 원본 앱 규모 축(§4.4)은 실제 컴파일이 필요하므로 이 대체가 적용되지 않고 별도 Rust 툴로 처리함.",
     "M1(번들 크기, H-Qwik 팔 실제 빌드)/M2/M3(TTI/wake-up payload)/원본 앱 규모 축/M10(기능 매트릭스) 전부 이번 라운드에 미착수 - Task #27의 나머지 몫"

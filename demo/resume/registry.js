@@ -181,6 +181,15 @@ function bootstrapIslands() {
 // forever — a zombie. This `MutationObserver` catches that case too, from
 // outside any single removal path.
 function watchForHostInitiatedRemoval() {
+  // 실제로 발견한 버그(RQ6 §6 M7 간섭-2 실측 중): 호스트가 `insertBefore`로
+  // 어떤 조상을 "제거 후 같은 tick에 재삽입"하는 순수 재배치를 하면, 그
+  // 조상은 DOM에서 한 번 떨어졌다가 다시 붙는 것이므로 MutationObserver의
+  // `removedNodes`에 나타난다 — 그런데 MutationObserver 콜백은 마이크로태스크
+  // 큐잉이라 그 시점엔 재삽입이 이미 끝나 있다. 즉 `removedNodes`에 있다는
+  // 사실만으로 "진짜 제거됐다"고 판단하면, 순수 재배치를 오탐 detach로
+  // 처리하게 된다(실측: 10/10 재현, 3개 브라우저 전부). 수정: 콜백 시점에
+  // `hostEl.isConnected`를 다시 확인 — 아직 문서에 붙어 있으면(다른 위치로
+  // 옮겨졌을 뿐) 진짜 제거가 아니므로 건너뛴다.
   const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       for (const removedNode of mutation.removedNodes) {
@@ -190,6 +199,7 @@ function watchForHostInitiatedRemoval() {
         if (removedNode.querySelectorAll) hosts.push(...removedNode.querySelectorAll("[data-loom-island]"));
 
         for (const hostEl of hosts) {
+          if (hostEl.isConnected) continue; // 위 주석 참고 — 순수 재배치, 진짜 제거 아님.
           const id = hostEl.dataset.loomIslandId;
           const state = window.__loomRegistry.getState(id);
           // Already handled by an explicit `detachAndRemove` call in the
