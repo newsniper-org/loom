@@ -711,6 +711,31 @@ checkout-form,mini-dashboard}` 4개 신규 크레이트로 같은 `demo/widget-e
 **여전히 남은 것**: 청크 간 공유 vendor 모듈(런타임 중복 제거) 미구현 — 효과
 미실측. 이 픽스처의 activation 구성 대표성 미검증. M2/M3/M10 미착수.
 
+## Task #27 실행 상태 (3부, 2026-07-25) — M2/M3(TTI/wake-up payload) 실측
+
+상세는 `research-questions/RQ6-verification-plan.md`의 "§3.7 실행" 절 +
+`research-questions/data/rq6-task27-m2-m3-tti-wakeup.json`(원시 데이터) — 요지만.
+
+**신규 픽스처**: `demo/widget-embed/flat/index.html` — H-Qwik 반사실 팔의
+브라우저 서빙 페이지(Task #26이 예고만 하고 안 만들었던 것). 같은
+`demo/widget-embed.tsx`를 `GraphMode::Flatten`으로 파생, `bootstrap-flat.js`는
+`demo/resume/bootstrap.js`의 메커니즘을 `ResumedFlatApp` 대상으로 재사용.
+
+**M2(위젯-로컬 TTI, 15회 반복) 결과 — 사실상 비판별적**: Island의 client:load
+위젯("페이지 로드 → attached")과 H-Qwik("첫 클릭 → materialize+dispatch 완료")
+모두 Chromium 기준 22~42ms 범위에 함께 몰림 — §6 표가 사전에 인정한 "비판별적
+지표일 수 있음"이 실제로 확인됨. Firefox/WebKit 교차 확인도 같은 패턴(절대값만
+다름).
+
+**M3(wake-up payload, SSR HTML 직접 파싱 — 완전 결정론적) 결과**: 매칭 액션의
+`captures` 세그먼트(진짜 페이로드)가 두 팔에서 바이트 단위로 완전히 동일
+(`cart_count:0`=12바이트, `visits:0`=8바이트) — "island wake-up ≈ 단일 유닛
+wake-up?"(RQ1 트랙 R S2(a))에 대한 답은 그렇다. **실질적 발견**: M1(번들 크기)은
+앱 규모에 비례해 커지지만 M3(wake-up 시 역직렬화 바이트)는 앱 규모와 무관 —
+두 비용 축이 독립적.
+
+**남은 것**: 원본 앱 규모 축, M10(기능 매트릭스) 미착수.
+
 ## Phase 4 — 백엔드 어댑터
 
 - FIC 확정 (05)

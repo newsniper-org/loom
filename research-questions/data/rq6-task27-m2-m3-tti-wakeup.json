@@ -1,0 +1,46 @@
+{
+  "date": "2026-07-25",
+  "round": "Task #27 - M2(위젯-로컬 TTI)/M3(wake-up payload) 실측, RQ6 §4.2 widget-embed 픽스처 기준",
+  "new_fixture": "demo/widget-embed/flat/index.html + bootstrap-flat.js + chunks/App_chunk.{js,wasm} - Task #26이 만들어 두고 실제로는 안 만들었던 H-Qwik 반사실 팔의 브라우저 서빙 페이지(같은 demo/widget-embed.tsx에서 GraphMode::Flatten으로 파생, print_ssr_flat 출력을 그대로 붙여넣음). bootstrap-flat.js는 demo/resume/bootstrap.js와 동일한 메커니즘(Qwik 전역 클릭 위임, CLAUDE.md 2-1 재사용)을 ResumedFlatApp 대상으로만 바꿔 재사용.",
+
+  "m2_widget_local_tti": {
+    "methodology": "15회 반복, 브라우저 내 performance.now() 기준(Playwright의 wall-clock 오버헤드 배제). Island의 client:load 위젯은 '페이지 네비게이션 시작 -> registry 상태 attached'를 측정(상호작용과 무관하게 즉시 활성화되므로). client:visible(ProductCard)은 '프로그램적 스크롤 트리거 -> attached'를 측정(스크롤 자체는 사용자 행동이라 프레임워크 비용에서 제외). H-Qwik(Flatten)은 정의상 첫 클릭 전까지 아무 일도 없으므로 '그 위젯이 상호작용 가능해지는 시점'이 곧 '첫 클릭의 materialize+resume+dispatch 전체가 끝나는 시점'과 같음 - M3와 동일한 것을 재게 됨(§6 표가 사전에 인정한 가능성).",
+    "chromium_ms": {
+      "island_quantity_picker": { "median": 38.70, "p95": 129.30 },
+      "island_checkout_form": { "median": 39.40, "p95": 103.90 },
+      "island_mini_dashboard": { "median": 42.30, "p95": 104.10 },
+      "island_product_card_client_visible": { "median": 22.80, "p95": 37.70 },
+      "hqwik_flatten_first_click": { "median": 28.10, "p95": 53.60 }
+    },
+    "firefox_ms_cross_check": {
+      "island_quantity_picker": { "median": 64.00, "p95": 193.00 },
+      "island_checkout_form": { "median": 67.00, "p95": 99.00 },
+      "island_mini_dashboard": { "median": 82.00, "p95": 98.00 },
+      "island_product_card_client_visible": { "median": 39.00, "p95": 44.00 },
+      "hqwik_flatten_first_click": { "median": 45.00, "p95": 48.00 }
+    },
+    "webkit_ms_cross_check_via_docker": {
+      "island_quantity_picker": { "median": 136.00, "p95": 240.00 },
+      "island_checkout_form": { "median": 166.00, "p95": 200.00 },
+      "island_mini_dashboard": { "median": 188.00, "p95": 205.00 },
+      "island_product_card_client_visible": { "median": 86.00, "p95": 149.00 },
+      "hqwik_flatten_first_click": { "median": 73.00, "p95": 105.00 }
+    },
+    "interpretation": "§6 표가 미리 인정한 대로 M2는 사실상 비판별적 지표로 판명됨 - 두 팔 모두 로컬 dev 서버/dev-mode wasm(release+wasm-opt 아님) 조건에서 수십~약 200ms 범위에 함께 몰려 있고, 브라우저 간 절대값 차이(Chromium<Firefox<WebKit-in-Docker)가 팔 간 차이보다 훨씬 큼 - RQ1 §8 관행대로 브라우저 간 풀링은 하지 않되, Chromium(1차 판정) 내에서도 두 팔이 겹치는 범위라 이 지표 하나로 승패를 가르기 어렵다. Island 쪽에서 활성화 순서(QuantityPicker<CheckoutForm<MiniDashboard, 셋 다 client:load로 동시 경합)에 따라 미세하게 늘어나는 경향이 있으나 이는 3개 청크가 동시에 fetch를 다투는 큐잉 효과일 가능성이 높고, 근본적 아키텍처 비용 차이라고 단정할 근거는 없음(반복 측정으로 확인 필요, 이번 라운드 범위 밖)."
+  },
+
+  "m3_wakeup_payload_bytes": {
+    "methodology": "실제 SSR HTML의 data-loom-lref 문자열을 직접 파싱 - 브라우저 측정이 필요 없는 완전 결정론적 값(RQ2 payload 포맷 자체가 컴파일 타임에 고정되므로). '초기 마운트분'과 '상호작용별 증분분'을 분리해서 본다.",
+    "captures_segment_by_matching_action": {
+      "note": "chunk|symbol|captures 중 captures 세그먼트만 비교 - 이게 RQ2가 말하는 실제 '역직렬화 페이로드'. chunk/symbol은 주소 지정 문자열이지 페이로드가 아님.",
+      "quantity_picker_increment": { "island": "cart_count:0", "hqwik_flatten": "cart_count:0", "bytes_island": 12, "bytes_hqwik": 12 },
+      "mini_dashboard_increment": { "island": "visits:0", "hqwik_flatten": "visits:0", "bytes_island": 8, "bytes_hqwik": 8 },
+      "no_capture_actions_both_arms": { "island": "", "hqwik_flatten": "", "bytes": 0 }
+    },
+    "initial_mount_portion": {
+      "hqwik_flatten": "0바이트 - 정의상 첫 상호작용 전까지 아무 것도 역직렬화하지 않음(M1의 '무상호작용 페이지 로드=0바이트'와 정합)",
+      "island_client_load": "명시적 '페이로드 바이트'로는 0(자체 캡처 문자열을 안 쓰고 SSR된 DOM에서 직접 adopt) - 하지만 resume() 비용 자체가 페이지 로드 시점으로 전부 당겨져 옴(M2의 '페이지 로드 시점부터 즉시 attached' 결과와 정합). 바이트 수가 아니라 '언제 비용을 치르는가'의 차이."
+    },
+    "interpretation": "핵심 발견: 매칭되는 액션의 captures 세그먼트(진짜 페이로드)는 두 팔에서 바이트 단위로 완전히 동일하다 - RQ1 트랙 R S2(a)가 미리 등록한 'island wake-up ≈ 단일 유닛 wake-up?' 질문에 대한 답은 '그렇다'. loomc의 최소-캡처 계산(format_i32_capture_for_action)이 액션 단위로 이미 narrow되어 있어서, 같은 World에 다른 컴포넌트가 몇 개 더 있든 그 액션 자신이 안 건드리는 시그널은 애초에 캡처하지 않기 때문 - 그래프가 커져도 이 세그먼트는 안 늘어난다. M1(번들 크기)이 앱 규모에 비례해 커지는 것과 대조적으로, M3(wake-up 시 필요한 역직렬화 바이트)는 앱 규모와 무관하다 - 두 비용 축이 독립적이라는 것 자체가 이번 라운드의 실질적 발견."
+  }
+}

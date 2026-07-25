@@ -1316,6 +1316,40 @@ activation 구성(4개 중 3개 client:load)이 실제 앱을 대표하는지 �
 `crates/loom-widget-embed/src/lib.rs`의 `ResumedFlatApp`(H-Qwik 팔 wasm
 엔트리, `loom-resume-demo`의 `ResumedComponent` 패턴 재사용).
 
+### §3.7 "Task #27 — M2(위젯-로컬 TTI)/M3(wake-up payload) 실측" 실행 (2026-07-25)
+
+**신규 픽스처**: `demo/widget-embed/flat/index.html` — Task #26이 §4.1 주석에서
+예고만 하고 실제로는 안 만들었던 H-Qwik 반사실 팔의 브라우저 서빙 페이지(같은
+`demo/widget-embed.tsx`에서 `GraphMode::Flatten`으로 파생, `print_ssr_flat`
+출력을 그대로 붙여넣음). `bootstrap-flat.js`는 `demo/resume/bootstrap.js`와
+동일한 메커니즘(Qwik 전역 클릭 위임 재사용, CLAUDE.md 2-1)을 `ResumedFlatApp`
+대상으로만 바꿔 재사용 — 5개 컴포넌트가 전부 merged World라 어느 위젯을 먼저
+클릭하든 전체 앱이 한 번에 materialize되고, 이후 다른 위젯 클릭은 전부 그
+하나의 인스턴스를 공유하도록 구현.
+
+**M2 실측(15회 반복, 브라우저 내 `performance.now()` 기준)**: Island의
+`client:load` 위젯 3개는 "페이지 네비게이션 시작 → attached"를, `client:visible`
+(ProductCard)은 "프로그램적 스크롤 트리거 → attached"를, H-Qwik(Flatten)은
+"첫 클릭 시작 → materialize+resume+dispatch 완료"를 측정. **결과: §6 표가
+사전에 인정한 대로 사실상 비판별적**(Chromium 기준 22~42ms 범위에 양쪽 팔이
+함께 몰림, Firefox/WebKit 교차 확인도 절대값만 다를 뿐 같은 패턴) — 이 지표
+하나로는 두 가설을 가르기 어렵다는 것 자체가 정직한 결과다.
+
+**M3 실측(SSR HTML의 `data-loom-lref` 직접 파싱, 완전 결정론적)**: 매칭되는
+액션(QuantityPicker/MiniDashboard의 Increment)의 `captures` 세그먼트(진짜
+페이로드 — `chunk`/`symbol`은 주소 지정 문자열일 뿐)가 두 팔에서 **바이트
+단위로 완전히 동일**(`cart_count:0`=12바이트, `visits:0`=8바이트, 양쪽 다).
+RQ1 트랙 R S2(a)가 사전등록한 "island wake-up ≈ 단일 유닛 wake-up?" 질문에
+대한 답은 **그렇다** — `format_i32_capture_for_action`의 최소-캡처 계산이
+액션 단위로 이미 narrow되어 있어, 같은 World에 다른 컴포넌트가 몇 개 더
+있든 그 액션이 안 건드리는 시그널은 애초에 캡처 안 된다. **실질적 발견**:
+M1(번들 크기)은 앱 규모에 비례해 커지지만, M3(wake-up 시 필요한 역직렬화
+바이트)는 앱 규모와 무관하다 — 두 비용 축이 독립적이라는 것.
+
+**상세**: `research-questions/data/rq6-task27-m2-m3-tti-wakeup.json`(원시
+데이터), `demo/widget-embed/flat/`(신규 페이지+bootstrap), `bench/e2e/specs/
+m2-m3-tti-wakeup.spec.ts`.
+
 ---
 
 *교차 참조*: RQ6-are-islands-necessary.md(본 계획이 정식화하는 두 가설과 두 검증

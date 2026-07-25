@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>loom Task #27 — RQ6 §4.2 위젯-임베드 픽스처 (H-Qwik 반사실 팔)</title>
+</head>
+<body>
+  <!--
+    Task #27 — demo/widget-embed/index.html(Island 팔)과 같은
+    demo/widget-embed.tsx에서 GraphMode::Flatten으로 파생된 H-Qwik 반사실 팔.
+    이 마크업은 `cargo run -p loom-widget-embed --bin print_ssr_flat`의
+    출력을 그대로 붙여넣은 것 — demo/resume/index.html과 동일한 관례.
+
+    5개 컴포넌트(CartBadge/QuantityPicker/ProductCard/CheckoutForm/
+    MiniDashboard)가 전부 하나의 merged World로 합쳐져 있고, data-loom-lref의
+    chunk 필드가 전부 "App_chunk" 하나뿐 — Island 팔처럼 위젯마다 다른 청크
+    이름(ProductCard_chunk/QuantityPicker_chunk/...)이 없다. RQ6 §6 M2/M3
+    실측(bench/e2e/specs/m2-m3-tti-wakeup.spec.ts)이 이 페이지를 사용한다.
+  -->
+  <div id="app"><div><div><span>cart:<span data-loom-shared-subscriber="cartCount">0</span></span><div><button data-loom-lref="App_chunk|Action0|">show details</button><p data-loom-id="details"></p><div><button data-loom-lref="App_chunk|Action1|cart_count:0">+</button><span data-loom-id="cart_count">0</span></div></div><div><button data-loom-lref="App_chunk|Action2|">toggle express shipping</button><p data-loom-id="shipping"></p><button data-loom-lref="App_chunk|Action3|">toggle gift wrap</button><p data-loom-id="gift"></p><button data-loom-lref="App_chunk|Action4|">submit order</button><p data-loom-id="confirmed"></p></div><div><button data-loom-lref="App_chunk|Action5|visits:0">+1 visit</button><span data-loom-id="visits">0</span><ul data-loom-id="tags"><li>news</li><li>sale</li></ul><button data-loom-lref="App_chunk|Action6|">add tag</button></div></div></div></div>
+  <script src="../../resume/shared-store.js"></script>
+  <script src="./bootstrap-flat.js"></script>
+</body>
+</html>
