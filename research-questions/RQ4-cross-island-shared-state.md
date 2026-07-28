@@ -1,5 +1,26 @@
 # RQ4. Island 간 통신
 
+> **2026-07-28 (Phase 6, Task #29) — 전면 폐기.** RQ6 §7 게이트가 H-Qwik을
+> 확정(강한 형태)함에 따라, 이 RQ가 다루던 문제 자체가 소거된다 — 기본 모델은
+> 페이지 전체가 하나의 `bevy_ecs::World`이므로(docs/04 재해석), "서로 다른
+> Island 경계를 넘는 통신"이라는 문제 정의 자체가 성립하지 않는다. 여러 위젯이
+> 같은 값을 공유해야 하는 요구(예: 장바구니 배지)는 이제 "경계를 넘는 통신"이
+> 아니라 **그냥 같은 World 안의 평범한 Signal 하나를 여러 DOM anchor가
+> 구독하는 것** — widget-embed 픽스처의 CartBadge가 이미 이렇게 동작한다
+> (`{sharedValue("cartCount", 0)}`가 Flatten 모드에서는 특별한 메커니즘 없이
+> 그냥 같은 World 내 Signal 읽기로 자연 실현됨 — Task #26의 `graph_mode_
+> flatten_merges_nested_components_into_one_signals_and_action` 테스트가 이미
+> 확인한 사실).
+>
+> **완전히 사라지지 않는 것**: 아래 "RQ3에서 이관된 요구"의 **crash 통지
+> 채널**은 Task #28-b가 이미 구현했고(`window.__loomShared`의
+> `__island_state:<id>` 키), 이건 "경계 간 통신"이 아니라 "상태 관찰"이라
+> 세분화를 선택했을 때(RQ3의 부분 폐기 절 참고) 여전히 유용한 메커니즘으로
+> 남는다 — RQ4가 폐기된다고 그 구현까지 되돌리지 않는다.
+>
+> 아래 원문은 수정하지 않는다(이력 보존 — 이 RQ가 실제로 풀렸던 최소 슬라이스
+> 구현과 그 과정에서 나온 통찰은 여전히 유효한 기록이다).
+
 ## 문제
 
 Qwik/Astro 둘 다 "island끼리 통신 불가"를 명시된 한계로 인정함 (04 참고). 실제 앱에서는

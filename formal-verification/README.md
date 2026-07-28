@@ -73,6 +73,27 @@ RQ5 참고 후 읽을 것.
    막혔다 — `SingleWriter`는 더 이상 "저작자의 규율"이 아니라 컴파일러가 강제하는
    불변식.
 
+## 2026-07-28 (Task #29) — RQ6 §7 게이트 확정에 따른 스코프 재검토
+
+RQ6 §7 게이트가 H-Qwik을 확정(강한 형태)함에 따라, `SupervisionTree.lean`의
+`ActorState` 6종·forest 모델의 범위를 재검토했다(§11이 "경미" 항목으로 요구한
+그대로) — **결론: 증명 자체는 무효화되지 않는다, 프레이밍만 재해석된다.**
+
+`ActorState`(dormant/attaching/attached/detaching/detached/failed)와 그 위의
+정리들(`beginDetach_forbids_access` 등)이 모델링하는 건 "Island의 lifecycle"이
+아니라 **"지연 activation된 서브트리 하나의 lifecycle"**이다 — RQ3의 부분
+폐기 절이 이미 확인한 대로, 이 상태기계 자체는 세분화 여부와 무관하게 그대로
+필요하다(기본 모델에서는 페이지 전체가 그 "서브트리 하나", 세분화를 선택하면
+Island마다 하나씩). 그래서 `IslandState`/`IslandRegistryBackend`라는 이름은
+docs/07의 재해석대로 "세분화를 선택했을 때"의 특수 사례로 좁혀 읽어야 하지만,
+Lean 파일 자체의 타입/정리는 코드 변경 없이 유효하다 — 이름이 여전히
+"Island"인 이유는 실제 Rust 코드(`crates/loom-runtime/src/island.rs`)의
+식별자와 맞춰야 하기 때문이지, 그 코드가 세분화 전용이라서가 아니다.
+
+`SupervisionNode.ownedEntities`(Task #28-d)도 마찬가지 — "이 Island이 소유한
+Entity"가 아니라 "이 지연 activation 서브트리가 소유한 Entity"로 일반화해
+읽으면 그대로 유효하다.
+
 ## 아직 스켈레톤조차 없는 것 / 남은 과제
 
 - `SupervisionNode.ownedEntities`가 detach 이후 언제 실제로 비워지는지(despawn 시점,

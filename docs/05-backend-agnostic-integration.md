@@ -1,5 +1,36 @@
 # 05. 백엔드 애그노스틱 통합
 
+**2026-07-28 (Phase 6, Task #29) — RQ6 §7 게이트가 H-Qwik을 확정(강한 형태)함에
+따라 재해석**: 이 문서가 원래 전제했던 "레거시 백엔드에 위젯 하나만 꽂는다"는
+시나리오의 실현 단위가 "Island"(별도 격리 World)에서 "전체 앱을 하나의 큰
+embeddable 조각"으로 바뀐다 — 아래 "복수 마운트 지점" 절 참고. FIC 계약 자체
+(`{html, resumability_payload, assets}`)와 세 임베딩 경로(WASM-in-process/
+Sidecar/네이티브 바인딩)는 이 재해석과 무관하게 그대로 유효하다 — Island
+경계 유무는 FIC가 감싸는 **내부** 구현 디테일이지 계약의 모양 자체를 바꾸지
+않는다.
+
+## 복수 마운트 지점 — "여러 Island" 대신 "하나의 World, 복수 anchor root"
+
+원래 이 문서와 RQ6-are-islands-necessary.md가 예견했던 대로: **Island이
+필요없다고 판명나면, 05의 backend-agnostic 요구는 "전체 앱을 하나의 큰
+embeddable 조각으로" 방식으로 재해석해야 한다** — 그 예견이 실제로 §4-§5
+실측 결과(§3.9)로 확인됐다.
+
+구체적으로 이렇게 충족된다: 호스트 페이지에 위젯이 여러 군데(예: 헤더의
+장바구니 배지, 본문의 상품 카드, 푸터의 뉴스레터 폼) 흩어져 있어도, 이들은
+`crates/loom-widget-embed`의 `demo/widget-embed.tsx`가 이미 증명한 것처럼
+**하나의 merged `bevy_ecs::World`**(하나의 `App_chunk`)에 속한 서로 다른
+DOM anchor일 뿐이다 — SSR이 그 World 전체를 한 번에 렌더링해 여러 위치에
+마크업을 흩뿌리고(`data-loom-id`/`data-loom-lref` 마커는 그대로 각 anchor에
+붙음), client는 **어느 anchor에서 첫 상호작용이 일어나든** 하나의 `bootstrap.js`
+전역 리스너가 그 하나의 청크를 materialize해 전체 World를 깨운다(M9 cross-widget
+실측이 이미 확인: 한 anchor의 클릭이 다른 anchor의 DOM도 실시간 갱신).
+
+이건 "Island처럼 여러 개의 독립 마운트 지점"이 아니라 **"하나의 마운트 지점(하나의
+World)이 여러 개의 DOM 좌표에 투사된다"**는 모델이다 — §8이 이미 이 모델을
+"H-Qwik 팔의 복수 anchor 메커니즘"으로 잠정 고정해 뒀던 것이, 이제 잠정이 아니라
+확정된 기본 모델이 됐다.
+
 ## 요구조건 해석
 
 "어떤 백엔드 프레임워크에든 잘 결합"은 "Node.js 런타임 위의 다른 JS 프레임워크와 잘 어울림"
@@ -13,9 +44,10 @@ SSR 렌더러를 **순수 함수**로 정의:
 
 ```
 render(component_ref, props, request_context) -> {
-  html: string,              // 초기 페인트용 정적/동적 HTML 조각
-  resumability_payload: ...,  // Island별 직렬화된 IslandWorld + LRef 목록 (04 참고)
-  assets: [url],              // client가 필요로 할 청크 목록 (전부 lazy, prefetch 힌트용)
+  html: string,                // 초기 페인트용 정적/동적 HTML 조각
+  resumability_payload: ...,   // LRef 목록(chunk/symbol/captures) — "Island별"이 아니라
+                                // 이 렌더의 전체 World가 발행한 LRef 전부 (04 재해석 참고)
+  assets: [url],                // client가 필요로 할 청크 목록 (전부 lazy, prefetch 힌트용)
 }
 ```
 
@@ -82,11 +114,15 @@ html]` 와이어 포맷 — WASM-in-process 호스트는 콜리의 리니어 메
   동적 초기값을 지원하게 되면 이 항목을 다시 열 것(`crates/loom-fic`의 모듈 문서 참고).
 - Sidecar 경로에서 콜드 스타트/커넥션 풀링 전략 — 여전히 미해결(이번 스코프는
   "구조적으로 가능한가"만 증명, 프로덕션 배포 전략은 범위 밖).
-- `resumability_payload`/`assets`는 이번 라운드에 구현 안 함 — 반환된 `html`이 이미
-  모든 `data-loom-id`/`data-loom-lref`를 인라인으로 담고 있어 별도 payload 구조체가
-  지금은 그걸 중복할 뿐임. Island가 진짜 별도 청크로 컴파일되는 빌드 툴링(Phase 3의
-  "목표 상태", 아직 미착수)이 생기면 진짜 다중 asset 매니페스트가 필요해짐 — 그때
-  다시 열 것.
+- ~~`resumability_payload`/`assets`는 이번 라운드에 구현 안 함~~ → **2026-07-28
+  (Task #28-c) 구현됨**: `render_html_full()`/`loom_fic_render_full()`을 기존
+  함수와 나란히 추가, JSON 와이어 포맷. `resumability_payload`는 `html`에 이미
+  인라인된 `data-loom-lref`를 구조화해 추출한 것(정직한 실질 콘텐츠 — 문자열
+  재파싱 불필요라는 실무적 가치). `assets`는 여전히 항상 빈 배열 — 이 크레이트
+  (`crates/loom-fic`)엔 청크 빌드 툴링이 없고, RQ6이 Island 세분화를 "필수가
+  아닌 선택적 최적화"로 재해석했으므로(04 참고) 이제 "다중 asset 매니페스트가
+  필요해지는 시점"은 Phase 3 완료가 아니라 **누군가 실제로 세분화를 선택했을
+  때**로 조건이 바뀌었다.
 - 이 문서는 아직 어느 것도 RQ로 등록 안 됨 — 이번 라운드에서 발견한 마찰(wasm-bindgen-futures
   무조건 의존, getrandom 백엔드 선택)은 전부 우회 가능한 빌드/링킹 디테일이었지 새
   RQ가 필요한 설계 수준 질문은 아니었음.
