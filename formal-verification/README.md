@@ -43,14 +43,40 @@ RQ5 참고 후 읽을 것.
    공식 증명한 선례는 재조사에서도 확인 안 됨 — RQ5가 이미 추정한 대로 이 프로젝트의
    실질적으로 새로운 기여일 가능성이 남아 있음(반증 못 함).
 
+## 2026-07-28 (Task #28 e·d·f) — 위 세 항목 전부 실제로 착수·완료
+
+이전 라운드가 "남은 과제"로 남겨둔 세 항목을 이번에 전부 실제로 채웠다.
+
+1. **`ResumabilitySoundness.lean`을 StringList/Bool/Str로 확장** — `codegen.rs`의
+   `generate_resume` 실제 arm을 컴포넌트별로 대조한 결과, 이 세 kind는 전부
+   `adopt_children`/`get_input_value`로 **지금 DOM에 보이는 값을 직접 읽는다**(I32처럼
+   `captures` 배열의 캡처된 리터럴을 쓰지 않음) — 그래서 `SingleWriter` 전제 자체가
+   필요 없다. `dom_recovered_resumability_sound` 정리로 이 사실을 formalize(전제 없는
+   무조건 등식, `rfl`). zero `sorry`.
+2. **`SupervisionNode`에 Entity/DOM 소유권 모델링** — `ownedEntities : List EntityId`를
+   실제로 추가(`children`은 기존 방침대로 여전히 보류), `entityAccessible` 정의 +
+   `detach_forbids_owned_entity_access`/`no_transition_restores_owned_entity_access`로
+   기존 actor-라벨 정리("detach 이후 접근 불가")를 "그 노드가 실제로 소유한 Entity"
+   수준으로 승격. Bevy의 read/write 스케줄링 자체는 재구현하지 않고 이미
+   `tla/SchedulerSafety.stub.tla`가 위임해 둔 것 그대로 재사용(CLAUDE.md 2-1) — 이 파일이
+   보장하는 건 "actor 상태가 허용하는 동안에만 그 Entity가 접근 가능하다고 취급한다"는
+   더 상위 불변식. zero `sorry`. **여전히 남음**: `ownedEntities`가 detach 이후 언제
+   실제로 비워지는지(despawn 시점)는 미모델링 — 파일 안 TODO로 명시.
+3. **"시그널당 액션 최대 1개" 정적 검사** — `lower.rs`의 `check_one_action_per_signal`이
+   실제로 존재하게 됨(이전부터 있었지만 안 쓰이던 `Component::action_signal_names()`를
+   연결). **실측 중 발견한 중요한 정정**: 첫 시도는 모든 시그널 종류에 이 검사를
+   적용했는데, `demo/counter-list.tsx`의 정당한 `items.append("new")`+`items.rotate()`
+   (같은 `StringList` 시그널을 같이 건드림)를 즉시 깨뜨렸다(`cargo test --workspace`로
+   실제 발견, 추측이 아님) — 항목 1이 증명한 대로 `StringList`/`Bool`/`Str`은
+   `SingleWriter`가 필요 없으므로, 최종적으로는 **`i32` 시그널에만** 적용하도록
+   수정했다. `ResumabilitySoundness.lean`의 반례 스케치가 지적했던 갭이 이제 진짜로
+   막혔다 — `SingleWriter`는 더 이상 "저작자의 규율"이 아니라 컴파일러가 강제하는
+   불변식.
+
 ## 아직 스켈레톤조차 없는 것 / 남은 과제
 
-- `SupervisionNode`에 실제 Entity/DOM 소유권 모델링 — Layer 2 스펙(docs/03)이 Entity
-  그래프 소유권을 더 안정적으로 확정한 뒤.
-- `ResumabilitySoundness.lean`을 StringList/Bool/Str(DOM-복구형 재개)로 확장 — 이번엔
-  가장 단순한 I32 캡처형만 다룸.
-- IR이 "시그널당 액션 최대 1개"를 실제로 강제하는 정적 검사(현재는 컴파일러가 아니라
-  저작자 규율에 의존) — `ResumabilitySoundness.lean`의 반례가 이 갭을 정확히 지적함.
+- `SupervisionNode.ownedEntities`가 detach 이후 언제 실제로 비워지는지(despawn 시점,
+  메모리 회수) — RQ6 M4/M6과 연결되는 지점이나 이 파일은 아직 다루지 않음.
 
 ## 상세 실행 기록
 

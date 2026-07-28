@@ -861,6 +861,54 @@ Sound`)하고, 현재 IR의 실제 제약("시그널당 액션 최대 1개", `Si
 복구형 재개)로 확장, IR의 "시그널당 액션 1개" 제약을 정적 검사로 실제 강제(현재는
 저작자 규율 의존 — `ResumabilitySoundness.lean`의 반례가 이 갭의 실제 근거).
 
+## Task #28 실행 상태 (2026-07-28) — Phase 3/4/5 잔여 항목 완료
+
+권장 실행 순서(e→d→f→b→c, sharedSignal은 이미 Task #26에서 완료돼 제외)대로
+5항목 전부 완료. 상세는 `formal-verification/README.md`의 "2026-07-28" 절 +
+아래.
+
+**(e) `ResumabilitySoundness.lean`을 Bool/StringList/Str로 확장** — 이 세
+kind는 전부 DOM-복구형(캡처된 리터럴이 아니라 지금 DOM을 직접 읽음)이라
+`SingleWriter` 전제가 무조건 필요 없음을 formalize(`dom_recovered_
+resumability_sound`, 전제 없는 등식). zero `sorry`.
+
+**(d) `SupervisionTree.lean`에 `ownedEntities` 추가** — 기존 actor-라벨
+정리("detach 이후 접근 불가")를 "그 노드가 실제로 소유한 Entity" 수준으로 승격
+(`detach_forbids_owned_entity_access` 등). `children`은 방침대로 보류 유지.
+zero `sorry`.
+
+**(f) "시그널당 액션 1개" 정적 검사 실장** — `lower.rs`의
+`check_one_action_per_signal`. **실측 중 발견한 정정**: 첫 시도는 모든 시그널
+종류에 적용했다가 `demo/counter-list.tsx`의 정당한 `items.append()`+
+`items.rotate()`(같은 StringList 시그널)를 즉시 깨뜨림(`cargo test --workspace`
+로 실제 발견) — (e)가 증명한 대로 StringList/Bool/Str은 SingleWriter가 불필요
+하므로 i32 시그널에만 적용하도록 수정. 회귀 테스트 2개 추가.
+
+**(b) crash/상태변화 통지 채널** — `demo/resume/registry.js`에 `setState()`
+헬퍼 신설, 상태 전이마다 `window.__loomShared`(RQ4 cross-widget용 기존 保持형
+스토어, 무변경 재사용)에 `__island_state:<id>` 키로 게시. 이벤트가 아니라
+상태값이라 늦게 붙은 관찰자도 절대 놓치지 않음 — `bench/e2e/specs/
+m10-crash-notification-channel.spec.ts`로 실제 crash(존재하지 않는 청크로
+`activate()` 실패시켜 진짜 `failed` 경로를 탐)까지 포함해 검증, 3개 브라우저
+통과.
+
+**(c) FIC `resumability_payload`/`assets`** — `crates/loom-fic`에
+`render_html_full()`/`loom_fic_render_full()`을 기존 `render_html()`/
+`loom_fic_render()`와 나란히 추가(대체 아님). 와이어 포맷은 JSON(bincode
+아님 — FIC 자체가 언어 무관 소비자를 요구조건에 넣고 있어 Rust 전용 스키마는
+부적합, Cargo.toml에 근거 주석). `resumability_payload`는 `html`에 이미
+인라인된 `data-loom-lref`를 `StringDom`의 구조화된 attr 목록에서 직접 추출한
+것(문자열 재파싱 아님) — 정직한 실질 콘텐츠. `assets`는 여전히 항상 빈 배열
+(이 크레이트엔 Island 청크 빌드 툴링이 없음 — "구현했지만 우연히 비었다"가
+아니라 명시적 플레이스홀더). serde/serde_json 추가에도 JS-glue-free
+wasm32-unknown-unknown 빌드(WASM-in-process 경로)는 무회귀 확인 —
+`wasm-tools print`로 `__wbindgen_*` import가 여전히 기존 4개(bevy_ecs의
+wasm-bindgen-futures 의존, docs/05가 이미 문서화)뿐이고 새로 추가된 게
+없음을 직접 확인.
+
+**검증**: `cargo test --workspace` 전체 통과, `lean` 양쪽 파일 zero `sorry`,
+bench/e2e 전체 스위트 3개 브라우저 무회귀.
+
 ## Phase 6 — RQ6 최종 검증
 
 - Phase 2 종료 시점의 벤치마크와 Phase 3 완료 후 벤치마크를 비교

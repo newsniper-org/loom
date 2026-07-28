@@ -35,6 +35,24 @@ window.__loomRegistry = (() => {
   // (서로 다른 청크끼리는 여전히 병렬로 로드됨, 불필요한 직렬화 없음).
   const chunkInitPromises = new Map(); // chunk name -> Promise<module>
 
+  // Task #28-b — crash/상태변화 통지 채널. RQ3 "알려진 약점" 2번(crash 시
+  // 상호작용 후 상태 전손)이 실제로 관찰 가능하려면, registry 바깥의 누군가
+  // (호스트 페이지, 다른 위젯, 모니터링 스크립트)가 "이 Island가 지금 failed로
+  // 전이했다"를 알 방법이 있어야 한다. 원래 검토했던 "이벤트 채널"(state 전이
+  // 시점에만 쏘는 CustomEvent 류)은 기각된 설계 — 관찰자가 그 전이 *이후*에
+  // 등록되면 영원히 놓친다("등록 순서 의존 유실", RQ4가 이미 지적한 함정).
+  // 대신 shared-store.js(RQ4 cross-widget용으로 이미 있는 범용 保持형 Map
+  // 스토어, 무변경 재사용 — CLAUDE.md 2-1)에 state를 "값"으로 publish한다 —
+  // observer가 늦게 붙어도 __loomShared.get()으로 현재값을 즉시 읽을 수 있어
+  // 유실이 구조적으로 불가능하다. shared-store.js를 안 불러온 페이지(예:
+  // demo/islands/compiled/index.html)도 있으므로 존재 여부를 방어적으로 확인.
+  function setState(entry, id, newState) {
+    entry.state = newState;
+    if (typeof window !== "undefined" && window.__loomShared) {
+      window.__loomShared.set(`__island_state:${id}`, newState);
+    }
+  }
+
   function register(id, host, chunk, ctorName) {
     if (entries.has(id)) {
       throw new Error(`[registry] island "${id}" registered twice`);
@@ -43,7 +61,9 @@ window.__loomRegistry = (() => {
     // immediately, at page-scan time, not deferred until activation (the
     // bug this fixes: a never-yet-activated island used to be missing from
     // containment/detach lookups entirely).
-    entries.set(id, { host, state: "dormant", chunk, ctorName, instance: null });
+    const e = { host, state: "dormant", chunk, ctorName, instance: null };
+    entries.set(id, e);
+    setState(e, id, "dormant"); // 등록 즉시 관찰 가능하도록 게시(위 setState 주석 참고).
   }
 
   function getState(id) {
@@ -55,7 +75,7 @@ window.__loomRegistry = (() => {
     const e = entries.get(id);
     if (!e) throw new Error(`[registry] island "${id}" was never registered`);
     if (e.state !== "dormant") return; // e.g. an IntersectionObserver re-firing — no-op, not an error.
-    e.state = "attaching";
+    setState(e, id, "attaching");
     console.log(`[registry] activating island "${id}" (chunk "${e.chunk}")`);
     let mod, instance;
     try {
@@ -76,11 +96,11 @@ window.__loomRegistry = (() => {
       instance = new ctor(e.host);
     } catch (err) {
       console.error(`[registry] island "${id}" failed to activate:`, err);
-      e.state = "failed";
+      setState(e, id, "failed");
       return;
     }
     e.instance = instance;
-    e.state = "attached";
+    setState(e, id, "attached");
     console.log(`[registry] island "${id}" attached`);
   }
 
@@ -90,7 +110,7 @@ window.__loomRegistry = (() => {
     if (!e) return;
     if (e.state === "dormant" || e.state === "failed") {
       // "actor 비경유 환경 전이" — no live actor exists to notify.
-      e.state = "detached";
+      setState(e, id, "detached");
       return;
     }
     if (e.state === "detaching" || e.state === "detached") {
@@ -99,7 +119,7 @@ window.__loomRegistry = (() => {
     if (e.instance && typeof e.instance.begin_detach === "function") {
       e.instance.begin_detach();
     }
-    e.state = "detaching";
+    setState(e, id, "detaching");
   }
 
   // The async half completing. This minimal Phase 3 slice has no in-flight
@@ -110,7 +130,7 @@ window.__loomRegistry = (() => {
   function finishDetach(id) {
     const e = entries.get(id);
     if (!e) return;
-    e.state = "detached";
+    setState(e, id, "detached");
     e.instance = null;
   }
 

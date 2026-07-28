@@ -36,15 +36,18 @@
 //!   **trivially empty** for this round — not a considered minimization,
 //!   an honest reflection of "there is nothing to parameterize yet."
 //!   Revisit once the IR supports non-literal initial values.
-//! - `resumability_payload`/`assets`: **not implemented this round** — the
-//!   returned `html` already carries every `data-loom-id`/`data-loom-lref`
-//!   attribute inline (same as every other SSR path in this repo), so a
-//!   separate payload struct would just duplicate what a host can already
-//!   read out of the HTML string — see codegen.rs. A real multi-asset
-//!   manifest becomes necessary once Islands compile to genuinely separate
-//!   chunks (Phase 3's "목표 상태" build tooling, still not built); until
-//!   then this would be a struct with no real content, so it's left out
-//!   rather than stubbed.
+//! - `resumability_payload`/`assets`: **2026-07-28 (Task #28-c) — 실제로
+//!   구현**. `render_html_full()`/`loom_fic_render_full()`를 기존
+//!   `render_html()`/`loom_fic_render()`와 나란히 추가(대체 아님 — 기존 호출자
+//!   무변경). 정직한 스코프: `resumability_payload`는 `html`에 이미 인라인된
+//!   `data-loom-lref` 속성들을 *구조화해* 뽑아낸 것(문자열 재파싱이 아니라
+//!   `StringDom`이 이미 갖고 있는 구조화된 attr 목록에서 직접 추출) — 여전히
+//!   `html`이 담은 정보를 "중복"하지만, 호스트가 문자열을 다시 파싱하지 않고
+//!   구조체로 바로 쓸 수 있다는 실질적 가치가 있다. `assets`는 **여전히 항상
+//!   빈 배열** — 이 크레이트는 이 컴포넌트를 Island 청크로 쪼개 빌드하는
+//!   툴링이 없으므로(Phase 3의 "목표 상태", 여전히 미착수) 진짜 asset
+//!   목록이 존재하지 않는다; 빈 배열로 정직하게 두는 것이지 "구현했지만
+//!   우연히 비었다"가 아니다.
 //!
 //! ## Wire format (used by every embedding path identically)
 //! `loom_fic_render()` returns a raw pointer to a buffer laid out as
@@ -241,6 +244,52 @@ impl DomOps for StringDom {
     }
 }
 
+impl StringDom {
+    /// Task #28-c — every `data-loom-lref` attribute this render pass set,
+    /// parsed into structured fields. Reads directly from `self.attrs`
+    /// (already-structured `Vec<(String, String)>` per node, built by
+    /// `set_attribute` during `setup()`) — not a re-parse of the rendered
+    /// HTML string, so this can never drift from what `render_html()` above
+    /// actually emitted for the same `DomOps` calls.
+    fn collect_lref_entries(&self) -> Vec<LRefEntry> {
+        self.attrs
+            .iter()
+            .filter_map(|attrs| attrs.iter().find(|(k, _)| k == "data-loom-lref"))
+            .map(|(_, lref)| {
+                let mut parts = lref.splitn(3, '|');
+                LRefEntry {
+                    chunk: parts.next().unwrap_or_default().to_string(),
+                    symbol: parts.next().unwrap_or_default().to_string(),
+                    captures: parts.next().unwrap_or_default().to_string(),
+                }
+            })
+            .collect()
+    }
+}
+
+/// docs/05's `resumability_payload`'s per-action entry, structured — the
+/// same `chunk|symbol|captures` triple `data-loom-lref` already carries
+/// inline in `html`, just parsed once here instead of left for every host
+/// to re-parse out of the markup itself.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct LRefEntry {
+    pub chunk: String,
+    pub symbol: String,
+    pub captures: String,
+}
+
+/// docs/05's FIC contract, `{html, resumability_payload, assets}`, made
+/// concrete for this crate's one compiled component. See this module's doc
+/// comment ("resumability_payload/assets" section) for exactly what's
+/// honest content here and what's a stated placeholder.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct FicRenderResult {
+    pub html: String,
+    pub resumability_payload: Vec<LRefEntry>,
+    /// Always empty this round — see module doc comment.
+    pub assets: Vec<String>,
+}
+
 /// The actual render step — safe Rust, no `unsafe`, no FFI concerns. Every
 /// embedding path in this crate calls this and nothing else.
 pub fn render_html() -> String {
@@ -249,6 +298,25 @@ pub fn render_html() -> String {
     let (_signals, _actions, _input_actions) = generated::setup(&mut app, &mut dom, root);
     app.tick(&mut dom);
     dom.render_html(root)
+}
+
+/// Task #28-c — docs/05's FIC contract in full: `{html,
+/// resumability_payload, assets}`, not just `html`. Added alongside
+/// `render_html()` (unchanged, still what every existing caller uses) —
+/// see this module's doc comment for what's honest content vs. a stated
+/// placeholder here.
+pub fn render_html_full() -> FicRenderResult {
+    let (mut dom, root) = StringDom::new_root("div");
+    let mut app = loom_runtime::LoomApp::new();
+    let (_signals, _actions, _input_actions) = generated::setup(&mut app, &mut dom, root);
+    app.tick(&mut dom);
+    let resumability_payload = dom.collect_lref_entries();
+    let html = dom.render_html(root);
+    FicRenderResult {
+        html,
+        resumability_payload,
+        assets: Vec::new(),
+    }
 }
 
 /// RQ6 §4.5.1 (M11) — the H-Qwik "monolithic" half of the ISR partial-
@@ -345,10 +413,31 @@ pub extern "C" fn loom_fic_render() -> *mut u8 {
     ptr
 }
 
-/// Frees a buffer `loom_fic_render` returned. `total_len` is the *whole*
-/// buffer's length (4-byte length prefix included), not just the HTML
-/// portion — callers get this by reading the length prefix and adding 4,
-/// not by measuring the HTML string they decoded.
+/// Task #28-c — the full FIC contract over the C ABI: same
+/// `[len: u32 LE][bytes]` wire convention `loom_fic_render` uses, except
+/// `bytes` is now the UTF-8 JSON encoding of a `FicRenderResult` (`html` +
+/// `resumability_payload` + `assets`), not raw HTML. Freed with the same
+/// `loom_fic_free` — the wire format's shape (length-prefixed byte buffer)
+/// doesn't care what the bytes mean.
+#[no_mangle]
+pub extern "C" fn loom_fic_render_full() -> *mut u8 {
+    let result = render_html_full();
+    let json_bytes =
+        serde_json::to_vec(&result).expect("FicRenderResult has no non-serializable fields — cannot fail");
+    let len = json_bytes.len() as u32;
+    let mut buf = Vec::with_capacity(4 + json_bytes.len());
+    buf.extend_from_slice(&len.to_le_bytes());
+    buf.extend_from_slice(&json_bytes);
+    let mut boxed = buf.into_boxed_slice();
+    let ptr = boxed.as_mut_ptr();
+    std::mem::forget(boxed);
+    ptr
+}
+
+/// Frees a buffer `loom_fic_render`/`loom_fic_render_full` returned.
+/// `total_len` is the *whole* buffer's length (4-byte length prefix
+/// included), not just the HTML/JSON portion — callers get this by reading
+/// the length prefix and adding 4, not by measuring the decoded payload.
 #[no_mangle]
 pub extern "C" fn loom_fic_free(ptr: *mut u8, total_len: u32) {
     unsafe {
@@ -377,6 +466,39 @@ mod tests {
             let bytes = std::slice::from_raw_parts(ptr.add(4), len as usize);
             let html = std::str::from_utf8(bytes).unwrap().to_string();
             assert_eq!(html, expected);
+            loom_fic_free(ptr, 4 + len);
+        }
+    }
+
+    #[test]
+    fn render_html_full_matches_render_html_and_extracts_every_lref() {
+        // Task #28-c — html 필드는 render_html()과 byte-identical해야 하고
+        // (같은 DomOps 호출로 만들어지므로), resumability_payload는 그 html에
+        // 인라인된 data-loom-lref 속성들을 정확히 구조화해 담아야 한다.
+        let full = render_html_full();
+        assert_eq!(full.html, render_html());
+        assert!(!full.resumability_payload.is_empty(), "counter-list.tsx has multiple actions");
+        assert!(full.resumability_payload.iter().any(|e| e.chunk == "App_chunk"
+            && e.symbol == "Action0"
+            && e.captures == "count:0"));
+        // Append/Rotate는 캡처 없음(minimal-capture computation) — 빈 문자열
+        // captures로 구조화되어 있어야지 아예 빠지면 안 됨.
+        assert!(full
+            .resumability_payload
+            .iter()
+            .any(|e| e.chunk == "App_chunk" && e.symbol == "Action1" && e.captures.is_empty()));
+        assert!(full.assets.is_empty(), "no Island chunk build tooling exists for this crate yet — see module doc comment");
+    }
+
+    #[test]
+    fn c_abi_full_shim_round_trips_the_same_result_render_html_full_returns() {
+        let expected = render_html_full();
+        unsafe {
+            let ptr = loom_fic_render_full();
+            let len = u32::from_le_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)]);
+            let bytes = std::slice::from_raw_parts(ptr.add(4), len as usize);
+            let decoded: FicRenderResult = serde_json::from_slice(bytes).unwrap();
+            assert_eq!(decoded, expected);
             loom_fic_free(ptr, 4 + len);
         }
     }
