@@ -5,7 +5,7 @@
 
 ## 축별 비교
 
-| 축 | React | Solid | Qwik | Astro | Bevy(ECS) | RIB | **loom(가칭)** |
+| 축 | React | Solid | Qwik | Astro | Bevy(ECS) | RIB | **Loom** |
 |---|---|---|---|---|---|---|---|
 | Diff 방식 | VDOM | 컴파일타임 fine-grained | 컴파일타임 fine-grained | (컴포넌트별 프레임워크에 위임) | 해당없음(게임 루프) | 해당없음(UI 레이어 아님) | 컴파일타임 fine-grained, ECS 저장 |
 | 반응성 원자 | state+VDOM | Signal(클로저) | Signal | (프레임워크별) | Component | Rx Observable | **Component**(POD) |

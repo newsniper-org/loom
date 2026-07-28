@@ -1,4 +1,4 @@
-# loom (provisional codename) — 리서치 핸드오프 패키지
+# Loom — 리서치 핸드오프 패키지
 
 > **상태**: 2026-07-24부로 Phase 1(컴파일러 + No-VDOM 반응성 프로토타입, RQ1 트랙
 > L/T 후보 전부 구현+실측 + LIS 최소 이동 변형 + paired bootstrap 통계)과 Phase 2
@@ -12,7 +12,13 @@
 > 정확한 스코프는 `roadmap/PHASES.md`의 Phase 1/2 상태 참고. docs/*의 설계 문서
 > 자체는 여전히 리서치 산출물이며 검증된 진실이 아님(CLAUDE.md "이 패키지의 한계"
 > 참고).
-> **이름**: "loom"은 가칭. `docs/07-naming-and-terminology.md` 참고 후 전역 치환 권장.
+> **이름**: "Loom"으로 확정(2026-07-28). 코드 식별자(크레이트명 `loom-*` 등)는
+> 소문자 표기 그대로 유지 — 상세는 `docs/07-naming-and-terminology.md` 참고.
+> **RQ6 최종 판정(2026-07-28)**: H-Qwik 확정(강한 형태) — Island 경계는 기본
+> 모델에서 필수가 아님. 상세는 `research-questions/RQ6-are-islands-necessary.md`
+> 참고. 이 상태 배너의 나머지는 2026-07-24(Phase 1/2 시점) 기준으로 낡았음 —
+> Phase 3–6 전부 이후 완료됐으나 이 README 본문은 아직 그 갱신을 반영하지
+> 않음(별도 작업으로 남김, 지금 조용히 덮지 않고 명시).
 
 ## 이 패키지는 무엇인가
 
