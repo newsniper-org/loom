@@ -28,10 +28,16 @@ pub mod generated_flat {
 /// 크기를 관찰하기 위함(§6 M6의 "타입당 vs 인스턴스당 격리" 질문과 직접
 /// 연결됨 — 같은 타입의 인스턴스가 늘어날수록 이 값이 늘어난다면 그 자체가
 /// "공유 인스턴스" 증거).
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32"))]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn __loom_debug_memory_bytes() -> u32 {
     (core::arch::wasm32::memory_size(0) * 65536) as u32
+}
+
+#[cfg(any(target_arch = "wasm64"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn __loom_debug_memory_bytes() -> u32 {
+    (core::arch::wasm64::memory_size(0) * 65536) as u32
 }
 
 /// RQ6 §6 M6 N-스케일링 결합 셀 전용 fault-injection — `QuantityPickerIsland`
@@ -55,7 +61,7 @@ pub fn __loom_debug_memory_bytes() -> u32 {
 /// `RefCell::borrow_mut()` 도중) panic해도 다른 인스턴스가 안전한가"가 아님
 /// — 후자가 진짜 위험한 시나리오이고, 이 픽스처는 그 경로를 아직 실측하지
 /// 않았다(미해결 항목으로 명시 기록, 아래 JSON의 "limitations" 참고).
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn __loom_debug_panic_shared_instance() {
     panic!("loom-widget-embed: deliberate fault injection for RQ6 M6 N-scaling combined cell");
@@ -84,7 +90,7 @@ pub fn __loom_debug_panic_shared_instance() {
 /// 이미 확립한 "코드젠 동형 손코딩" 관례를 그대로 적용해, 컴파일러가 모르는
 /// 런타임 지식 없이 기존 생성 함수(`resume`/`apply_action`/
 /// `resume_action_by_symbol`)만 호출한다.
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 mod resumed_flat_app {
     use wasm_bindgen::prelude::*;
 
@@ -153,14 +159,14 @@ mod resumed_flat_app {
         }
     }
 }
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 pub use resumed_flat_app::ResumedFlatApp;
 
 // A minimal native-only DomOps impl for producing this page's initial SSR
 // HTML — see crates/loom-island-compiled's identical copy for why this
 // isn't shared as a dependency (established one-crate-one-StringDom
 // convention in this repo).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
 mod string_dom {
     use loom_runtime::{DomOps, NodeHandle};
 
@@ -316,7 +322,7 @@ mod string_dom {
 /// `setup()` keeps its plain 3-arg signature — no shared-store stub needed
 /// at this top level (see `codegen.rs`'s `ComponentRef` arm for where a
 /// throwaway one gets threaded in instead, one level down).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
 pub fn render_html() -> String {
     let (mut dom, root) = string_dom::StringDom::new_root("div");
     let mut app = loom_runtime::LoomApp::new();
@@ -330,7 +336,7 @@ pub fn render_html() -> String {
 /// into the one merged component, the merged `setup()` DOES need a
 /// shared-store argument here (unlike `render_html()` above) — a plain
 /// native stub is enough (SSR never reads back what it publishes).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
 pub fn render_html_flat() -> String {
     let (mut dom, root) = string_dom::StringDom::new_root("div");
     let mut app = loom_runtime::LoomApp::new();
@@ -340,7 +346,7 @@ pub fn render_html_flat() -> String {
     dom.render_html(root)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(any(target_arch = "wasm32", target_arch = "wasm64"))))]
 mod tests {
     use super::*;
 

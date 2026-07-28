@@ -483,6 +483,16 @@ Phase 2·3 시점엔 FIC(C ABI shim, WASM-in-process 등)가 아직 없으므로
   (조건 C를 §8 최선형 체크리스트로 stable 통합까지 실제 구현·측정한 게 아니므로).
   상세 재현 절차는 RQ3 문서의 "알려진 약점" 1번 항목에 기록.
 
+  **2026-07-28 재확인(Rust 1.96/edition 2024로 실제 상향 후) — 결론 불변**:
+  stable 채널에서 build-std 없이 wasm32 panic=unwind를 얻을 방법은 1.96에서도
+  없음(RUSTFLAGS로 시도하면 하드 에러, `Cargo.toml` profile의 `panic =
+  "unwind"`로 시도하면 에러 없이 조용히 abort로 폴백 — 산출 wasm에 `try_table`/
+  `throw_ref` 0개로 직접 확인). 대안으로 `wasm64-unknown-unknown`도 시도했으나
+  Tier 3라 프리빌드 std 자체가 없고, nightly+build-std로 컴파일에는 성공해도
+  코드생성 단계에서 실제 unwind 인코딩이 전혀 안 나옴 — wasm32보다 지원 수준이
+  더 낮음. 유효 경로는 여전히 "nightly + wasm32 + `-Zbuild-std`" 하나뿐, §7
+  선행 요건은 이번 재확인으로도 미충족 그대로. 상세는 RQ3 문서의 같은 항목.
+
 ### 5.5 측정 대상 상호작용
 
 CartBadge: 클릭 시 카운트 증가(장바구니 담기 반영). ProductCard/QuantityPicker: 수량

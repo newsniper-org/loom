@@ -17,3 +17,9 @@ web-sys = { version = "0.3.103", features = ["Document", "Element", "Window", "N
 # shared by loom-demo and any future benchmark harness so neither has to
 # hand-roll its own copy.
 browser = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys"]
+
+[profile.release]
+panic = "unwind"
+
+[profile.dev]
+panic = "unwind"

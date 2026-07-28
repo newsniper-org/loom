@@ -16,3 +16,9 @@ swc_common = "24.0.0"
 swc_ecma_ast = "26.0.0"
 swc_ecma_parser = "42.0.0"
 swc_ecma_visit = "26.0.0"
+
+[profile.release]
+panic = "unwind"
+
+[profile.dev]
+panic = "unwind"

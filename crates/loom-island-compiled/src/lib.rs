@@ -38,7 +38,7 @@ pub mod generated_flat {
 // crate doesn't share, since this crate already depends on wasm-bindgen
 // unconditionally for its Island entry points; the copies are kept
 // separate anyway rather than introducing a new shared dependency for it).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
 mod string_dom {
     use loom_runtime::{DomOps, NodeHandle};
 
@@ -194,7 +194,7 @@ mod string_dom {
 /// `demo/resume/index.html`'s identical convention for Phase 2's
 /// resumability demo). Native, no wasm, no browser — every embedding path
 /// in this crate that needs *initial* markup goes through this.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
 pub fn render_html() -> String {
     let (mut dom, root) = string_dom::StringDom::new_root("div");
     let mut app = loom_runtime::LoomApp::new();
@@ -207,7 +207,7 @@ pub fn render_html() -> String {
 /// `render_html()` compiles, just `GraphMode::Flatten`'d instead. RQ6 §8
 /// item 4's cost/isolation measurements (M1/M6 etc.) compare this against
 /// `render_html()`'s output.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
 pub fn render_html_flat() -> String {
     let (mut dom, root) = string_dom::StringDom::new_root("div");
     let mut app = loom_runtime::LoomApp::new();
@@ -216,7 +216,7 @@ pub fn render_html_flat() -> String {
     dom.render_html(root)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(any(target_arch = "wasm32", target_arch = "wasm64"))))]
 mod tests {
     use super::*;
 

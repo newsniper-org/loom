@@ -16,3 +16,9 @@ web-sys = { version = "0.3.103", features = ["Document", "Element", "Window", "N
 
 [build-dependencies]
 loom-compiler = { path = "../loom-compiler" }
+
+[profile.release]
+panic = "unwind"
+
+[profile.dev]
+panic = "unwind"

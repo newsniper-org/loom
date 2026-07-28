@@ -246,6 +246,44 @@ detached 도달.
    가능성 배제 못 함) — "그 버그가 존재하지 않는다"가 아니라 "이 저장소가 실제 쓰는
    `catch_unwind` 사용 패턴 + wasm-bindgen 0.2.126 조합에서는 재현 안 됨"으로 한정해
    기록한다. **RQ6-verification-plan.md §5.4 조건 C 재평가는 그 문서에 기록.**
+
+   **2026-07-28 재검토 — stable 채널 승격 가능성 재확인, 여전히 뚫리지 않음**:
+   병익님이 "catch_unwind가 stable에 이미 있는 것 같다"는 관찰을 계기로,
+   Rust 1.96(edition 2024)로 실제 상향한 뒤 다시 시도. 확인한 것과 그 순서:
+   (1) `std::panic::catch_unwind` 자체는 원래도 stable API였음(착각이 아니라
+   사실) — 막혔던 지점은 그게 아니라 `wasm32-unknown-unknown`의 **프리빌드
+   std가 `panic=abort`로 고정 배포**되어 있다는 것. (2) RUSTFLAGS로 명시적
+   `-C panic=unwind`를 주면(build-std 없이) `error: the crate 'panic_unwind'
+   does not have the panic strategy 'unwind'`로 하드 실패 — 1.96에서도 동일.
+   (3) `Cargo.toml`의 `[profile.release]`/`[profile.dev]`에 `panic = "unwind"`
+   를 직접 설정하면(RUSTFLAGS 없이) **에러 없이 빌드는 되지만**, 산출된 wasm에
+   실제 unwind 인코딩(`try_table`/`throw_ref`)이 **0개**이고 `unreachable`
+   트랩만 나옴(`crates/loom-widget-embed`를 wasm32 릴리스로 실제 빌드해
+   `wasm-tools print`로 직접 확인, RUSTFLAGS 유무와 무관하게 동일 바이너리) —
+   즉 이 경로는 하드 에러 대신 **조용히 abort로 폴백**한다(`cdylib` crate-type
+   조합에서 Cargo/rustc가 그렇게 처리하는 것으로 보이나, 정확한 내부 이유는
+   이번 라운드에서 확인 안 함). **결론**: bevy_ecs 0.19/getrandom 0.4/edition
+   2024/rust 1.96까지 전부 최신으로 올려도 **stable 채널에서 build-std 없이
+   wasm32 panic=unwind를 얻는 방법은 여전히 없다** — 1.96에서도 안 풀림.
+
+   **같은 라운드 — wasm64-unknown-unknown도 시도, wasm32보다 더 나쁨**: "혹시
+   64비트 타겟이면 다를까"라는 질문으로 병행 확인. `wasm64-unknown-unknown`은
+   `rustc --print target-list`엔 있지만 **Tier 3라 stable/nightly 어느 채널도
+   프리빌드 std를 배포하지 않음**(`rustup target add`가 두 채널 다 즉시 실패,
+   "no prebuilt artifacts available"). nightly + `-Zbuild-std=std,panic_unwind,
+   panic_abort -Zbuild-std-features=panic-unwind`로 std 자체를 처음부터
+   빌드하면 컴파일은 성공(unwind 전략 지정 포함, 에러 없음)하지만, 산출된 wasm
+   (`--release`/`--dev` 둘 다 확인)에 `try_table`/`throw_ref`가 여전히
+   **0개** — 코드생성 백엔드 자체가 이 타겟에 대해 wasm exception-handling을
+   아직 구현하지 않은 것으로 보임(target-spec-json의 `eh-frame-header: false`
+   와 정합). **wasm64는 wasm32보다 지원 수준이 더 낮다**: wasm32는 최소한
+   nightly+build-std 조합에서 실제로 작동한다는 게 이미 확인돼 있는데(위 2026-
+   07-24 절), wasm64는 nightly+build-std로도 작동하지 않는다. CLAUDE.md가 명시한
+   클라이언트 배포 타겟(WASM, 사실상 wasm32)에는 영향 없는 참고 정보지만, "다른
+   타겟으로 우회할 수 있는가"라는 질문에 대한 답도 실측으로 막힘을 확인했다는
+   점에서 조건 C의 막다른 골목이 이번 라운드로 한 번 더 좁혀졌다(nightly +
+   wasm32 + build-std 조합 하나만 유효 경로로 남음).
+
    **같은 라운드 — 조건 B(island별 wasm 인스턴스 분리)도 실제로 구현·측정함**: 새 크레이트
    `crates/loom-island-productcard`/`crates/loom-island-quantitypicker`(각자 독립된
    `.wasm` 산출물 — `loom-island-demo`가 하나의 청크를 공유하는 것과 달리 이번엔 진짜로
