@@ -18,7 +18,8 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: "./specs",
   timeout: 30_000,
-  fullyParallel: false, // 반복시행 통계의 타이밍 간섭을 피하려 직렬 실행
+  fullyParallel: false,
+  workers: 1, // 반복시행 통계의 타이밍 간섭을 피하려 직렬 실행
   reporter: [["list"], ["json", { outputFile: "results/last-run.json" }]],
   use: {
     baseURL: "http://localhost:8931",

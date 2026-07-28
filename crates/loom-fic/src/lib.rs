@@ -81,7 +81,7 @@ mod generated {
 /// `examples/wasm_in_process.py`'s build instructions) — the native/sidecar
 /// paths use the normal OS entropy source and never touch this.
 #[cfg(all(target_arch = "wasm32", getrandom_backend = "custom"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "Rust" fn __getrandom_v03_custom(dest: *mut u8, len: usize) -> Result<(), getrandom::Error> {
     for i in 0..len {
         unsafe {
@@ -399,7 +399,7 @@ pub fn render_widget_only_for_isr(_n_sections: usize) -> (String, std::time::Dur
 /// why length travels inside the buffer rather than via an out-parameter.
 /// Caller **must** pass the returned pointer and the buffer's *total*
 /// length (4 + html byte length) to `loom_fic_free` exactly once.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn loom_fic_render() -> *mut u8 {
     let html = render_html();
     let html_bytes = html.into_bytes();
@@ -419,7 +419,7 @@ pub extern "C" fn loom_fic_render() -> *mut u8 {
 /// `resumability_payload` + `assets`), not raw HTML. Freed with the same
 /// `loom_fic_free` — the wire format's shape (length-prefixed byte buffer)
 /// doesn't care what the bytes mean.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn loom_fic_render_full() -> *mut u8 {
     let result = render_html_full();
     let json_bytes =
@@ -438,7 +438,7 @@ pub extern "C" fn loom_fic_render_full() -> *mut u8 {
 /// `total_len` is the *whole* buffer's length (4-byte length prefix
 /// included), not just the HTML/JSON portion — callers get this by reading
 /// the length prefix and adding 4, not by measuring the decoded payload.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn loom_fic_free(ptr: *mut u8, total_len: u32) {
     unsafe {
         drop(Vec::from_raw_parts(ptr, total_len as usize, total_len as usize));
