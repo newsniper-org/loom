@@ -686,6 +686,14 @@ mod tests {
             // GraphMode::Islands must instead produce ONE flat component
             // (no `pub mod`, no `data-loom-island*` attributes at all) with
             // BOTH nested components' signals/actions merged in.
+            //
+            // 2026-07-28 (RQ6 §7 판정 이후) 갱신: 예전엔 이 모드가 순수 데이터
+            // 병합 산출물이라 `wasm_bindgen`이 전혀 없어야 한다고 검증했지만,
+            // H-Qwik 확정 이후 `generate_flatten_entry_body`가 실제 브라우저
+            // resumable 진입점(`ResumedApp`)을 자동 생성하므로 그 전제가
+            // 뒤집혔다 — 이제는 `wasm_bindgen`이 있어야 "정상"이다. 병합 검증
+            // (Signals/Action 하나로 합쳐짐) 자체는 이 갱신과 무관하게 그대로
+            // 유효해 유지한다.
             let source = r#"
                 function Widget() {
                   const count = signal(0);
@@ -706,15 +714,22 @@ mod tests {
                 }
             "#;
             let out = compile_tsx_to_rust_graph(source, GraphMode::Flatten);
-            assert!(!out.contains("pub mod "), "{out}");
+            assert!(!out.contains("pub mod "), "{out}"); // resumed_app은 pub mod가 아니라 mod
             assert!(!out.contains("data-loom-island"), "{out}");
-            assert!(!out.contains("wasm_bindgen"), "{out}");
             // Both signals present in ONE merged Signals struct.
             assert!(out.contains("pub details: ::bevy_ecs::entity::Entity,"), "{out}");
             assert!(out.contains("pub count: ::bevy_ecs::entity::Entity,"), "{out}");
             // Both actions present in ONE merged Action enum/apply_action —
             // collect_actions walks the already-flattened tree in one pass.
             assert!(out.contains("enum Action {\n    Action0,\n    Action1,\n}"), "{out}");
+            // 자동 생성된 resumable wasm 진입점 — has_shared=false 형태
+            // (이 픽스처는 sharedSignal을 안 씀).
+            assert!(out.contains("mod resumed_app {"), "{out}");
+            assert!(out.contains("pub struct ResumedApp { app: ::loom_runtime::LoomApp, dom: ::loom_runtime::web::BrowserDom, signals: super::Signals }"), "{out}");
+            assert!(out.contains("pub fn new(captures_str: &str) -> ResumedApp {"), "{out}");
+            assert!(out.contains("pub fn dispatch(&mut self, symbol: &str, value: Option<String>) {"), "{out}");
+            assert!(!out.contains("JsSharedStore"), "{out}"); // has_shared=false라 shared 필드 없음
+            assert!(out.contains("pub use resumed_app::ResumedApp;"), "{out}");
         }
 
         #[test]
@@ -907,6 +922,17 @@ mod tests {
                 "{out}"
             );
             assert!(out.contains("data-loom-shared-subscriber\", \"cartCount\""), "{out}");
+            // 2026-07-28 — 자동 생성된 resumable wasm 진입점, has_shared=true
+            // 형태(JsSharedStore 필드 + apply_action의 4-인자 shared 호출).
+            assert!(out.contains("pub struct ResumedApp { app: ::loom_runtime::LoomApp, dom: ::loom_runtime::web::BrowserDom, signals: super::Signals, shared: ::loom_runtime::web::JsSharedStore }"), "{out}");
+            assert!(
+                out.contains("super::apply_action(&mut self.app, &self.signals, &action, &mut self.shared);"),
+                "{out}"
+            );
+            assert!(
+                out.contains("let signals = super::resume(&mut app, &mut dom, find_node, &capture_refs, &mut shared);"),
+                "{out}"
+            );
         }
     }
 

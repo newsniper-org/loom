@@ -36,12 +36,13 @@
 //!   `setup()` against `StringDom` — standing in for a real backend's SSR
 //!   step (Phase 4's actual concern; here just a static file, no HTTP
 //!   server).
-//! - This `lib.rs` (wasm32, the lazy "chunk"): exports `ResumedComponent`,
-//!   loaded and instantiated only on first click (see
-//!   `demo/resume/bootstrap.js`), driving generated `resume`/
-//!   `resume_action_by_symbol`/`apply_action`.
+//! - This `lib.rs` (wasm32, the lazy "chunk"): exports `ResumedApp`
+//!   (2026-07-28부터 `generated::resumed_app`가 자동 생성 — 이전엔
+//!   `ResumedComponent`로 손코딩됐었음), loaded and instantiated only on
+//!   first click (see `demo/resume/bootstrap.js`), driving generated
+//!   `resume`/`resume_action_by_symbol`/`apply_action`.
 
-mod generated {
+pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 }
 
@@ -249,7 +250,7 @@ pub fn ssr_render() -> String {
 /// (loomc had no conditional authoring surface yet). `loom-compiler/src/
 /// codegen.rs` now lowers `{cond() && <X/>}` itself (a `details` Bool signal
 /// + toggle button were added to `demo/counter-list.tsx`), so `ssr_render`/
-/// `ResumedComponent` below already cover this fixture's simple case — the
+/// `ResumedApp` below already cover this fixture's simple case — the
 /// hand-wired pair was deleted rather than kept alongside a now-redundant
 /// duplicate. **Form input is still not included** — `loom-runtime` has no
 /// two-way form-value binding yet (not a corner cut for this fixture
@@ -375,93 +376,14 @@ pub mod cond_resume {
 // demo/resume/bootstrap.js)
 // ============================================================================
 
-use loom_runtime::web::BrowserDom;
-use wasm_bindgen::prelude::*;
-
-/// Materializes from an LRef's parsed captures into a real, persistent
-/// `LoomApp` wired directly to the SSR-rendered nodes (found via
-/// `data-loom-id`, never recreated — the "resume ≠ hydrate" point) — this is
-/// the "actor+Entity materialize" step docs/06 describes, and RQ3's
-/// "promote-once-and-stay" means this instance, once created, should be
-/// *kept alive* by the caller (`bootstrap.js`) rather than rebuilt on every
-/// click; see that file for how it caches this across the button's clicks.
-#[wasm_bindgen]
-pub struct ResumedComponent {
-    app: loom_runtime::LoomApp,
-    dom: BrowserDom,
-    signals: generated::Signals,
-}
-
-#[wasm_bindgen]
-impl ResumedComponent {
-    /// `captures_str` is the LRef payload's captures segment
-    /// (`"count:0"` — already split off `chunk|symbol|` by the caller).
-    #[wasm_bindgen(constructor)]
-    pub fn new(captures_str: &str) -> ResumedComponent {
-        console_error_panic_hook::set_once();
-        let document = web_sys::window().expect("no `window`").document().expect("no `document`");
-
-        let captures: Vec<(String, String)> = captures_str
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(|kv| {
-                let mut parts = kv.splitn(2, ':');
-                let key = parts.next().unwrap_or_default().to_string();
-                let value = parts.next().unwrap_or_default().to_string();
-                (key, value)
-            })
-            .collect();
-        let capture_refs: Vec<(&str, &str)> =
-            captures.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-
-        let mut app = loom_runtime::LoomApp::new();
-        let mut dom = BrowserDom::new_for_resume(document.clone());
-
-        // Adopt every data-loom-id-tagged node up front, once, into a plain
-        // name->handle map — `resume()` also needs `&mut dom` directly (to
-        // pass through to `adopt_children` for list rows), so `find_node`
-        // must not hold its own borrow of `dom`; a pre-built map sidesteps
-        // that without needing two simultaneous `&mut dom` borrows.
-        let tagged = document
-            .query_selector_all("[data-loom-id]")
-            .expect("query_selector_all failed");
-        let mut by_name: std::collections::HashMap<String, NodeHandle> = std::collections::HashMap::new();
-        for i in 0..tagged.length() {
-            let node = tagged.get(i).expect("NodeList index out of bounds");
-            let el: web_sys::Element = node.clone().unchecked_into();
-            let name = el.get_attribute("data-loom-id").expect("just matched the selector");
-            let handle = dom.adopt(node);
-            by_name.insert(name, handle);
-        }
-        let find_node = move |name: &str| -> NodeHandle {
-            *by_name
-                .get(name)
-                .unwrap_or_else(|| panic!("loom resume: no element tagged data-loom-id=\"{name}\""))
-        };
-
-        let signals = generated::resume(&mut app, &mut dom, find_node, &capture_refs);
-        ResumedComponent { app, dom, signals }
-    }
-
-    /// Reused across every subsequent click (or `input` keystroke) on the
-    /// same element — this is the whole point: the expensive part (dynamic
-    /// import + snapshot materialization) happens once, then it's a normal
-    /// Phase-1-style live tick, exactly as cheap as the non-resumable
-    /// counter demo's. `symbol` is the LRef's `ActionN` segment (see
-    /// codegen.rs's `resume_action_by_symbol`) — only symbols
-    /// generated::setup() actually tagged with an LRef are ever dispatched
-    /// here in practice. `value` is `None` for every action except a
-    /// `SetString` (input binding) dispatch, which needs the just-typed
-    /// value the symbol alone can't carry (see `resume_action_by_symbol`'s
-    /// doc comment) — `bootstrap.js`'s `click` listener omits it entirely
-    /// (JS `undefined` becomes `None` here), its new `input` listener always
-    /// passes one.
-    pub fn dispatch(&mut self, symbol: &str, value: Option<String>) {
-        let action = generated::resume_action_by_symbol(symbol, value.as_deref().unwrap_or(""));
-        generated::apply_action(&mut self.app, &self.signals, &action);
-        self.app.tick(&mut self.dom);
-    }
-}
+/// 2026-07-28(RQ6 §7 판정 이후)까지는 여기 `ResumedComponent`가 손코딩되어
+/// 있었다("actor+Entity materialize" 로직 — SSR 노드에 직접 결선, "resume ≠
+/// hydrate"의 실증). 이제 `generated`(build.rs가 `GraphMode::Flatten`으로
+/// 전환됨) 모듈이 `ResumedApp`이라는 이름으로 정확히 같은 로직을 자동 생성한다
+/// (`codegen.rs`의 `generate_flatten_entry_body`) — 손코딩을 지우고 재노출만
+/// 남긴다. `demo/resume/bootstrap.js`도 이 이름 변경에 맞춰 갱신됨.
+#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+pub use generated::ResumedApp;
 
 #[cfg(test)]
 mod tests {
@@ -525,7 +447,7 @@ mod tests {
             "the conditional wrapper must be tagged and empty while hidden, got: {html}"
         );
         // The toggle button is `Action3`, routed through the same generic
-        // `ResumedComponent`/`resume_action_by_symbol` path as every other
+        // `ResumedApp`/`resume_action_by_symbol` path as every other
         // action — no hand-wired symbol or resumed class needed anymore.
         assert!(
             html.contains(r#"data-loom-lref="App_chunk|Action3|""#),

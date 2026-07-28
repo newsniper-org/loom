@@ -132,9 +132,16 @@ pub enum GraphMode {
     /// `pub mod <name>_generated { ... }` plus its own generated Island
     /// entry point (`generate_island_entry_body`). The graph's root is
     /// emitted unqualified, exactly as today's `generate()` does —
-    /// **required** for backward compatibility with
-    /// `loom-demo`/`loom-resume-demo`/`loom-fic`'s existing `mod generated {
-    /// include!(...) }` call sites (none of them need to change).
+    /// **required** for backward compatibility with `loom-demo`/`loom-fic`'s
+    /// existing `mod generated { include!(...) }` call sites, both of which
+    /// still go through the older `compile_tsx_to_rust`/`generate()` path
+    /// (single-component, no `ComponentGraph`), not this enum at all — the
+    /// unqualified-root guarantee just keeps their output format compatible
+    /// if they were ever moved onto it. (2026-07-28: `loom-resume-demo` used
+    /// to be a third crate covered by this note, back when it also emitted
+    /// through `Islands`; it has since moved to `GraphMode::Flatten` — see
+    /// `generate_flatten_entry_body`'s doc comment — so it no longer applies
+    /// here.)
     Islands,
     /// RQ6 §8's H-Qwik counterfactual target shape — every component in the
     /// graph, Island-activated or not, becomes part of ONE shared
@@ -157,9 +164,204 @@ pub fn generate_graph(graph: &ComponentGraph, mode: GraphMode) -> String {
             // so `lower_node`'s `ComponentRef` arm never runs for this mode
             // — the shared-component-names set is irrelevant here, but
             // still required by `generate_component`'s signature.
-            generate_component(&flattened, None, has_shared, &HashSet::new())
+            let mut out = generate_component(&flattened, None, has_shared, &HashSet::new());
+            out.push_str(&generate_flatten_entry_body(has_shared));
+            out
         }
     }
+}
+
+/// RQ6 §7 판정(H-Qwik 확정, 2026-07-28) 이후 실제로 필요해진 것 — `GraphMode::
+/// Flatten`이 컴파일한 그래프를 브라우저에서 resumable하게 로드하는 wasm-bindgen
+/// 진입점을, `generate_island_entry_body`가 Island 엔트리를 만드는 것과 똑같이
+/// **컴파일러가 직접 생성**한다. 이전까지는 이 진입점이 크레이트마다(`loom-resume-
+/// demo`의 `ResumedComponent`, `loom-widget-embed`의 `ResumedFlatApp`,
+/// `loom-largeapp-axis-flat`의 `ResumedLargeFlatApp`) 손코딩으로 세 번 복붙됐다
+/// — 셋 다 `has_shared` 유무만 다른 완전히 같은 패턴이었다(코드 리뷰로 확인). RQ6이
+/// H-Qwik을 확정한 이상 "임의의 .tsx를 컴파일러에 넣으면 동작하는 앱이 나온다"는
+/// 최소 성립 조건에 이 손코딩이 정면으로 걸렸으므로, 세 크레이트를 이 함수 하나로
+/// 흡수한다(구조체 이름을 `ResumedApp`으로 통일 — 더 이상 크레이트마다 다른 이름을
+/// 붙일 이유가 없음, 픽스처가 아니라 컴파일러 산출물이므로).
+///
+/// **Island 엔트리와의 결정적 차이 — 왜 훨씬 단순한가**: Island 엔트리는 자기
+/// 호스트 스코프 안의 각 LRef 엘리먼트마다 직접 클릭 리스너를 건다(활성화 시점에
+/// 곧바로, RQ3의 "load/visible 시 즉시 activate" 모델). Flatten 엔트리는 그렇게
+/// 하지 않는다 — 경계가 없는 H-Qwik 모델의 정의적 특성대로, **전역 클릭 위임은
+/// 이 wasm 엔트리가 아니라 JS 쪽(`bootstrap.js`/`bootstrap-flat.js`, Qwik 메커니즘
+/// 재사용, CLAUDE.md 2-1)이 담당**하고, 이 구조체는 딱 `new(captures_str)` 생성자
+/// (첫 클릭의 LRef가 실어온 캡처로 페이지 전체 World를 한 번에 materialize)와
+/// `dispatch(symbol, value)`(그 이후 클릭마다 호출)만 노출하면 된다 — 그래서
+/// `Rc<RefCell<...>>`도, 클로저 캡처도, 이벤트 리스너 부착 루프도 전혀 필요 없다.
+fn generate_flatten_entry_body(has_shared: bool) -> String {
+    let mut out = String::new();
+    let field_types = if has_shared {
+        "app: ::loom_runtime::LoomApp, dom: ::loom_runtime::web::BrowserDom, signals: super::Signals, shared: ::loom_runtime::web::JsSharedStore"
+    } else {
+        "app: ::loom_runtime::LoomApp, dom: ::loom_runtime::web::BrowserDom, signals: super::Signals"
+    };
+    writeln!(out, "#[cfg(any(target_arch = \"wasm32\", target_arch = \"wasm64\"))]").unwrap();
+    writeln!(out, "mod resumed_app {{").unwrap();
+    writeln!(out, "    use ::wasm_bindgen::prelude::*;").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "    #[wasm_bindgen]").unwrap();
+    writeln!(out, "    pub struct ResumedApp {{ {field_types} }}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "    #[wasm_bindgen]").unwrap();
+    writeln!(out, "    impl ResumedApp {{").unwrap();
+    writeln!(
+        out,
+        "        /// `captures_str`는 첫 클릭의 LRef가 실어 나른 그 액션 자신의 캡처"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        /// (`\"count:0\"`류) — 병합된 그래프의 다른 시그널들은 DOM adoption으로"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        /// 복구되므로(List/Bool과 동일 논리), 어느 위젯의 첫 클릭에서 생성되든"
+    )
+    .unwrap();
+    writeln!(out, "        /// 전체 World가 올바르게 복구된다.").unwrap();
+    writeln!(out, "        #[wasm_bindgen(constructor)]").unwrap();
+    writeln!(out, "        pub fn new(captures_str: &str) -> ResumedApp {{").unwrap();
+    writeln!(out, "            ::console_error_panic_hook::set_once();").unwrap();
+    writeln!(
+        out,
+        "            let document = ::web_sys::window().expect(\"no `window`\").document().expect(\"no `document`\");"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "            let captures: ::std::vec::Vec<(String, String)> = captures_str"
+    )
+    .unwrap();
+    writeln!(out, "                .split(',')").unwrap();
+    writeln!(out, "                .filter(|s| !s.is_empty())").unwrap();
+    writeln!(out, "                .map(|kv| {{").unwrap();
+    writeln!(out, "                    let mut parts = kv.splitn(2, ':');").unwrap();
+    writeln!(
+        out,
+        "                    let key = parts.next().unwrap_or_default().to_string();"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "                    let value = parts.next().unwrap_or_default().to_string();"
+    )
+    .unwrap();
+    writeln!(out, "                    (key, value)").unwrap();
+    writeln!(out, "                }})").unwrap();
+    writeln!(out, "                .collect();").unwrap();
+    writeln!(
+        out,
+        "            let capture_refs: ::std::vec::Vec<(&str, &str)> = captures.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "            let mut app = ::loom_runtime::LoomApp::new();").unwrap();
+    writeln!(
+        out,
+        "            let mut dom = ::loom_runtime::web::BrowserDom::new_for_resume(document.clone());"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "            let tagged = document.query_selector_all(\"[data-loom-id]\").expect(\"query_selector_all failed\");"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "            let mut by_name: ::std::collections::HashMap<String, ::loom_runtime::NodeHandle> = ::std::collections::HashMap::new();"
+    )
+    .unwrap();
+    writeln!(out, "            for i in 0..tagged.length() {{").unwrap();
+    writeln!(
+        out,
+        "                let node = tagged.get(i).expect(\"NodeList index out of bounds\");"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "                let el: ::web_sys::Element = ::wasm_bindgen::JsCast::unchecked_into(node.clone());"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "                let name = el.get_attribute(\"data-loom-id\").expect(\"just matched the selector\");"
+    )
+    .unwrap();
+    writeln!(out, "                let handle = dom.adopt(node);").unwrap();
+    writeln!(out, "                by_name.insert(name, handle);").unwrap();
+    writeln!(out, "            }}").unwrap();
+    writeln!(
+        out,
+        "            let find_node = move |name: &str| -> ::loom_runtime::NodeHandle {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "                *by_name.get(name).unwrap_or_else(|| panic!(\"loomc generated resumed app entry: no element tagged data-loom-id={{:?}}\", name))"
+    )
+    .unwrap();
+    writeln!(out, "            }};").unwrap();
+    writeln!(out).unwrap();
+    if has_shared {
+        writeln!(
+            out,
+            "            let mut shared = ::loom_runtime::web::JsSharedStore;"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "            let signals = super::resume(&mut app, &mut dom, find_node, &capture_refs, &mut shared);"
+        )
+        .unwrap();
+        writeln!(out, "            ResumedApp {{ app, dom, signals, shared }}").unwrap();
+    } else {
+        writeln!(
+            out,
+            "            let signals = super::resume(&mut app, &mut dom, find_node, &capture_refs);"
+        )
+        .unwrap();
+        writeln!(out, "            ResumedApp {{ app, dom, signals }}").unwrap();
+    }
+    writeln!(out, "        }}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "        pub fn dispatch(&mut self, symbol: &str, value: Option<String>) {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "            let action = super::resume_action_by_symbol(symbol, value.as_deref().unwrap_or(\"\"));"
+    )
+    .unwrap();
+    if has_shared {
+        writeln!(
+            out,
+            "            super::apply_action(&mut self.app, &self.signals, &action, &mut self.shared);"
+        )
+        .unwrap();
+    } else {
+        writeln!(
+            out,
+            "            super::apply_action(&mut self.app, &self.signals, &action);"
+        )
+        .unwrap();
+    }
+    writeln!(out, "            self.app.tick(&mut self.dom);").unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out, "#[cfg(any(target_arch = \"wasm32\", target_arch = \"wasm64\"))]").unwrap();
+    writeln!(out, "pub use resumed_app::ResumedApp;").unwrap();
+    writeln!(out).unwrap();
+    out
 }
 
 /// RQ6 §8 item 4's H-Qwik counterfactual: recursively inlines every

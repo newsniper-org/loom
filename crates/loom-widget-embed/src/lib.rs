@@ -67,100 +67,16 @@ pub fn __loom_debug_panic_shared_instance() {
     panic!("loom-widget-embed: deliberate fault injection for RQ6 M6 N-scaling combined cell");
 }
 
-/// RQ6 §6 M1(번들 크기)의 H-Qwik 팔 실제 wasm 엔트리 — Task #27. `crates/
-/// loom-resume-demo`의 `ResumedComponent`(비-Island 루트 컴포넌트의 기존
-/// resumability 엔트리 포인트, Phase 2에서 이미 확립됨)와 **정확히 같은
-/// 메커니즘을 재사용**한다(CLAUDE.md 2-1 — 이미 잘 풀린 문제를 다시 발명하지
-/// 않음): 페이지 전역 `document.query_selector_all("[data-loom-id]")`로
-/// 모든 태그된 노드를 한 번에 흡수하고, `generated_flat::resume()`으로 병합된
-/// 하나의 `World`를 되살린 뒤, 이후의 모든 클릭을 `dispatch()`로 그 인스턴스에
-/// 재사용한다 — Island 엔트리(`generate_island_entry_body`)와 달리 호스트
-/// 스코프 탐색이 아니라 페이지 전역 탐색인 이유: H-Qwik 팔은 애초에 "경계가
-/// 없다"는 것 자체가 RQ6 §8의 핵심 전제이므로, 이건 우회해야 할 버그가 아니라
-/// 이 팔의 정의적 특성이다. `ResumedComponent`와의 유일한 실질적 차이는
-/// `has_shared=true`라서 `resume`/`apply_action`이 `JsSharedStore` 인자를
-/// 하나 더 받는다는 것뿐(§4.2의 CartBadge가 `sharedValue("cartCount")`를
-/// 읽으므로 flatten된 그래프에 공유 바인딩이 실제로 존재함).
-///
-/// **왜 손코딩인가(숨기지 않음)**: `GraphMode::Flatten`은 codegen이 이미
-/// 실제로 만들어내지만(Task #26), "이 merged component를 브라우저에서
-/// 어떻게 resumable하게 로드하는가"는 아직 컴파일러가 자동 생성하지 않는다
-/// (`generate_islands`의 Island 엔트리 생성기처럼, 루트/Flatten 전용
-/// wasm-bindgen 엔트리 생성기는 이번 라운드 범위 밖) — `loom-resume-demo`가
-/// 이미 확립한 "코드젠 동형 손코딩" 관례를 그대로 적용해, 컴파일러가 모르는
-/// 런타임 지식 없이 기존 생성 함수(`resume`/`apply_action`/
-/// `resume_action_by_symbol`)만 호출한다.
+/// RQ6 §6 M1(번들 크기)의 H-Qwik 팔 실제 wasm 엔트리 — Task #27에서는
+/// 손코딩(`ResumedFlatApp`, `loom-resume-demo`의 `ResumedComponent` 패턴 재사용)
+/// 했었으나, **2026-07-28(RQ6 §7 판정 이후, "실제로 쓸 수 있는 프레임워크"로
+/// 가는 첫 단계) 컴파일러가 직접 생성하도록 승격**됐다 — `codegen.rs`의
+/// `generate_flatten_entry_body`가 `GraphMode::Flatten`을 컴파일할 때마다 자동으로
+/// `generated_flat::ResumedApp`을 만든다(Island 엔트리 생성기와 동형 패턴, 상세는
+/// 그 함수의 doc comment). 이 크레이트에서 할 일은 그 이름을 재노출하는 것뿐 —
+/// 손코딩된 구조체 정의는 더 이상 없다.
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-mod resumed_flat_app {
-    use wasm_bindgen::prelude::*;
-
-    #[wasm_bindgen]
-    pub struct ResumedFlatApp {
-        app: ::loom_runtime::LoomApp,
-        dom: ::loom_runtime::web::BrowserDom,
-        signals: super::generated_flat::Signals,
-        shared: ::loom_runtime::web::JsSharedStore,
-    }
-
-    #[wasm_bindgen]
-    impl ResumedFlatApp {
-        /// `captures_str`는 `ResumedComponent::new`와 동일한 포맷(`"count:0"`
-        /// 류) — 최초 클릭의 LRef가 실어 나른 그 액션 자신의 캡처. 병합된
-        /// 그래프의 다른 시그널들은 DOM adoption으로 복구되므로(List/Bool과
-        /// 동일한 논리), 어느 위젯의 첫 클릭에서 생성되든 전체 World가
-        /// 올바르게 복구된다 — 이게 바로 "경계가 없다"의 실질적 의미.
-        #[wasm_bindgen(constructor)]
-        pub fn new(captures_str: &str) -> ResumedFlatApp {
-            console_error_panic_hook::set_once();
-            let document = web_sys::window().expect("no `window`").document().expect("no `document`");
-
-            let captures: Vec<(String, String)> = captures_str
-                .split(',')
-                .filter(|s| !s.is_empty())
-                .map(|kv| {
-                    let mut parts = kv.splitn(2, ':');
-                    let key = parts.next().unwrap_or_default().to_string();
-                    let value = parts.next().unwrap_or_default().to_string();
-                    (key, value)
-                })
-                .collect();
-            let capture_refs: Vec<(&str, &str)> = captures.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-
-            let mut app = ::loom_runtime::LoomApp::new();
-            let mut dom = ::loom_runtime::web::BrowserDom::new_for_resume(document.clone());
-
-            let tagged = document
-                .query_selector_all("[data-loom-id]")
-                .expect("query_selector_all failed");
-            let mut by_name: std::collections::HashMap<String, ::loom_runtime::NodeHandle> =
-                std::collections::HashMap::new();
-            for i in 0..tagged.length() {
-                let node = tagged.get(i).expect("NodeList index out of bounds");
-                let el: web_sys::Element = wasm_bindgen::JsCast::unchecked_into(node.clone());
-                let name = el.get_attribute("data-loom-id").expect("just matched the selector");
-                let handle = dom.adopt(node);
-                by_name.insert(name, handle);
-            }
-            let find_node = move |name: &str| -> ::loom_runtime::NodeHandle {
-                *by_name
-                    .get(name)
-                    .unwrap_or_else(|| panic!("loom resume: no element tagged data-loom-id=\"{name}\""))
-            };
-
-            let mut shared = ::loom_runtime::web::JsSharedStore;
-            let signals = super::generated_flat::resume(&mut app, &mut dom, find_node, &capture_refs, &mut shared);
-            ResumedFlatApp { app, dom, signals, shared }
-        }
-
-        pub fn dispatch(&mut self, symbol: &str, value: Option<String>) {
-            let action = super::generated_flat::resume_action_by_symbol(symbol, value.as_deref().unwrap_or(""));
-            super::generated_flat::apply_action(&mut self.app, &self.signals, &action, &mut self.shared);
-            self.app.tick(&mut self.dom);
-        }
-    }
-}
-#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-pub use resumed_flat_app::ResumedFlatApp;
+pub use generated_flat::ResumedApp;
 
 // A minimal native-only DomOps impl for producing this page's initial SSR
 // HTML — see crates/loom-island-compiled's identical copy for why this

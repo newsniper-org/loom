@@ -16,7 +16,7 @@
 //! is a **direct copy** of `loom-resume-demo::StringDom` (same file, same
 //! behavior) rather than a shared dependency — reusing that crate directly
 //! would drag in its unconditional `wasm-bindgen`/`web-sys` dependency
-//! (needed there for the wasm-only `ResumedComponent` lazy-chunk path),
+//! (needed there for the wasm-only `ResumedApp` lazy-chunk path),
 //! which breaks a **plain** `wasm32-unknown-unknown` build with no JS host
 //! (the WASM-in-process path needs exactly that — see `examples/
 //! wasm_in_process.py`: wasmtime has no `__wbindgen_placeholder__` imports

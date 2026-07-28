@@ -1,9 +1,9 @@
 // RQ6 §4.2 H-Qwik 반사실 팔의 bootstrap — demo/resume/bootstrap.js와 동일한
 // "전역 클릭 위임 후 첫 상호작용에서 청크 1회 materialize" 메커니즘(Qwik에서
 // 재사용, CLAUDE.md 2-1)을 그대로 쓴다. 유일한 차이: 여기서 만드는 인스턴스는
-// `mod.ResumedComponent`가 아니라 `mod.ResumedFlatApp`(crates/loom-widget-embed의
-// GraphMode::Flatten 전용 wasm 엔트리, `ResumedComponent`와 동일 패턴을 재사용해
-// 손코딩됨 — 그 struct의 doc comment 참고) — 5개 컴포넌트가 전부 하나의 merged
+// `mod.ResumedComponent`가 아니라 `mod.ResumedApp`(GraphMode::Flatten 전용
+// wasm 엔트리 — 2026-07-28부터 loom-compiler의 `generate_flatten_entry_body`가
+// 직접 생성함, 더 이상 손코딩이 아님) — 5개 컴포넌트가 전부 하나의 merged
 // World로 합쳐진 이 픽스처에서는 어느 위젯을 먼저 클릭하든 전체 앱이 한 번에
 // materialize된다는 점 자체가 RQ6 M2/M3 측정의 핵심 관찰 대상.
 function dispatchToInstance(el, instance, symbol, value) {
@@ -37,7 +37,7 @@ async function dispatchLref(el, value) {
   try {
     const mod = await import(`./chunks/${chunk}.js`);
     await mod.default();
-    instance = new mod.ResumedFlatApp(capturesRaw);
+    instance = new mod.ResumedApp(capturesRaw);
   } catch (err) {
     console.error(`[bootstrap-flat] failed to materialize chunk "${chunk}" — reloading:`, err);
     window.location.reload();

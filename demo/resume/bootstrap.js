@@ -8,9 +8,14 @@
 // "increment" — loom-compiler's codegen now emits `resume`/
 // `resume_action_by_symbol` for any component (see codegen.rs), and finding
 // each captured signal's DOM node (`data-loom-id`) happens Rust-side inside
-// `ResumedComponent::new`, not here — this file no longer needs to know
+// `ResumedApp::new`, not here — this file no longer needs to know
 // which signal a given action reads, only how to get the chunk loaded and
 // forward the symbol.
+//
+// 2026-07-28: `ResumedApp`은 손코딩 `ResumedComponent`를 대체하는 이름 —
+// loom-compiler의 `generate_flatten_entry_body`가 GraphMode::Flatten에서
+// 자동 생성한다. 로직은 동일, 이름과 생성 주체만 바뀜
+// (crates/loom-resume-demo/src/lib.rs 참고).
 //
 // RQ2 (payload format) is still open — the `data-loom-lref` format parsed
 // here (`chunk|symbol|key:value,...`) is a tentative pick, not RQ2's
@@ -28,7 +33,7 @@
 // 2026-07-24 — `<input>` two-way bindings: a keystroke needs the exact same
 // "materialize chunk once, then reuse" flow as a click, just on the `input`
 // event instead and carrying the just-typed value along (see
-// crates/loom-resume-demo/src/lib.rs's `ResumedComponent::dispatch` doc
+// crates/loom-resume-demo/src/lib.rs's `ResumedApp::dispatch` doc
 // comment for why a value has to ride along at all — unlike every other
 // action, `SetString`'s payload can't be known until this exact moment).
 // Factored out so click/input share one materialize-and-cache path rather
@@ -92,9 +97,9 @@ async function dispatchLref(el, value) {
     await mod.default(); // wasm-bindgen's init(): fetches + instantiates the .wasm
     // 2026-07-24: conditionals (`{cond() && <X/>}`) are compiler-generated
     // now (loom-compiler/src/codegen.rs), so their toggle is a normal
-    // `Action` dispatched through the same `ResumedComponent` every other
+    // `Action` dispatched through the same `ResumedApp` every other
     // action uses — no per-symbol special-casing needed here anymore.
-    instance = new mod.ResumedComponent(capturesRaw);
+    instance = new mod.ResumedApp(capturesRaw);
   } catch (err) {
     console.error(`[bootstrap] failed to materialize chunk "${chunk}" — reloading:`, err);
     window.location.reload();
