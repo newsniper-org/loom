@@ -28,7 +28,7 @@
 //! simplification, not a silent deviation from docs/02, and is recorded as
 //! such in roadmap/PHASES.md's Phase 1 status.
 
-use bevy_ecs::prelude::*;
+use bevy_ecs::{prelude::*, system::ScheduleSystem};
 use bevy_ecs::schedule::Schedule;
 
 pub mod list;
@@ -443,7 +443,7 @@ impl LoomApp {
         self
     }
 
-    pub fn add_systems<M>(&mut self, systems: impl IntoSystemConfigs<M>) -> &mut Self {
+    pub fn add_systems<M>(&mut self, systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> &mut Self {
         self.schedule.add_systems(systems);
         self
     }

@@ -22,6 +22,7 @@
 //! Results are written as a JSON string into `#results`' `textContent`
 //! (kept as raw per-rep sample arrays, not pre-aggregated).
 
+use bevy_ecs::system::ScheduleSystem;
 use loom_runtime::web::BrowserDom;
 use loom_runtime::{
     list_reconcile_c_system, list_reconcile_d_lis_system, list_reconcile_d_system,
@@ -480,7 +481,7 @@ fn run_track_t(document: &web_sys::Document, scratch_parent: &web_sys::Node) {
         parent: &web_sys::Node,
         name: &str,
         size: usize,
-        system: impl bevy_ecs::prelude::IntoSystemConfigs<M>,
+        system: impl bevy_ecs::prelude::IntoScheduleConfigs<ScheduleSystem, M>,
     ) -> (CondCandidate, web_sys::Element) {
         let container = document.create_element("div").unwrap();
         parent.append_child(&container).unwrap();

@@ -16,13 +16,13 @@ name = "isr-bench"
 path = "src/bin/isr_bench.rs"
 
 [dependencies]
-bevy_ecs = "0.14"
+bevy_ecs.workspace = true
 # No "wasm_js" feature: that backend itself depends on wasm-bindgen/js-sys
 # (calls `crypto.getRandomValues`), which would drag JS-glue imports back
 # into the wasm32 build this crate exists to keep JS-free (see lib.rs's
 # `__getrandom_v03_custom` doc comment for the custom backend used instead,
 # active via `RUSTFLAGS='--cfg getrandom_backend="custom"'`).
-getrandom = "0.3"
+getrandom = { workspace = true }
 loom-runtime = { path = "../loom-runtime" }
 # Task #28-c — resumability_payload/assets 와이어 포맷. bincode가 아니라 JSON을
 # 고른 이유: docs/05의 FIC 자체가 "언어가 다른 백엔드"(Python ctypes, Node.js

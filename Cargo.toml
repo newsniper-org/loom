@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/loom-runtime",
     "crates/loom-compiler",
@@ -28,3 +28,11 @@ version = "0.0.1-phase1"
 [profile.release]
 opt-level = "s"
 lto = true
+panic = "unwind"
+
+[profile.dev]
+panic = "unwind"
+
+[workspace.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+bevy_ecs = "0.19"

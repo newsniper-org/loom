@@ -80,7 +80,7 @@ mod generated {
 /// when built with `RUSTFLAGS='--cfg getrandom_backend="custom"'` (see
 /// `examples/wasm_in_process.py`'s build instructions) — the native/sidecar
 /// paths use the normal OS entropy source and never touch this.
-#[cfg(all(target_arch = "wasm32", getrandom_backend = "custom"))]
+#[cfg(all(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 unsafe extern "Rust" fn __getrandom_v03_custom(dest: *mut u8, len: usize) -> Result<(), getrandom::Error> {
     for i in 0..len {

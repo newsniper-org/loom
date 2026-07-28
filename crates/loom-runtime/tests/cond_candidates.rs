@@ -6,18 +6,19 @@
 //! lifecycle) is verified in service of that claim.
 
 mod support;
+use bevy_ecs::system::ScheduleSystem;
 use support::MockDom;
 
 use loom_runtime::{
     cond_reconcile_b_system, cond_reconcile_f_system, CondBlock, DomTarget, LoomApp, Signal,
 };
 
-fn setup<M>(system: impl bevy_ecs::prelude::IntoSystemConfigs<M>) -> (MockDom, LoomApp, bevy_ecs::entity::Entity, loom_runtime::NodeHandle) {
+fn setup<M>(system: impl bevy_ecs::prelude::IntoScheduleConfigs<ScheduleSystem, M>) -> (MockDom, LoomApp, bevy_ecs::entity::Entity, loom_runtime::NodeHandle) {
     setup_with_size(system, 1)
 }
 
 fn setup_with_size<M>(
-    system: impl bevy_ecs::prelude::IntoSystemConfigs<M>,
+    system: impl bevy_ecs::prelude::IntoScheduleConfigs<ScheduleSystem, M>,
     size: usize,
 ) -> (MockDom, LoomApp, bevy_ecs::entity::Entity, loom_runtime::NodeHandle) {
     let (dom, root) = MockDom::new_root();

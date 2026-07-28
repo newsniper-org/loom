@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-bevy_ecs = "0.14"
+bevy_ecs.workspace = true
 js-sys = { version = "0.3.103", optional = true }
 smallvec = "1"
 wasm-bindgen = { version = "0.2.126", optional = true }

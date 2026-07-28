@@ -7,7 +7,7 @@
 \*
 \* ## 조사한 것
 \*
-\* 이 프로젝트는 `bevy_ecs = "0.14"`를 어떤 크레이트에서도 `multi_threaded` feature
+\* 이 프로젝트는 `bevy_ecs = "0.19"`를 어떤 크레이트에서도 `multi_threaded` feature
 \* 없이 사용한다(전 크레이트 Cargo.toml 확인, roadmap/PHASES.md Phase 5 절 참고) —
 \* `multi_threaded`는 bevy_ecs 0.14.2의 default feature가 아니다
 \* (`~/.cargo/registry/.../bevy_ecs-0.14.2/Cargo.toml`의 `[features]`:
