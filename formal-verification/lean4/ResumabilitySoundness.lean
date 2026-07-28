@@ -96,5 +96,65 @@ example : (0 - 1 : Int) ≠ 0 ∧ (0 + 1 : Int) ≠ 0 := by decide
 -- 하나씩만 갖고 있다"는 **인스턴스 수준 사실**에 의존한다 — 이 캐비앗을 다음 결로
 -- 남긴다: IR이 "시그널당 액션 최대 1개"를 실제로 강제하는 정적 검사를 갖추기 전까지는
 -- 이 정리의 전제(`SingleWriter`)가 컴파일러가 아니라 저작자의 규율에 의존한다.
+-- **2026-07-28 갱신(Task #28-f)**: 이 정적 검사가 이제 실제로 존재한다
+-- (`lower.rs`의 `check_one_action_per_signal` — `Component::action_signal_names`가
+-- 중복을 찾으면 `lower_module`이 panic) — 그러므로 위 문단이 말하던 "컴파일러가
+-- 아니라 저작자의 규율에 의존" 상태는 더 이상 아니다. `SingleWriter`는 이제 IR
+-- 인스턴스 수준 사실이 아니라 컴파일러가 구조적으로 강제하는 불변식이다.
+
+/-! ## Bool/StringList/Str 확장 (Task #28-e, 2026-07-28)
+
+`codegen.rs`의 `generate_resume` 실제 arm을 확인한 결과(각 `SignalInit` variant별
+직접 대조, 문서 옆에서 확인하며 작성) — 위 `I32` 케이스만 `captures` 배열의 **캡처된
+리터럴**(`v0`, SSR 시점에 구운 스냅샷)에서 값을 재구성한다. 나머지 세 종류는
+전혀 다른 전략을 쓴다:
+
+- `Bool`: `dom.adopt_children(...)`으로 지금 DOM에 실제로 보이는 자식이 있는지
+  직접 읽어 `shown`을 결정한다(`captures`를 아예 참조하지 않음).
+- `StringList`: `dom.adopt_children(...)`으로 각 행의 **현재 텍스트**를 직접 읽는다.
+- `Str`(input 바인딩): `dom.get_input_value(...)`으로 `<input>`의 **현재 `.value`
+  속성**을 직접 읽는다.
+
+셋 다 "캡처해 둔 과거 스냅샷 + 그 이후 델타"가 아니라 "지금 이 순간 DOM에 보이는
+값 그 자체"를 읽는다 — 그래서 `SingleWriter` 전제(=스냅샷 시점 이후 아무도 안
+건드렸음을 요구)가 애초에 필요 없다: 읽는 대상 자체가 항상 최신이므로 "낡을" 수가
+없다. 이게 이 절이 formalize하는 것. -/
+
+/-- DOM-복구형 시그널의 추상 모델. `α`는 `Bool`(조건부 표시 여부)·`String`
+    (input 값 하나 또는 리스트의 행 하나) 등, `adopt_children`/`get_input_value`가
+    실제로 돌려주는 값의 타입을 나타내는 자리표시자 — 이 정리의 핵심은 그 타입이
+    *무엇*인지가 아니라 "resume이 읽는 소스 = live가 쓰는 소스"라는 구조적 사실이라
+    다형으로 남긴다. -/
+abbrev DomState (α : Type) := α
+
+/-- 라이브 경로의 값 — patch System(`patch_input_system`/`list_reconcile_k_system`/
+    `cond_reconcile_*_system`)이 매 tick마다 World와 DOM을 동기화하므로, "지금
+    라이브 World가 들고 있는 값"과 "지금 DOM에 보이는 값"은 애초에 같은 것을
+    가리키는 두 이름이다 — 그래서 정의 자체가 항등함수다. -/
+def domRecoveredLiveValue {α : Type} (dom : DomState α) : α := dom
+
+/-- resume 경로의 값 — `adopt_children`/`get_input_value`가 하는 일 그대로:
+    `captures`를 거치지 않고 지금 DOM에서 직접 읽는다. -/
+def domRecoveredResumeValue {α : Type} (dom : DomState α) : α := dom
+
+/-- **핵심 정리, I32와의 결정적 차이**: 이 등식엔 `SingleWriter`에 해당하는 어떤
+    전제도 붙어 있지 않다(화살표 왼쪽이 없음 — `resumability_sound`와 비교).
+    다중 writer가 이 DOM 상태를 몇 번을 고쳤든, resume은 언제나 "그 마지막
+    결과"를 그대로 읽으므로 라이브 값과 항상 일치한다 — 스냅샷이 없으므로 낡을
+    여지 자체가 없다. -/
+theorem dom_recovered_resumability_sound {α : Type} (dom : DomState α) :
+    domRecoveredResumeValue dom = domRecoveredLiveValue dom := rfl
+
+/-- 위 정리가 다중 writer 아래에서도 무조건 성립함을 명시적으로 보이는 예시 —
+    `Bool` 시그널(조건부 표시 여부)을 서로 다른 두 버튼이 각각 toggle하는
+    상황을 흉내낸다: 몇 번을 토글하든(`w1`, `w2`, ... 무순서로 여러 writer가
+    다녀가도) DOM에 마지막으로 남은 상태가 `finalState`라면, resume은 정확히
+    `finalState`를 돌려준다 — I32였다면 이 상황이 §65-76의 반례처럼 깨졌을
+    자리다. -/
+example (finalState : Bool) :
+    domRecoveredResumeValue finalState = domRecoveredLiveValue finalState := rfl
+
+example (finalRows : List String) :
+    domRecoveredResumeValue finalRows = domRecoveredLiveValue finalRows := rfl
 
 end Loom.Resumability

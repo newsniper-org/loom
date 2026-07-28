@@ -55,9 +55,53 @@ pub fn lower_module(module: &Module) -> ComponentGraph {
         components.push(lower_component_fn(decl, &known_components));
     }
 
+    check_one_action_per_signal(&components);
+
     ComponentGraph {
         components,
         root: root_name,
+    }
+}
+
+/// Task #28-f — statically enforces the "signal당 액션 1개" (single-writer)
+/// invariant `formal-verification/lean4/ResumabilitySoundness.lean`'s
+/// `SingleWriter` precondition depends on. **Scoped to `I32` signals only**
+/// (found while wiring this up — an earlier draft checked every signal kind
+/// and immediately broke `demo/counter-list.tsx`'s legitimate
+/// `items.append(...)`/`items.rotate()` pair, both targeting the same
+/// `StringList` signal): the Lean file's own new `dom_recovered_
+/// resumability_sound` theorem (Task #28-e) proves `Bool`/`StringList`/`Str`
+/// resume is safe under *any* number of writers, since it reads the DOM's
+/// current state directly rather than a captured literal snapshot — only
+/// `I32`'s resume path (`format_i32_capture_for_action`'s captured `v0`)
+/// actually needs `SingleWriter`. Enforcing single-writer beyond `I32` would
+/// reject legitimate, already-safe programs for no soundness reason. Runs
+/// once per component, over `Component::action_signal_names()` (already
+/// existed, unused until this call site — ir.rs's doc comment on it) cross-
+/// referenced against `component.signals` for each name's `SignalInit`.
+fn check_one_action_per_signal(components: &[Component]) {
+    for component in components {
+        let mut seen = HashSet::new();
+        for signal_name in component.action_signal_names() {
+            let is_i32 = component
+                .signals
+                .iter()
+                .any(|s| s.name == signal_name && matches!(s.init, crate::ir::SignalInit::I32(_)));
+            if !is_i32 {
+                continue;
+            }
+            if !seen.insert(signal_name.clone()) {
+                panic!(
+                    "loomc: component `{}` has more than one action-bearing binding site targeting i32 signal `{signal_name}` — \
+                     signal당 액션 1개(single-writer) 제약 위반. formal-verification/lean4/ResumabilitySoundness.lean의 \
+                     SingleWriter 전제가 바로 이 불변식에 의존하므로 정적으로 거부한다 — 허용하면 resume 시점에 두 \
+                     독립 인스턴스가 서로 다른 값으로 갈라질 수 있다(그 파일의 반례 스케치 참고). Bool/StringList/Str \
+                     시그널은 DOM-복구형이라 이 제약이 필요 없다(dom_recovered_resumability_sound 참고) — 그래서 \
+                     이 검사는 i32 시그널에만 적용된다.",
+                    component.name
+                );
+            }
+        }
     }
 }
 

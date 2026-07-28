@@ -909,4 +909,53 @@ mod tests {
             assert!(out.contains("data-loom-shared-subscriber\", \"cartCount\""), "{out}");
         }
     }
+
+    /// Task #28-f — "signal당 액션 1개" 정적 검사(`lower.rs`의
+    /// `check_one_action_per_signal`).
+    mod single_writer_check {
+        use super::*;
+
+        #[test]
+        #[should_panic(expected = "more than one action-bearing binding site targeting i32 signal `count`")]
+        fn two_actions_on_the_same_i32_signal_is_rejected() {
+            let source = r#"
+                export function App() {
+                  const count = signal(0);
+                  return (
+                    <div>
+                      <button onClick={() => count.increment()}>+1</button>
+                      <button onClick={() => count.increment()}>+1 again</button>
+                    </div>
+                  );
+                }
+            "#;
+            let module = parse_tsx(source);
+            lower::lower_module(&module);
+        }
+
+        #[test]
+        fn two_actions_on_the_same_stringlist_signal_is_allowed() {
+            // demo/counter-list.tsx의 실제 패턴 그대로(append + rotate가 같은
+            // `items` StringList 시그널을 같이 건드림) — 이건 위반이 아니다:
+            // StringList는 DOM-복구형이라 SingleWriter가 필요 없다
+            // (formal-verification/lean4/ResumabilitySoundness.lean의
+            // dom_recovered_resumability_sound). 이전에 이 검사를 모든
+            // 시그널 종류에 적용하려던 첫 시도가 이 정확한 픽스처를 깨뜨렸음
+            // (cargo test --workspace로 실제 발견) — 그 회귀를 여기 고정한다.
+            let source = r#"
+                export function App() {
+                  const items = signal(["a", "b"]);
+                  return (
+                    <div>
+                      <ul>{items().map((item) => <li>{item}</li>)}</ul>
+                      <button onClick={() => items.append("new")}>append</button>
+                      <button onClick={() => items.rotate()}>rotate</button>
+                    </div>
+                  );
+                }
+            "#;
+            let module = parse_tsx(source);
+            lower::lower_module(&module); // must not panic
+        }
+    }
 }
