@@ -41,6 +41,9 @@ pub use list::{
 pub mod stage;
 pub use stage::{now_ms, StageTimings};
 
+pub mod counting;
+pub use counting::{CountingDom, DomOpCounts};
+
 pub mod cond;
 pub use cond::{cond_reconcile_b_system, cond_reconcile_f_system, CondBlock};
 
