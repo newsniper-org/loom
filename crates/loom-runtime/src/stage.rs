@@ -1,0 +1,90 @@
+//! RQ1-benchmark-protocol.md **§7.1 "단계 귀속 계측 지도"** 의 구현.
+//!
+//! §7.1은 여러 판정 조항이 참조하는 "구간"들을 이렇게 정의해 두었다:
+//!
+//! | 판정 조항이 참조하는 양 | 정의된 계측 구간 |
+//! |---|---|
+//! | C 기각 (ii) "archetype move 단계" | 해당 프레임의 Commands apply(sync point) 구간 |
+//! | E 기각 (ii) "매칭 비용" | reconcile System(해시 매칭 + LIS + successor 검색) 시간 + 이동 집합 정렬 |
+//! | E 기각 (ii)·(i) 보조 "DOM 연산 시간" | 단일 디스패치 지점의 배치 적용 구간 |
+//! | §9 B/F의 J-b "총 CPU 시간" | 셀 구동 창 내 전 System + flush + DOM 적용 합산 |
+//!
+//! 그리고 계측 **방식**까지 못박아 두었다 — "전부 하네스가 Bevy System/스테이지
+//! 경계에서 타임스탬프를 찍는 방식(**후보 코드 무침습** — §2.4 정합)". 즉
+//! `list_reconcile_c_system` 같은 후보 구현 안에 계측 코드를 심으면 안 되고,
+//! 스케줄에 마커 System을 끼워 넣어 바깥에서 재야 한다. 이 모듈이 그 마커다.
+//!
+//! **왜 이게 없으면 판정이 막히나**: 2026-07-28 기준 RQ1에서 미해결로 남은
+//! 항목 중 두 개가 정확히 이 계측에 걸려 있다 — E/E-LIS의 기각 (ii)("매칭
+//! 비용이 절감분을 상쇄하는가")는 reconcile System 시간과 DOM 적용 시간을
+//! *따로* 재야 판정 가능하고, C의 기각 뒷 분기("archetype move 구간이 스크립트
+//! 시간의 50% 이상")는 sync point 구간을 따로 재야 한다. 지금까지 하네스는
+//! `LoomApp::tick` 전체 시간(M1(a))만 쟀다.
+//!
+//! **스케줄 배치**: `LoomApp::add_instrumented_systems`가
+//! `(시작 마커, 후보 System, 종료 마커, ApplyDeferred, sync 마커).chain()`
+//! 으로 엮는다. `ApplyDeferred`(`bevy_ecs::prelude`)는 Commands 버퍼를 그
+//! 지점에서 적용시키는 배타 System이라, 그 앞뒤 마커의 차이가 곧 §7.1이 말하는
+//! "Commands apply(sync point) 구간"이 된다 — C의 R3 브랜치 전환형(§10 사전
+//! 고정)이 archetype move를 일으키는 바로 그 구간.
+
+use bevy_ecs::prelude::*;
+
+/// 단조 증가하는 밀리초 시계. 브라우저에서는 `performance.now()`(§8이 요구하는
+/// 고해상도 타이머 — COOP/COEP 격리 시 5µs), 네이티브에서는 프로세스 시작
+/// 기준 `Instant`.
+#[cfg(feature = "browser")]
+pub fn now_ms() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now())
+        .unwrap_or(0.0)
+}
+
+#[cfg(not(feature = "browser"))]
+pub fn now_ms() -> f64 {
+    use std::time::Instant;
+    thread_local! {
+        static ORIGIN: Instant = Instant::now();
+    }
+    ORIGIN.with(|o| o.elapsed().as_secs_f64() * 1000.0)
+}
+
+/// 한 tick의 단계별 소요 시간. `LoomApp::add_instrumented_systems`를 쓴
+/// 앱에만 존재하며(일반 앱에는 이 Resource 자체가 없다), 매 tick 덮어써진다 —
+/// 누적은 하네스 쪽 몫이다(§8의 표본 규정이 셀마다 다른 집계를 요구하므로
+/// 런타임이 미리 줄여 놓으면 안 됨).
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct StageTimings {
+    /// 후보 reconcile System 자체의 실행 시간 — §7.1의 E 기각 (ii) "매칭 비용".
+    pub systems_ms: f64,
+    /// `ApplyDeferred` 구간 = Commands apply(sync point) — §7.1의 C 기각 (ii)
+    /// "archetype move 단계".
+    pub sync_point_ms: f64,
+    /// 단일 디스패치 지점의 DOM 배치 적용 구간 — §7.1의 E 보조 "DOM 연산 시간".
+    /// `LoomApp::tick`이 직접 채운다(스케줄 바깥이라 마커 System으로는 못 잼).
+    pub dom_apply_ms: f64,
+    /// tick 전체(= M1(a)). 위 세 구간의 합보다 크며, 그 차이가 스케줄 오버헤드다.
+    pub total_ms: f64,
+
+    // --- 내부 스탬프(마커 System 간 전달용) ---
+    t_systems_start: f64,
+    t_systems_end: f64,
+}
+
+/// 후보 System **앞**에 놓이는 마커.
+pub fn stage_mark_systems_start(mut t: ResMut<StageTimings>) {
+    t.t_systems_start = now_ms();
+}
+
+/// 후보 System **뒤**, `ApplyDeferred` **앞**에 놓이는 마커.
+pub fn stage_mark_systems_end(mut t: ResMut<StageTimings>) {
+    t.t_systems_end = now_ms();
+}
+
+/// `ApplyDeferred` **뒤**에 놓이는 마커 — 여기서 두 구간이 확정된다.
+pub fn stage_mark_sync_end(mut t: ResMut<StageTimings>) {
+    let now = now_ms();
+    t.systems_ms = t.t_systems_end - t.t_systems_start;
+    t.sync_point_ms = now - t.t_systems_end;
+}

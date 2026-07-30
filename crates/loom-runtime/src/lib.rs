@@ -38,6 +38,9 @@ pub use list::{
     RowKey, SlotValue,
 };
 
+pub mod stage;
+pub use stage::{now_ms, StageTimings};
+
 pub mod cond;
 pub use cond::{cond_reconcile_b_system, cond_reconcile_f_system, CondBlock};
 
@@ -448,6 +451,35 @@ impl LoomApp {
         self
     }
 
+    /// `add_systems`와 같되, RQ1-benchmark-protocol.md **§7.1의 단계 귀속
+    /// 계측**을 함께 건다 — `systems` 앞뒤에 마커를 두고 그 뒤에
+    /// `ApplyDeferred`를 명시적으로 끼워, "후보 System 실행 구간"과
+    /// "Commands apply(sync point) 구간"을 분리 측정할 수 있게 만든다
+    /// (`stage.rs` 참고). 결과는 `StageTimings` Resource에 매 tick 덮어써진다.
+    ///
+    /// 후보 코드는 **한 줄도 건드리지 않는다** — §7.1이 명시한 "하네스가
+    /// System/스테이지 경계에서 타임스탬프를 찍는 방식(후보 코드 무침습)"
+    /// 그대로다. 계측이 필요 없는 앱(데모/컴파일러 산출물 전부)은 계속
+    /// `add_systems`를 쓰면 되고, 그쪽에는 `StageTimings` Resource 자체가
+    /// 존재하지 않는다.
+    pub fn add_instrumented_systems<M>(
+        &mut self,
+        systems: impl IntoScheduleConfigs<ScheduleSystem, M>,
+    ) -> &mut Self {
+        self.world.init_resource::<StageTimings>();
+        self.schedule.add_systems(
+            (
+                stage::stage_mark_systems_start,
+                systems,
+                stage::stage_mark_systems_end,
+                ApplyDeferred,
+                stage::stage_mark_sync_end,
+            )
+                .chain(),
+        );
+        self
+    }
+
     /// Runs one reactive tick: execute all registered patch Systems, then
     /// apply the DOM writes they produced at the single sync point. This is
     /// the whole "No-VDOM" pipeline — no tree is diffed anywhere in it.
@@ -458,7 +490,13 @@ impl LoomApp {
     /// earlier write in this same batch that mounted that entity has
     /// already attached its `DomTarget`. See `DomWrite`'s doc comment.
     pub fn tick<D: DomOps>(&mut self, dom: &mut D) {
+        // §7.1의 "DOM 배치 적용 구간"은 스케줄 **바깥**이라 마커 System으로는
+        // 잴 수 없다 — 여기서 직접 스탬프한다. `StageTimings`가 없는 앱
+        // (= `add_instrumented_systems`를 안 쓴 전부)에서는 아래 저장이
+        // 통째로 생략되므로, 남는 비용은 시계 호출 3회(~100ns)뿐이다.
+        let t0 = stage::now_ms();
         self.schedule.run(&mut self.world);
+        let t_schedule_end = stage::now_ms();
         let writes = std::mem::take(&mut self.world.resource_mut::<PendingDomWrites>().0);
         for write in writes {
             match write {
@@ -502,6 +540,11 @@ impl LoomApp {
                 DomWrite::AppendStaticText { parent, text } => dom.append_static_text(parent, &text),
                 DomWrite::SetInputValue { node, value } => dom.set_input_value(node, &value),
             }
+        }
+        let t_end = stage::now_ms();
+        if let Some(mut timings) = self.world.get_resource_mut::<StageTimings>() {
+            timings.dom_apply_ms = t_end - t_schedule_end;
+            timings.total_ms = t_end - t0;
         }
     }
 

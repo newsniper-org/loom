@@ -8,7 +8,9 @@ bevy_ecs.workspace = true
 js-sys = { version = "0.3.103", optional = true }
 smallvec = "1"
 wasm-bindgen = { version = "0.2.126", optional = true }
-web-sys = { version = "0.3.103", features = ["Document", "Element", "Window", "Node", "NodeList", "HtmlCollection", "HtmlElement", "HtmlInputElement", "Event", "MouseEvent", "EventTarget", "DomTokenList", "console", "Text", "CssStyleDeclaration"], optional = true }
+# "Performance"는 stage.rs의 §7.1 단계 귀속 계측용 고해상도 시계
+# (`performance.now()`) — RQ1-benchmark-protocol.md §8이 요구하는 타이머.
+web-sys = { version = "0.3.103", features = ["Document", "Element", "Window", "Node", "NodeList", "HtmlCollection", "HtmlElement", "HtmlInputElement", "Event", "MouseEvent", "EventTarget", "DomTokenList", "console", "Text", "CssStyleDeclaration", "Performance"], optional = true }
 
 [dev-dependencies]
 
