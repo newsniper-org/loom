@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>RQ1 트랙 T — 토글 빈도(f) 축 셀 드라이버</title>
+</head>
+<body>
+  <!--
+    RQ1-benchmark-protocol.md §4.1의 토글 빈도 축(f × s 격자) 전용 페이지.
+    demo/list_bench.html과 같은 wasm 모듈을 로드하지만 `#bench`가 없으므로
+    loom_bench의 `start()`는 조용히 빠져나가고(lib.rs 참고) 트랙 L 배터리가
+    돌지 않는다 — 이 페이지는 오직 한 셀만 구동한다.
+
+    §8 표본 규정이 "셀당 독립 10시행, **시행마다 fresh page load**"를 요구하므로
+    한 페이지 = 한 시행이고, 셀/시행 순회는 바깥(Playwright 등)이 맡는다.
+    파라미터는 쿼리스트링으로 받는다:
+
+      ?arm=B&f=1&size=100&window=60000
+
+    f는 초당 토글 횟수(사전 등록 격자 {0.1, 1, 10, 30, 60}), size는 서브트리
+    entity 수({1, 10, 100, 1000}), window는 구동 창 ms(사전 등록값 60000).
+
+    끝나면 `#cell-result`의 textContent에 JSON 한 줄이 들어가고
+    `window.__loomTrackTDone`이 true가 된다 — 드라이버는 그 플래그를 기다린다.
+  -->
+  <pre id="cell-result">idle</pre>
+  <script type="module">
+    import init, { TrackTCell } from "./pkg-bench/loom_bench.js";
+
+    const params = new URLSearchParams(location.search);
+    const arm = params.get("arm") ?? "B";
+    const fHz = Number(params.get("f") ?? "1");
+    const size = Number(params.get("size") ?? "100");
+    const windowMs = Number(params.get("window") ?? "60000");
+
+    // f는 정수 milli-Hz로 wasm에 넘긴다 — 0.1/s를 부동소수 없이 나르기 위함.
+    const fMilliHz = Math.round(fHz * 1000);
+
+    await init();
+
+    const resultEl = document.getElementById("cell-result");
+    resultEl.textContent = `running arm=${arm} f=${fHz}/s size=${size} window=${windowMs}ms ...`;
+
+    const cell = new TrackTCell(arm, fMilliHz, size, windowMs);
+
+    function frame(now) {
+      // `now`는 rAF가 주는 `performance.now()` 기준 타임스탬프 — wasm 쪽
+      // `measure_now()`와 같은 시계라 그대로 넘겨도 정합적이다.
+      if (cell.step(now)) {
+        requestAnimationFrame(frame);
+      } else {
+        resultEl.textContent = cell.finish(performance.now());
+        window.__loomTrackTDone = true;
+      }
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
