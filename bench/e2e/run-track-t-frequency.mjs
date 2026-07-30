@@ -83,7 +83,10 @@ for (const cell of cells) {
       `${baseUrl}/demo/track_t_freq_bench.html` +
       `?arm=${cell.arm}&f=${cell.f}&size=${cell.s}&window=${windowMs}`;
     await page.goto(url);
-    await page.waitForFunction(() => window.__loomTrackTDone === true, {
+    // 두 번째 위치 인자는 페이지 함수에 넘길 `arg`이고 옵션은 **세 번째**다 —
+    // `undefined`를 빼먹으면 `{timeout}`이 arg로 먹히고 기본 30초 타임아웃이
+    // 적용된다(창 60초 캠페인이 첫 셀에서 즉사하는 원인이었음).
+    await page.waitForFunction(() => window.__loomTrackTDone === true, undefined, {
       timeout: windowMs + 60_000,
     });
     const json = await page.locator("#cell-result").textContent();
