@@ -149,8 +149,14 @@ impl Workload {
 struct Candidate<T: Send + Sync + Clone + ToString + 'static> {
     name: &'static str,
     app: LoomApp,
-    dom: BrowserDom,
+    /// **2026-07-28 §7 M2 배선**: `BrowserDom`을 `CountingDom`으로 감싼다.
+    /// M2(DOM 연산 수)는 §9 E 기각 (i)이 "결정적 보조 지표로 **병기**"하라고
+    /// 명시적으로 요구하는데 지금까지 전면 미계측이었다(2026-07-28 계측
+    /// 커버리지 감사에서 발견). `DomOps`가 트레잇이라 후보 코드는 무변경.
+    dom: loom_runtime::CountingDom<BrowserDom>,
     entity: bevy_ecs::entity::Entity,
+    /// 직전 반복의 M2 카운트 — 반복마다 갱신되고, 셀 종료 시 보고된다.
+    last_counts: loom_runtime::DomOpCounts,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -161,9 +167,14 @@ fn measure_now() -> f64 {
 impl<T: Send + Sync + Clone + ToString + 'static> Candidate<T> {
     fn set_and_tick(&mut self, items: Vec<T>) -> f64 {
         self.app.world.get_mut::<Signal<Vec<T>>>(self.entity).unwrap().0 = items;
+        // §8 "각 반복 전 초기 상태 복원"과 같은 지점에서 카운터를 0으로 —
+        // 셋업 단계의 op가 측정 반복에 새지 않게 한다.
+        self.dom.reset_counts();
         let start = measure_now();
         self.app.tick(&mut self.dom);
-        measure_now() - start
+        let elapsed = measure_now() - start;
+        self.last_counts = self.dom.counts();
+        elapsed
     }
 }
 
@@ -183,13 +194,14 @@ fn make_k<T: Send + Sync + Clone + ToString + 'static>(
     row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "K");
-    let (mut dom, handle) = BrowserDom::new(document.clone(), root);
+    let (dom, handle) = BrowserDom::new(document.clone(), root);
+    let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_k_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "K", app, dom, entity, _marker: std::marker::PhantomData }
+    Candidate { name: "K", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
 }
 
 fn make_c<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
@@ -199,13 +211,14 @@ fn make_c<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
     row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "C");
-    let (mut dom, handle) = BrowserDom::new(document.clone(), root);
+    let (dom, handle) = BrowserDom::new(document.clone(), root);
+    let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_c_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "C", app, dom, entity, _marker: std::marker::PhantomData }
+    Candidate { name: "C", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
 }
 
 fn make_d<T: Send + Sync + Clone + ToString + 'static>(
@@ -215,13 +228,14 @@ fn make_d<T: Send + Sync + Clone + ToString + 'static>(
     row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "D");
-    let (mut dom, handle) = BrowserDom::new(document.clone(), root);
+    let (dom, handle) = BrowserDom::new(document.clone(), root);
+    let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_d_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "D", app, dom, entity, _marker: std::marker::PhantomData }
+    Candidate { name: "D", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
 }
 
 fn make_e<T: Send + Sync + Clone + ToString + 'static>(
@@ -231,14 +245,15 @@ fn make_e<T: Send + Sync + Clone + ToString + 'static>(
     row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "E");
-    let (mut dom, handle) = BrowserDom::new(document.clone(), root);
+    let (dom, handle) = BrowserDom::new(document.clone(), root);
+    let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_e_system::<T>);
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "E", app, dom, entity, _marker: std::marker::PhantomData }
+    Candidate { name: "E", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
 }
 
 /// RQ1's LIS-optimized variant of D — see
@@ -252,13 +267,14 @@ fn make_d_lis<T: Send + Sync + Clone + ToString + 'static>(
     row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "D-LIS");
-    let (mut dom, handle) = BrowserDom::new(document.clone(), root);
+    let (dom, handle) = BrowserDom::new(document.clone(), root);
+    let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_d_lis_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "D-LIS", app, dom, entity, _marker: std::marker::PhantomData }
+    Candidate { name: "D-LIS", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
 }
 
 /// RQ1's LIS-optimized variant of E.
@@ -269,14 +285,15 @@ fn make_e_lis<T: Send + Sync + Clone + ToString + 'static>(
     row_bindings: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "E-LIS");
-    let (mut dom, handle) = BrowserDom::new(document.clone(), root);
+    let (dom, handle) = BrowserDom::new(document.clone(), root);
+    let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
     app.add_systems(list_reconcile_e_lis_system::<T>);
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "E-LIS", app, dom, entity, _marker: std::marker::PhantomData }
+    Candidate { name: "E-LIS", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
 }
 
 type Maker<T> = fn(&web_sys::Document, &web_sys::Node, Vec<T>, usize) -> Candidate<T>;
@@ -338,15 +355,19 @@ fn run_combination<T, F>(
                 .map(|s| format!("{s:.4}"))
                 .collect::<Vec<_>>()
                 .join(", ");
+            // §7 M2: 마지막 반복의 op 종류별 카운트를 병기한다. §9 E 기각 (i)이
+            // "결정적 보조 지표로 병기"를 명시 요구하는 값 — 시드 고정 하에
+            // 결정적이므로(§7 M2) 반복마다 같아야 하고, 따라서 마지막 1회로 충분하다.
             out.push_str(&format!(
-                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"samples_ms\": [{}]}}",
+                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}}}",
                 candidate.name,
                 workload.name(),
                 type_name,
                 n,
                 row_bindings,
                 reps,
-                samples_json
+                samples_json,
+                candidate.last_counts.to_json()
             ));
         }
     }
