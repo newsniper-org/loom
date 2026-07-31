@@ -157,6 +157,9 @@ struct Candidate<T: Send + Sync + Clone + ToString + 'static> {
     entity: bevy_ecs::entity::Entity,
     /// 직전 반복의 M2 카운트 — 반복마다 갱신되고, 셀 종료 시 보고된다.
     last_counts: loom_runtime::DomOpCounts,
+    /// 직전 반복의 §7.1 단계 귀속 시간. §9 C 기각 (ii)가 재는 "archetype move
+    /// 구간"(= Commands apply sync point)이 여기 들어 있다.
+    last_stages: loom_runtime::StageTimings,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -174,6 +177,9 @@ impl<T: Send + Sync + Clone + ToString + 'static> Candidate<T> {
         self.app.tick(&mut self.dom);
         let elapsed = measure_now() - start;
         self.last_counts = self.dom.counts();
+        if let Some(t) = self.app.world.get_resource::<loom_runtime::StageTimings>() {
+            self.last_stages = *t;
+        }
         elapsed
     }
 }
@@ -198,10 +204,10 @@ fn make_k<T: Send + Sync + Clone + ToString + 'static>(
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
-    app.add_systems(list_reconcile_k_system::<T>);
+    app.add_instrumented_systems(list_reconcile_k_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "K", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "K", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
 }
 
 fn make_c<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
@@ -215,10 +221,10 @@ fn make_c<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
-    app.add_systems(list_reconcile_c_system::<T>);
+    app.add_instrumented_systems(list_reconcile_c_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "C", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "C", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
 }
 
 fn make_d<T: Send + Sync + Clone + ToString + 'static>(
@@ -232,10 +238,10 @@ fn make_d<T: Send + Sync + Clone + ToString + 'static>(
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
-    app.add_systems(list_reconcile_d_system::<T>);
+    app.add_instrumented_systems(list_reconcile_d_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "D", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "D", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
 }
 
 fn make_e<T: Send + Sync + Clone + ToString + 'static>(
@@ -249,11 +255,11 @@ fn make_e<T: Send + Sync + Clone + ToString + 'static>(
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
-    app.add_systems(list_reconcile_e_system::<T>);
+    app.add_instrumented_systems(list_reconcile_e_system::<T>);
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "E", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "E", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
 }
 
 /// RQ1's LIS-optimized variant of D — see
@@ -271,10 +277,10 @@ fn make_d_lis<T: Send + Sync + Clone + ToString + 'static>(
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
-    app.add_systems(list_reconcile_d_lis_system::<T>);
+    app.add_instrumented_systems(list_reconcile_d_lis_system::<T>);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "D-LIS", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "D-LIS", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
 }
 
 /// RQ1's LIS-optimized variant of E.
@@ -289,11 +295,11 @@ fn make_e_lis<T: Send + Sync + Clone + ToString + 'static>(
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
-    app.add_systems(list_reconcile_e_lis_system::<T>);
+    app.add_instrumented_systems(list_reconcile_e_lis_system::<T>);
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "E-LIS", app, dom, entity, last_counts: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "E-LIS", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
 }
 
 type Maker<T> = fn(&web_sys::Document, &web_sys::Node, Vec<T>, usize) -> Candidate<T>;
@@ -311,6 +317,7 @@ fn all_makers<T: Send + Sync + Clone + ToString + PartialEq + 'static>() -> [Mak
 /// size stays bounded to one combination at a time (at n=10000 that's still
 /// up to ~60,000 live `<li>`s across 6 candidates simultaneously, but never
 /// more than one (type, size) combination's worth).
+#[allow(clippy::too_many_arguments)]
 fn run_combination<T, F>(
     document: &web_sys::Document,
     scratch_parent: &web_sys::Node,
@@ -320,6 +327,9 @@ fn run_combination<T, F>(
     initial: Vec<T>,
     fresh: F,
     row_bindings: usize,
+    // RQ1 §3.2의 R3 축(이질 브랜치 row). §3.3이 "R3: W2 × R3 × n=1,000 ×
+    // {C, D}(E·K는 참고 측정)"으로 셀을 고정했다.
+    row_variants: bool,
     out: &mut String,
     first_entry: &mut bool,
 ) where
@@ -332,7 +342,14 @@ fn run_combination<T, F>(
 
     let mut candidates: Vec<Candidate<T>> = all_makers()
         .iter()
-        .map(|maker| maker(document, &combo_node, initial.clone(), row_bindings))
+        .map(|maker| {
+            let mut c = maker(document, &combo_node, initial.clone(), row_bindings);
+            // R3 축(§3.2) 적용. 초기 spawn은 이미 끝난 뒤이므로 첫 재정렬부터
+            // 브랜치 전환이 일어난다 — §9 C 기각 (ii)가 재는 것이 바로 그
+            // "재정렬마다의 archetype move"이므로 문제되지 않는다.
+            c.app.set_row_variant_mode(row_variants);
+            c
+        })
         .collect();
 
     for workload in &Workload::ALL {
@@ -359,7 +376,9 @@ fn run_combination<T, F>(
             // "결정적 보조 지표로 병기"를 명시 요구하는 값 — 시드 고정 하에
             // 결정적이므로(§7 M2) 반복마다 같아야 하고, 따라서 마지막 1회로 충분하다.
             out.push_str(&format!(
-                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}}}",
+                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}, \"row_variants\": {}, \
+                 \"stage_ms\": {{\"systems\": {:.4}, \"sync_point\": {:.4}, \
+                 \"dom_apply\": {:.4}, \"total\": {:.4}}}}}",
                 candidate.name,
                 workload.name(),
                 type_name,
@@ -367,7 +386,12 @@ fn run_combination<T, F>(
                 row_bindings,
                 reps,
                 samples_json,
-                candidate.last_counts.to_json()
+                candidate.last_counts.to_json(),
+                row_variants,
+                candidate.last_stages.systems_ms,
+                candidate.last_stages.sync_point_ms,
+                candidate.last_stages.dom_apply_ms,
+                candidate.last_stages.total_ms,
             ));
         }
     }
@@ -410,6 +434,7 @@ pub fn start() -> Result<(), JsValue> {
             initial,
             |seed| format!("new-{seed}"),
             1, // R1
+            false, // R3 축 꺼짐
             &mut report,
             &mut first_entry,
         );
@@ -430,6 +455,7 @@ pub fn start() -> Result<(), JsValue> {
             initial,
             |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
             1, // R1
+            false, // R3 축 꺼짐
             &mut report,
             &mut first_entry,
         );
@@ -454,6 +480,28 @@ pub fn start() -> Result<(), JsValue> {
             initial,
             |seed| format!("new-{seed}"),
             8, // R2
+            false, // R3 축 꺼짐
+            &mut report,
+            &mut first_entry,
+        );
+    }
+
+    // R3 축(§3.3): W2 × R3 × n=1,000. 판정 대상은 {C, D}이고 E·K는 참고
+    // 측정이지만, 하네스는 6후보를 한 조합에서 함께 돌리므로 전부 수집된다
+    // (§2.4 동일 조건 유지에도 유리).
+    {
+        let n = 1000;
+        let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
+        run_combination(
+            &document,
+            &container_node,
+            "String(heap)",
+            n,
+            15,
+            initial,
+            |seed| format!("new-{seed}"),
+            1, // R3는 row 깊이와 독립 축이므로 binding은 R1로 둔다
+            true, // R3 축 켬
             &mut report,
             &mut first_entry,
         );

@@ -722,3 +722,82 @@ mod r2_value_derived_bindings {
         );
     }
 }
+
+/// **R3(§3.2 "이질 브랜치 row") 인수 조건**. §9 C 기각 (ii)는 "W2 × R3
+/// 프로파일에서 archetype move 구간이 스크립트 시간의 50% 이상"을 재는데,
+/// 그 전제는 **C에서 실제로 archetype move가 일어난다**는 것이다.
+/// §10이 전환형을 "슬롯 entity 컴포넌트 교체형"으로 사전 고정했으므로,
+/// 여기서 확인하는 것은 그 교체가 C에서는 일어나고 keyed 후보(D)에서는
+/// 일어나지 않는다는 비대칭이다(RQ1의 "재정렬마다 archetype move 비용" 예측).
+mod r3_heterogeneous_branch {
+    use super::*;
+    use loom_runtime::{RowVariantA, RowVariantB};
+
+    /// 재정렬 후 브랜치 marker가 몇 개나 바뀌었는지 센다.
+    fn branch_flips_after_reorder<M>(
+        system: impl bevy_ecs::prelude::IntoScheduleConfigs<bevy_ecs::system::ScheduleSystem, M>,
+    ) -> usize {
+        let (mut dom, root) = MockDom::new_root();
+        let mut app = LoomApp::new();
+        app.set_row_variant_mode(true); // R3
+        app.add_systems(system);
+        // 마지막 바이트의 홀짝이 브랜치를 정하므로 A/B가 섞이도록 고른다.
+        let initial: Vec<String> = (0..8).map(|i| format!("item-{i}")).collect();
+        let e = app
+            .world
+            .spawn((Signal(initial.clone()), ListRows::default(), DomTarget(root)))
+            .id();
+        app.tick(&mut dom);
+
+        let snapshot = |app: &LoomApp| -> Vec<bool> {
+            app.world
+                .get::<ListRows>(e)
+                .unwrap()
+                .0
+                .iter()
+                .map(|&r| app.world.get::<RowVariantA>(r).is_some())
+                .collect()
+        };
+        let before = snapshot(&app);
+
+        let reversed: Vec<String> = initial.iter().rev().cloned().collect();
+        app.world.get_mut::<Signal<Vec<String>>>(e).unwrap().0 = reversed;
+        app.tick(&mut dom);
+        let after = snapshot(&app);
+
+        before.iter().zip(after.iter()).filter(|(a, b)| a != b).count()
+    }
+
+    #[test]
+    fn c_switches_row_branches_on_reorder_but_d_does_not() {
+        let c_flips = branch_flips_after_reorder(loom_runtime::list_reconcile_c_system::<String>);
+        let d_flips = branch_flips_after_reorder(loom_runtime::list_reconcile_d_system::<String>);
+
+        assert!(
+            c_flips > 0,
+            "C는 슬롯의 아이템이 바뀌므로 브랜치 전환(= archetype move)이 일어나야 한다 \
+             (관측 {c_flips}건). 이게 0이면 §9 C 기각 (ii)를 잴 대상 자체가 없다."
+        );
+        assert_eq!(
+            d_flips, 0,
+            "D는 retained row의 아이템이 그대로이므로 브랜치가 바뀌지 않아야 한다 \
+             (관측 {d_flips}건)"
+        );
+    }
+
+    /// R3를 켜지 않으면 기존 동작이 그대로여야 한다(기본값 회귀 방지).
+    #[test]
+    fn r3_is_off_by_default_and_adds_no_markers() {
+        let (mut dom, root) = MockDom::new_root();
+        let mut app = LoomApp::new(); // set_row_variant_mode 호출 없음
+        app.add_systems(loom_runtime::list_reconcile_c_system::<String>);
+        let e = app
+            .world
+            .spawn((Signal(vec!["a".to_string()]), ListRows::default(), DomTarget(root)))
+            .id();
+        app.tick(&mut dom);
+        let row = app.world.get::<ListRows>(e).unwrap().0[0];
+        assert!(app.world.get::<RowVariantA>(row).is_none());
+        assert!(app.world.get::<RowVariantB>(row).is_none());
+    }
+}

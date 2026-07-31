@@ -37,6 +37,7 @@ pub fn list_reconcile_c_system<T>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
@@ -53,6 +54,7 @@ pub fn list_reconcile_c_system<T>(
             let new_text = items.0[i].to_string();
             if let Ok((mut slot_value, target)) = slots.get_mut(entity) {
                 if slot_value.0 != new_text {
+                    let old_text = slot_value.0.clone();
                     slot_value.0 = new_text.clone();
                     pending.0.push(DomWrite::SetText {
                         target: target.0,
@@ -67,6 +69,26 @@ pub fn list_reconcile_c_system<T>(
                     if !extra.is_empty() {
                         pending.0.push(DomWrite::SetRowBindingTexts { row: entity, texts: extra });
                     }
+                    // **R3(§3.2) — 이질 브랜치 row**: 값이 바뀌면 그 값에서
+                    // 파생된 브랜치도 바뀔 수 있다. §10이 전환형을 "슬롯 entity
+                    // 컴포넌트 교체(archetype move)형"으로 사전 고정했으므로
+                    // marker를 교체한다 — 이 Commands가 sync point에서 적용되며
+                    // archetype 이동을 일으키고, §9 C 기각 (ii)가 그 구간을 잰다.
+                    if variant_mode.0 {
+                        let was_a = crate::row_variant_is_a(&old_text);
+                        let now_a = crate::row_variant_is_a(&new_text);
+                        if was_a != now_a {
+                            if now_a {
+                                commands.entity(entity)
+                                    .remove::<crate::RowVariantB>()
+                                    .insert(crate::RowVariantA);
+                            } else {
+                                commands.entity(entity)
+                                    .remove::<crate::RowVariantA>()
+                                    .insert(crate::RowVariantB);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -75,6 +97,13 @@ pub fn list_reconcile_c_system<T>(
             for item in &items.0[old_len..new_len] {
                 let text = item.to_string();
                 let entity = commands.spawn(SlotValue(text.clone())).id();
+                if variant_mode.0 {
+                    if crate::row_variant_is_a(&text) {
+                        commands.entity(entity).insert(crate::RowVariantA);
+                    } else {
+                        commands.entity(entity).insert(crate::RowVariantB);
+                    }
+                }
                 rows.0.push(entity);
                 pending.0.push(DomWrite::SpawnRow {
                     entity,
@@ -366,6 +395,7 @@ pub fn list_reconcile_d_system<T>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
@@ -436,6 +466,7 @@ pub fn list_reconcile_d_lis_system<T>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
@@ -533,6 +564,7 @@ pub fn list_reconcile_e_system<T>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
@@ -616,6 +648,7 @@ pub fn list_reconcile_e_lis_system<T>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {

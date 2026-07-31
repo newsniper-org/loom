@@ -388,6 +388,30 @@ impl Default for RowBindings {
     }
 }
 
+/// RQ1 §3.2의 **R3 "이질 브랜치 row"** 축: 켜면 각 row가 자기 **값에 따라**
+/// 두 구조 중 하나(`<A/>`/`<B/>`)를 갖는다. 꺼져 있으면(기본) R1/R2와 동일.
+///
+/// §10이 전환형을 **"슬롯 entity 컴포넌트 교체(archetype move)형"으로 사전
+/// 고정**했으므로, 브랜치가 바뀌면 marker Component를 교체한다 — 그 교체가
+/// Commands를 통해 sync point에서 적용되며 archetype 이동을 일으킨다.
+/// §9 C 기각 (ii)가 재는 "archetype move 구간"이 정확히 그 구간이다(§7.1).
+#[derive(Resource, Clone, Copy, Default)]
+pub struct RowVariantMode(pub bool);
+
+/// R3의 브랜치 A/B marker. 값에서 파생되므로 슬롯의 아이템이 바뀌면 바뀔 수
+/// 있고, 그때 교체가 일어난다(keyed 후보는 retained row의 아이템이 안 바뀌므로
+/// 교체가 없다 — 그 비대칭이 RQ1의 "재정렬마다 archetype move 비용" 예측).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct RowVariantA;
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct RowVariantB;
+
+/// 값 → 브랜치. 결정적이어야 시드 고정 하에 M2가 결정적 수치가 된다(§7 M2).
+pub(crate) fn row_variant_is_a(text: &str) -> bool {
+    text.as_bytes().last().map(|b| b % 2 == 0).unwrap_or(true)
+}
+
 pub(crate) fn extra_binding_texts(row_bindings: usize, primary: &str) -> Vec<String> {
     (1..row_bindings).map(|i| format!("{primary}-bind{i}")).collect()
 }
@@ -498,6 +522,7 @@ impl LoomApp {
         let mut world = World::new();
         world.init_resource::<PendingDomWrites>();
         world.init_resource::<RowBindings>();
+        world.init_resource::<RowVariantMode>();
         Self {
             world,
             schedule: Schedule::default(),
@@ -511,6 +536,12 @@ impl LoomApp {
     /// LoomApp setup step already follows (`add_systems`).
     pub fn set_row_bindings(&mut self, count: usize) -> &mut Self {
         self.world.insert_resource(RowBindings(count));
+        self
+    }
+
+    /// RQ1 §3.2의 R3 축을 켠다(기본 꺼짐 = R1/R2 동작 무변화).
+    pub fn set_row_variant_mode(&mut self, on: bool) -> &mut Self {
+        self.world.insert_resource(RowVariantMode(on));
         self
     }
 
@@ -543,7 +574,15 @@ impl LoomApp {
                 ApplyDeferred,
                 stage::stage_mark_sync_end,
             )
-                .chain(),
+                // **`chain()`이 아니라 `chain_ignore_deferred()`인 이유(실제로
+                // 틀렸다가 프로브로 잡아냄)**: Bevy는 `chain()`으로 순서를 걸면
+                // deferred 버퍼를 가진 System과 그 의존 System 사이에 sync point를
+                // **자동 삽입**한다. 그러면 Commands가 우리 `ApplyDeferred`보다
+                // **먼저** 적용되어, archetype move 비용이 `sync_point_ms`가 아니라
+                // `systems_ms`에 잡힌다 — §7.1이 정의한 구간과 어긋난다.
+                // `chain_ignore_deferred()`는 순서만 걸고 자동 삽입은 하지 않으므로
+                // 아래 명시적 `ApplyDeferred`가 유일한 sync point가 된다.
+                .chain_ignore_deferred(),
         );
         self
     }
