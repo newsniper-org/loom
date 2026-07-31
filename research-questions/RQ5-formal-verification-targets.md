@@ -114,3 +114,63 @@ StringList/Bool/Str(DOM-복구형 재개)로 확장, IR의 "시그널당 액션 
 붙이고, Bevy System은 그 함수를 호출만 하게 만드는 것이다 — 검증 가능성과
 별개로 테스트 용이성도 올라가지만, **리팩터링이라는 비용이 선행**한다는 점을
 숨기지 않는다.
+
+### 후보 #4의 증명 의무를 구체화 (2026-07-28, 같은 라운드)
+
+`place_in_order`(`crates/loom-runtime/src/list.rs`)를 읽어 **무엇이 실제로
+성립해야 하는지**를 특정했다. 핵심은 이 함수가 `target`을 **역순으로**
+순회한다는 점이고, 그 역순이 **load-bearing**이라는 것이다:
+
+```rust
+for slot in target.iter().rev() {          // ← 역순
+    …  pending.0.push(DomWrite::SpawnRow { …, before: next_anchor });
+    …  pending.0.push(DomWrite::Reposition { …, before: next_anchor });
+    next_anchor = Some(entity);            // 다음 반복의 anchor = 이번 원소
+}
+```
+
+`next_anchor`는 항상 **target에서 바로 오른쪽에 오는 원소**이고, 역순 순회이므로
+그 원소의 write는 **이미 `pending`에 push된 뒤**다. 적용 루프는 방출 순서대로
+돌므로, anchor의 `SpawnRow`는 그것을 참조하는 write보다 **항상 먼저 적용**된다.
+
+이게 왜 결정적이냐면, `LoomApp::tick`의 적용 루프에는 조용한 폴백이 두 개 있다:
+
+```rust
+DomWrite::SpawnRow { …, before } =>
+    if let Some(h) = before.and_then(|e| self.dom_target(e)) { dom.reposition(…, Some(h)); }
+    // ↑ 해석 실패하면 reposition을 아예 안 함 = 새 노드가 **끝에 남는다**
+DomWrite::Reposition { …, before } =>
+    let before_handle = before.and_then(|e| self.dom_target(e));
+    dom.reposition(parent, handle, before_handle);
+    // ↑ 해석 실패하면 before=None = **끝으로 이동**
+```
+
+즉 anchor 해석이 한 번이라도 실패하면 그 노드는 조용히 **잘못된 위치**로 가고,
+이후 아무도 고쳐 주지 않는다(에러도, 로그도 없다). 순서 정합성 전체가 "anchor가
+항상 먼저 적용된다"는 불변식 하나에 걸려 있는 셈이다.
+
+**따라서 후보 #4의 증명 의무는 두 갈래**:
+
+1. **anchor 선행성**: `place_in_order`가 방출한 시퀀스에서, `before: Some(a)`를
+   실은 모든 write에 대해 `a`의 `SpawnRow`(있다면)가 **엄격히 앞선다**.
+   → 이게 §5 트랙 N **불변식 5**("flush 규약 v0 하 spawn/move 인터리빙 —
+   이동 기준 anchor가 미스폰 row — 이 결정적 순서로 수렴")와 같은 명제다.
+2. **순서 수렴**: 위 (1)을 전제로, 적용 루프를 돌린 최종 DOM 순서 = `target` 순서.
+   (1)이 성립하면 폴백 경로가 **한 번도 실행되지 않으므로** 적용 루프는
+   "각 노드를 자기 오른쪽 이웃 앞에 놓는다"를 오른쪽부터 수행하는 것과 같아진다.
+
+**구현상 장애물(정직하게)**: `place_in_order`의 `Chain`은 `std::collections::
+HashMap` 두 개로 O(1) 인접성 질의를 한다. Verus는 std `HashMap`을 그대로 추론하지
+못하므로, 그대로 겨눌 수 없다. 선택지는 —
+
+- (a) 검증 대상을 **방출 시퀀스의 성질**로 한정하고 `Chain`은 "이미 적용된
+  writes로부터 유도되는 순서"의 캐시로 취급해, `Chain` 없는 참조 구현과의
+  동치를 따로 증명. `already_adjacent` 스킵 최적화의 안전성이 이 동치에 해당.
+- (b) `Chain`을 Verus 친화 자료구조로 재작성. n=10,000 셀이 있으므로 O(n²)
+  퇴화는 허용 불가 — 인덱스 기반 링크드리스트(`Vec<Option<usize>>`)면 O(1)을
+  유지하면서 검증 가능할 가능성이 높다.
+
+(b)가 "검증된 코드 = 배포되는 코드"를 지키므로 우선 검토하되, 실측 회귀
+(§2.5 구현·공유 기반 동결 규율)를 반드시 확인해야 한다 — `place_in_order`는
+D/E/D-LIS/E-LIS **4개 후보가 공유**하는 경로라 여기서 성능이 바뀌면 이미
+수집한 트랙 L 데이터와의 비교 가능성이 깨진다.
