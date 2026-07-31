@@ -164,7 +164,9 @@ fn place_in_order(
     pending: &mut PendingDomWrites,
     row_bindings: usize,
 ) {
-    let mut chain = Chain::from_slice(current);
+    let mut chain = loom_flush_core::Chain::from_slice(
+        &current.iter().map(|e| e.to_bits()).collect::<Vec<u64>>(),
+    );
     let mut next_anchor: Option<Entity> = None;
 
     for slot in target.iter().rev() {
@@ -181,17 +183,17 @@ fn place_in_order(
                 if !extra.is_empty() {
                     pending.0.push(DomWrite::AppendStaticChildren { row: *entity, texts: extra });
                 }
-                chain.insert_before(*entity, next_anchor);
+                chain_insert(&mut chain, *entity, next_anchor);
                 *entity
             }
             Slot::Retained(entity) => {
                 let already_adjacent = match next_anchor {
-                    Some(a) => chain.next_of(*entity) == Some(a),
-                    None => chain.is_tail(*entity),
+                    Some(a) => chain.next_is(entity.to_bits(), a.to_bits()),
+                    None => chain.is_tail(entity.to_bits()),
                 };
                 if !already_adjacent {
-                    chain.unlink(*entity);
-                    chain.insert_before(*entity, next_anchor);
+                    chain.unlink(entity.to_bits());
+                    chain_insert(&mut chain, *entity, next_anchor);
                     pending.0.push(DomWrite::Reposition {
                         parent,
                         entity: *entity,
@@ -205,91 +207,28 @@ fn place_in_order(
     }
 }
 
-/// A doubly linked list over `Entity`, used only to make `place_in_order`'s
-/// "what's currently adjacent to X" and "splice X in here" operations O(1)
-/// instead of the O(n) `Vec::position`/`insert` they'd otherwise need.
-struct Chain {
-    head: Option<Entity>,
-    tail: Option<Entity>,
-    next: std::collections::HashMap<Entity, Entity>,
-    prev: std::collections::HashMap<Entity, Entity>,
-}
 
-impl Chain {
-    fn from_slice(items: &[Entity]) -> Self {
-        let mut next = std::collections::HashMap::with_capacity(items.len());
-        let mut prev = std::collections::HashMap::with_capacity(items.len());
-        for w in items.windows(2) {
-            next.insert(w[0], w[1]);
-            prev.insert(w[1], w[0]);
-        }
-        Chain {
-            head: items.first().copied(),
-            tail: items.last().copied(),
-            next,
-            prev,
-        }
-    }
-
-    fn next_of(&self, e: Entity) -> Option<Entity> {
-        self.next.get(&e).copied()
-    }
-
-    fn is_tail(&self, e: Entity) -> bool {
-        self.tail == Some(e)
-    }
-
-    /// Unlinks `e` from wherever it currently sits (no-op if absent).
-    fn unlink(&mut self, e: Entity) {
-        let p = self.prev.remove(&e);
-        let n = self.next.remove(&e);
-        match (p, n) {
-            (Some(p), Some(n)) => {
-                self.next.insert(p, n);
-                self.prev.insert(n, p);
-            }
-            (Some(p), None) => {
-                self.next.remove(&p);
-                self.tail = Some(p);
-            }
-            (None, Some(n)) => {
-                self.prev.remove(&n);
-                self.head = Some(n);
-            }
-            (None, None) => {
-                self.head = None;
-                self.tail = None;
-            }
-        }
-    }
-
-    /// Inserts `e` immediately before `anchor` (`None` = at the tail).
-    fn insert_before(&mut self, e: Entity, anchor: Option<Entity>) {
-        match anchor {
-            None => {
-                if let Some(t) = self.tail {
-                    self.next.insert(t, e);
-                    self.prev.insert(e, t);
-                } else {
-                    self.head = Some(e);
-                }
-                self.tail = Some(e);
-            }
-            Some(a) => {
-                match self.prev.get(&a).copied() {
-                    Some(p) => {
-                        self.next.insert(p, e);
-                        self.prev.insert(e, p);
-                    }
-                    None => self.head = Some(e),
-                }
-                self.next.insert(e, a);
-                self.prev.insert(a, e);
-            }
-        }
+/// `loom_flush_core::Chain`은 anchor 있는 삽입(`insert_before`)과 꼬리 덧붙이기
+/// (`push_back`)를 **별도 메서드**로 나눠 놓았다 — 각자의 사후조건(표기 효과)이
+/// 다르기 때문이다. 손코딩 시절의 `insert_before(e, Option<anchor>)` 한 개
+/// 시그니처를 여기서 두 갈래로 되돌린다.
+fn chain_insert(chain: &mut loom_flush_core::Chain, entity: Entity, anchor: Option<Entity>) {
+    match anchor {
+        Some(a) => chain.insert_before(entity.to_bits(), a.to_bits()),
+        None => chain.push_back(entity.to_bits()),
     }
 }
 
+/// **2026-07-28 — 손코딩 `Chain`은 `loom-flush-core`의 Verus 검증본으로
+/// 대체됐다**(RQ5 후보 #4). 이전에는 여기 `std::collections::HashMap` 두 개로
+/// 된 이중연결리스트가 손코딩돼 있었고, 그 맵 수술(`unlink`의 네 갈래,
+/// `insert_before`의 두 갈래)이 실제로 순서를 올바르게 재결선하는지는
+/// 검증되지 않은 채였다. 지금은 `loom_flush_core::Chain`이 표기 시퀀스를
+/// 고스트로 들고 다니며 각 연산의 표기 효과를 사후조건으로 못박는다 —
+/// `formal-verification/verus/README.md` 참고.
+///
+/// `Entity`는 Verus가 다룰 수 없는 불투명 타입이라 `to_bits()`로 `u64`를
+/// 만들어 넘긴다(단사이므로 동일성·구별성 보존).
 /// Returns the set of indices (into `sequence`) forming *a* longest
 /// strictly-increasing subsequence (there can be several of the same
 /// length; this returns one valid choice, not necessarily unique).
@@ -375,7 +314,9 @@ fn place_in_order_lis(
         }
     }
 
-    let mut chain = Chain::from_slice(current);
+    let mut chain = loom_flush_core::Chain::from_slice(
+        &current.iter().map(|e| e.to_bits()).collect::<Vec<u64>>(),
+    );
     let mut next_anchor: Option<Entity> = None;
 
     for (i, slot) in target.iter().enumerate().rev() {
@@ -392,7 +333,7 @@ fn place_in_order_lis(
                 if !extra.is_empty() {
                     pending.0.push(DomWrite::AppendStaticChildren { row: *entity, texts: extra });
                 }
-                chain.insert_before(*entity, next_anchor);
+                chain_insert(&mut chain, *entity, next_anchor);
                 *entity
             }
             Slot::Retained(entity) => {
@@ -405,12 +346,12 @@ fn place_in_order_lis(
                     // an entity outside it can occasionally already be
                     // correctly placed too — skip a redundant DOM write.
                     let already_adjacent = match next_anchor {
-                        Some(a) => chain.next_of(*entity) == Some(a),
-                        None => chain.is_tail(*entity),
+                        Some(a) => chain.next_is(entity.to_bits(), a.to_bits()),
+                        None => chain.is_tail(entity.to_bits()),
                     };
                     if !already_adjacent {
-                        chain.unlink(*entity);
-                        chain.insert_before(*entity, next_anchor);
+                        chain.unlink(entity.to_bits());
+                        chain_insert(&mut chain, *entity, next_anchor);
                         pending.0.push(DomWrite::Reposition {
                             parent,
                             entity: *entity,

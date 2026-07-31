@@ -1,0 +1,22 @@
+# RQ5 후보 #4의 "검증된 코드 = 배포되는 코드"를 성립시키기 위한 크레이트.
+#
+# loom-runtime 안에 두지 않고 분리한 이유: `cargo verus verify`는 크레이트
+# 전체를 검증 대상으로 보는데, loom-runtime은 bevy_ecs/web-sys와 얽혀 있어
+# Verus가 추론할 수 없는 코드가 대부분이다. 순수 알고리즘만 담은 크레이트를
+# 따로 두면 그 전체를 검증할 수 있고, loom-runtime은 이것을 호출만 한다.
+#
+# vstd 의존은 wasm32-unknown-unknown에서도 문제없이 빌드된다(ghost 코드가
+# 컴파일 시점에 지워지므로 런타임 짐이 없음 — 실측 확인).
+[package]
+name = "loom-flush-core"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+vstd = "=0.0.0-2026-06-14-0213"
+
+[package.metadata.verus]
+verify = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_only)'] }

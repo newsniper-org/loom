@@ -161,28 +161,81 @@ Retained에 대해 하는 `unlink(e)` → `insert_before(e, Some(a))` 시퀀스�
 것이다 — 즉 "그 코드가 하는 맵 수술이 실제로 리스트를 올바르게 재결선하는가"가
 증명 대상이었고, 대조 F/G가 그 수술의 어느 한 줄만 빠져도 증명이 깨짐을 보인다.
 
+## 모델-구현 결선 — 완료 (2026-07-28)
+
+**`crates/loom-flush-core`가 신설됐다. 검증된 코드가 곧 배포되는 코드다.**
+
+`Chain`이 이제 이 크레이트 안에 있고, 표기 시퀀스를 고스트 필드로 들고 다니며
+각 연산의 표기 효과를 **사후조건으로** 못박는다. `crates/loom-runtime/src/
+list.rs`의 `place_in_order`/`place_in_order_lis`가 이것을 호출한다 — 손코딩
+`Chain`(std `HashMap` 두 개)은 삭제됐다.
+
+| 검증된 실행 메서드 | 사후조건이 말하는 것 |
+|---|---|
+| `Chain::from_slice` | 표기 = 입력 슬라이스 |
+| `Chain::push_back` | 표기 = `s.push(e)` |
+| `Chain::unlink` | 표기 = `s.remove_value(e)` |
+| `Chain::insert_before` | 표기 = `s.insert(j, e)` (j = a의 위치) |
+| `Chain::next_is` | 반환값 ⟺ `adjacent(표기, e, a)` |
+| `Chain::is_tail` | 반환값 ⟺ 표기의 마지막이 `e` |
+
+`cargo verus verify` → **12 verified, 0 errors**. 같은 소스가 일반
+`cargo build`로도 컴파일된다(ghost 소거) — **wasm32 포함**.
+
+**`vstd` 의존이 wasm에 짐을 남기지 않는가**: 남기지 않는다. ghost가 컴파일
+시점에 지워지므로 `wasm32-unknown-unknown` 빌드가 정상 통과하고, 데모 청크
+크기도 실측상 변화가 없다.
+
+**id 표현**: `Entity`는 Verus가 다룰 수 없는 불투명 타입이라 호출부가
+`Entity::to_bits()`로 `u64`를 만들어 넘긴다(단사이므로 동일성·구별성 보존).
+
+### §2.5 재수집 결과 — 판정은 하나도 바뀌지 않았다
+
+`place_in_order`는 D/E/D-LIS/E-LIS **4개 후보의 공유 경로**이므로 §2.5가
+"상이한 기반의 측정치를 같은 판정에 혼용 금지"를 걸어 트랙 L 전면 재수집이
+필요했다(v6 → **v7**, Chromium/Firefox 각 180 레코드).
+
+| 셀 | v6 (손코딩) | v7 (Verus 검증) |
+|---|---|---|
+| Chromium R2×swap, D vs K | `[0.220,0.250]` 우세 | `[0.222,0.239]` 우세 |
+| Chromium R2×shuffle10, E vs K | `[0.220,0.273]` 우세 | `[0.259,0.267]` 우세 |
+| **Firefox R2×shuffle, D vs K** | `[0.833,1.100]` **비결정** | `[0.865,0.901]` **우세** |
+| C head_insert (채택 조건 a) | `[1.333,2.500]` 열세 | `[1.286,1.491]` 열세 |
+
+**§9 판정이 뒤집힌 셀은 없다.** Firefox의 비결정 셀 2개가 우세로 확정된 것은
+Chain 교체 때문이 아니라 **COOP/COEP 격리로 타이머 클램프(Firefox 1ms)가
+풀린 덕**이다 — v6와 v7 사이에는 Chain 교체와 타이머 해상도 개선이 **동시에**
+들어갔으므로 절대 median의 차이는 두 원인으로 분해되지 않는다. 다만 §9 판정이
+쓰는 것은 후보 간 **비율**이고, 그 비율의 방향은 전부 보존됐다 — 이 교란을
+숨기지 않고 기록한다.
+
 ## 남은 것 (숨기지 않음)
 
-증명된 것과 남은 것의 경계를 정확히 그어 둔다. **알고리즘 내용은 전부
-증명됐고**, 남은 것은 타입/표현 수준의 결선 하나다.
+1. **`place_in_order` 자체는 아직 검증 대상이 아니다**: 검증된 것은 `Chain`의
+   각 연산이다. `place_in_order`(`list.rs`, 비검증 코드)가 그 **사전조건**을
+   지키는지는 기계적으로 확인되지 않는다 — 일반 `cargo build`에서는
+   `requires`가 지워지기 때문이다. 이는 "검증된 라이브러리를 비검증 코드가
+   호출하는" 통상적 상황이고, 사전조건 자체는 단순하고 국소적으로 감사
+   가능하다(`unlink`는 e가 표기에 있을 것, `insert_before`는 e가 없고 a가
+   있을 것). 이걸 없애려면 방출 루프 전체를 `loom-flush-core`로 옮겨
+   `plan_writes`로 만들어야 한다 — 다음 단계.
+2. **`emit_writes`와 `apply_k`의 결선**: `apply_k`는 `emit_writes`의 사후조건을
+   목표 id열만으로 다시 쓴 것이다. 둘이 같은 시퀀스를 가리킨다는 것을 별도
+   정리로 잇지 않았다.
 
-1. **`std::HashMap<Entity, Entity>` ↔ `Map<int, usize>`**: 위 증명은 `Chain`의
+### (해소됨) `std::HashMap` ↔ `Map` 결선
+
+이전 라운드의 남은 항목이었다. `vstd::hash_map::HashMapWithView`가 std
+`HashMap`을 감싸 `Map` 뷰와 완전한 계약을 제공하므로, 그 위에서 `Chain`을
+구현함으로써 해소됐다. (참고용 이전 서술: : 위 증명은 `Chain`의
    두 맵을 Verus의 `Map`으로 모델링한다. 실제 코드는 `std::collections::HashMap`
    에 `bevy_ecs::entity::Entity` 키를 쓴다. 이 간극은 두 조각이다 —
    (a) *`std::HashMap`이 부분함수로서 `Map`처럼 행동하는가*: `vstd`가
    `HashMapWithView`로 이미 명세를 제공하며, 이 명제 자체는 진지한 의심의
    대상이 아니다(표준 라이브러리 계약). (b) *`Entity` 키가 `usize`처럼
    구별되는가*: `Entity`는 불투명 id이고 `Eq`/`Hash`가 동일성과 일치한다.
-   → 이 결선을 코드 수준에서 못박으려면 `Chain`을 `HashMapWithView<u64, u64>`
-   (`Entity::to_bits()`)로 바꾸고 `place_in_order`를 `verus!` 블록 안으로
-   옮겨야 한다. 그건 **§2.5 동결 규율상 트랙 L 재수집을 동반**한다
-   (`place_in_order`는 D/E/D-LIS/E-LIS 4개 후보의 공유 경로 — RQ5 문서의 비용
-   분석 참고). 재수집 비용 자체는 낮다(트랙 L은 반복 기반, 페이지 로드 몇 번).
+   — 이 서술은 위 결선으로 해소됐다.)
 
-2. **`emit_writes`와 `apply_k`의 결선**: `apply_k`는 `emit_writes`의 사후조건을
-   목표 id열만으로 다시 쓴 것이다. 둘이 같은 시퀀스를 가리킨다는 것을 별도
-   정리로 잇지 않았다 — 사후조건을 눈으로 대조한 상태다.
-
-**과장하지 말 것**: 현재 상태는 "`place_in_order`의 알고리즘과 그것이 의존하는
-`Chain` 자료구조 수술이 Verus로 증명됐다"이지, "`list.rs`의 그 함수 바이트가
-검증됐다"가 아니다.
+**과장하지 말 것**: 현재 상태는 "`Chain`의 각 연산이 검증된 실행 코드이고
+`place_in_order`가 그것을 호출한다"이지, "`place_in_order` 전체가 검증됐다"가
+아니다.

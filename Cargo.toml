@@ -5,6 +5,7 @@ members = [
     "crates/loom-compiler",
     "crates/loom-demo",
     "crates/loom-bench",
+    "crates/loom-flush-core",
     "crates/loom-resume-demo",
     "crates/loom-island-demo",
     "crates/loom-island-productcard",
