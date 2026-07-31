@@ -18,6 +18,7 @@
 // 실행: `verus formal-verification/verus/flush_order.rs`
 
 use vstd::prelude::*;
+use vstd::seq_lib::*;
 
 verus! {
 
@@ -236,6 +237,318 @@ pub proof fn anchor_precedence(current: Seq<usize>, target: Seq<Slot>, writes: S
         }
     }
 }
+
+
+// ===========================================================================
+// 정리 (2) — 순서 수렴
+// ===========================================================================
+
+
+/// 적용 루프의 한 write에 대응하는 DOM 연산.
+/// `LoomApp::tick`의 `SpawnRow`(생성 후 anchor 앞으로 이동)와
+/// `Reposition`(anchor 앞으로 이동) 둘 다 "e를 DOM에서 떼어내 anchor 바로
+/// 앞에 놓는다"로 같아진다 — Spawn은 떼어낼 게 없다는 점만 다르다.
+pub open spec fn place_before(dom: Seq<usize>, e: usize, before: Option<usize>) -> Seq<usize> {
+    let d = dom.remove_value(e);
+    match before {
+        None => d.push(e),
+        Some(a) => match d.index_of_first(a) {
+            Some(i) => d.insert(i, e),
+            // 정리 (1)에 의해 도달 불가한 폴백(= tick의 조용한 폴백 경로).
+            None => d.push(e),
+        },
+    }
+}
+
+/// **L1**: 뒤쪽 조각에 `e`가 없으면, 이어붙인 시퀀스에서 첫 occurrence를 지우는
+/// 것은 앞쪽 조각에서만 지우는 것과 같다.
+pub proof fn lemma_remove_value_in_prefix(p: Seq<usize>, s: Seq<usize>, e: usize)
+    requires !s.contains(e),
+    ensures (p + s).remove_value(e) =~= p.remove_value(e) + s,
+{
+    (p + s).index_of_first_ensures(e);
+    p.index_of_first_ensures(e);
+    if p.contains(e) {
+        let i = p.index_of_first(e).unwrap();
+        assert((p + s).index_of_first(e) == Some(i)) by {
+            assert((p + s)[i] == p[i]);
+            assert(forall|j: int| 0 <= j < i ==> (p + s)[j] == p[j]);
+        }
+        assert((p + s).remove(i) =~= p.remove(i) + s);
+    } else {
+        assert(!(p + s).contains(e)) by {
+            assert forall|j: int| 0 <= j < (p + s).len() implies (p + s)[j] != e by {
+                if j < p.len() { assert((p + s)[j] == p[j]); }
+                else { assert((p + s)[j] == s[j - p.len()]); }
+            }
+        }
+    }
+}
+
+/// **L2**: 앞쪽 조각에 `a`가 없고 뒤쪽 조각이 `a`로 시작하면, 이어붙인
+/// 시퀀스에서 `a`의 첫 위치는 정확히 앞쪽 조각의 길이다.
+pub proof fn lemma_index_of_first_at_boundary(p: Seq<usize>, s: Seq<usize>, a: usize)
+    requires !p.contains(a), s.len() > 0, s[0] == a,
+    ensures (p + s).index_of_first(a) == Some(p.len() as int),
+{
+    (p + s).index_of_first_ensures(a);
+    assert((p + s)[p.len() as int] == a);
+    assert forall|j: int| 0 <= j < p.len() implies (p + s)[j] != a by {
+        assert((p + s)[j] == p[j]);
+    }
+}
+
+/// **L3**: 경계 위치에 삽입하면 앞쪽 조각 끝에 붙는 것과 같다.
+pub proof fn lemma_insert_at_boundary(p: Seq<usize>, s: Seq<usize>, e: usize)
+    ensures (p + s).insert(p.len() as int, e) =~= p.push(e) + s,
+{
+    assert((p + s).subrange(0, p.len() as int) =~= p);
+    assert((p + s).subrange(p.len() as int, (p + s).len() as int) =~= s);
+}
+
+
+/// **L4**: 원소를 지워도 "원래 없던 것은 여전히 없다".
+pub proof fn lemma_remove_value_preserves_absence(s: Seq<usize>, e: usize, x: usize)
+    requires !s.contains(x),
+    ensures !s.remove_value(e).contains(x),
+{
+    s.index_of_first_ensures(e);
+    if let Some(i) = s.index_of_first(e) {
+        s.remove_ensures(i);
+        assert forall|j: int| 0 <= j < s.remove(i).len() implies s.remove(i)[j] != x by {
+            if j < i { assert(s.remove(i)[j] == s[j]); }
+            else { assert(s.remove(i)[j] == s[j + 1]); }
+        }
+    }
+}
+
+/// **L5**: 중복 없는 시퀀스에서 첫 occurrence를 지우면 그 값은 사라지고,
+/// 중복 없음도 유지된다.
+pub proof fn lemma_remove_value_no_dup(s: Seq<usize>, e: usize)
+    requires s.no_duplicates(),
+    ensures
+        s.remove_value(e).no_duplicates(),
+        !s.remove_value(e).contains(e),
+{
+    s.index_of_first_ensures(e);
+    if let Some(i) = s.index_of_first(e) {
+        s.remove_ensures(i);
+        assert forall|j: int| 0 <= j < s.remove(i).len() implies s.remove(i)[j] != e by {
+            if j < i { assert(s.remove(i)[j] == s[j]); assert(s[j] != s[i]); }
+            else { assert(s.remove(i)[j] == s[j + 1]); assert(s[j + 1] != s[i]); }
+        }
+        assert forall|j: int, l: int|
+            0 <= j < s.remove(i).len() && 0 <= l < s.remove(i).len() && j != l
+            implies s.remove(i)[j] != s.remove(i)[l] by {
+            let jj = if j < i { j } else { j + 1 };
+            let ll = if l < i { l } else { l + 1 };
+            assert(s.remove(i)[j] == s[jj]);
+            assert(s.remove(i)[l] == s[ll]);
+            assert(jj != ll);
+        }
+    }
+}
+
+/// **L6**: 없던 원소를 끼워 넣으면 중복 없음이 유지된다.
+pub proof fn lemma_insert_no_dup(s: Seq<usize>, i: int, e: usize)
+    requires s.no_duplicates(), !s.contains(e), 0 <= i <= s.len(),
+    ensures s.insert(i, e).no_duplicates(),
+{
+    s.insert_ensures(i, e);
+    let t = s.insert(i, e);
+    assert forall|j: int, l: int|
+        0 <= j < t.len() && 0 <= l < t.len() && j != l implies t[j] != t[l] by {
+        if j == i {
+            assert(t[j] == e);
+            if l < i { assert(t[l] == s[l]); } else { assert(t[l] == s[l - 1]); }
+        } else if l == i {
+            assert(t[l] == e);
+            if j < i { assert(t[j] == s[j]); } else { assert(t[j] == s[j - 1]); }
+        } else {
+            let jj = if j < i { j } else { j - 1 };
+            let ll = if l < i { l } else { l - 1 };
+            assert(t[j] == s[jj]);
+            assert(t[l] == s[ll]);
+            assert(jj != ll);
+        }
+    }
+}
+
+
+/// **단계 보조정리**: DOM의 뒤쪽 `k`개가 이미 목표 접미사와 같을 때,
+/// "`e`를 그 접미사의 첫 원소 앞에 놓는" write 하나를 적용하면 뒤쪽 `k+1`개가
+/// `[e] ++ 접미사`가 된다. 이게 귀납의 한 걸음이다.
+pub proof fn lemma_place_extends_suffix(d: Seq<usize>, k: int, e: usize)
+    requires
+        d.no_duplicates(),
+        0 < k <= d.len(),
+        !d.subrange(d.len() - k, d.len() as int).contains(e),
+    ensures
+        ({
+            let suf = d.subrange(d.len() - k, d.len() as int);
+            let r = place_before(d, e, Some(suf[0]));
+            &&& r.no_duplicates()
+            &&& r.len() >= k + 1
+            &&& r.subrange(r.len() - (k + 1), r.len() as int) =~= seq![e] + suf
+        }),
+{
+    let p = d.subrange(0, d.len() - k);
+    let suf = d.subrange(d.len() - k, d.len() as int);
+    let a = suf[0];
+    assert(d =~= p + suf);
+
+    // a는 접미사의 첫 원소이므로, 중복이 없으니 앞쪽 조각에는 없다.
+    assert(!p.contains(a)) by {
+        assert forall|j: int| 0 <= j < p.len() implies p[j] != a by {
+            assert(p[j] == d[j]);
+            assert(a == d[d.len() - k]);
+            assert(j != d.len() - k);
+        }
+    }
+
+    lemma_remove_value_in_prefix(p, suf, e);
+    lemma_remove_value_no_dup(d, e);
+    let p2 = p.remove_value(e);
+    assert(d.remove_value(e) =~= p2 + suf);
+    lemma_remove_value_preserves_absence(p, e, a);
+    lemma_index_of_first_at_boundary(p2, suf, a);
+    lemma_insert_at_boundary(p2, suf, e);
+
+    let r = place_before(d, e, Some(a));
+    assert(r =~= p2.push(e) + suf);
+    lemma_insert_no_dup(d.remove_value(e), p2.len() as int, e);
+    assert(r.subrange(r.len() - (k + 1), r.len() as int) =~= seq![e] + suf) by {
+        assert(r.len() == p2.len() + 1 + suf.len());
+        assert forall|j: int| 0 <= j < k + 1
+            implies r.subrange(r.len() - (k + 1), r.len() as int)[j] == (seq![e] + suf)[j] by {
+            if j == 0 {
+                assert(r[p2.len() as int] == e);
+            } else {
+                assert(r[p2.len() + j] == suf[j - 1]);
+            }
+        }
+    }
+}
+
+
+/// `emit_writes`가 낸 시퀀스의 앞 `k`개를 적용한 결과.
+/// `emit_writes`의 사후조건(writes[j].id() == t[n-1-j],
+/// writes[j].before() == if j==0 {None} else {Some(t[n-j].id())})을 `t`(=목표
+/// 순서의 id열)만으로 다시 쓴 것 — 정리 (1)에 의해 anchor는 항상 해석되므로
+/// `place_before`의 `None` 폴백 가지는 도달하지 않는다.
+pub open spec fn apply_k(dom: Seq<usize>, t: Seq<usize>, k: int) -> Seq<usize>
+    decreases k
+{
+    if k <= 0 {
+        dom
+    } else {
+        let prev = apply_k(dom, t, k - 1);
+        let e = t[t.len() - k];
+        if k == 1 {
+            place_before(prev, e, None)
+        } else {
+            place_before(prev, e, Some(t[t.len() - k + 1]))
+        }
+    }
+}
+
+/// **정리 (2) — 순서 수렴 (귀납 핵심)**. `k`개의 write를 적용하고 나면 DOM의
+/// 뒤쪽 `k`개가 목표 순서의 뒤쪽 `k`개와 정확히 같다.
+pub proof fn suffix_invariant(dom: Seq<usize>, t: Seq<usize>, k: int)
+    requires
+        dom.no_duplicates(),
+        t.no_duplicates(),
+        0 <= k <= t.len(),
+    ensures
+        ({
+            let r = apply_k(dom, t, k);
+            &&& r.no_duplicates()
+            &&& r.len() >= k
+            &&& r.subrange(r.len() - k, r.len() as int) =~= t.subrange(t.len() - k, t.len() as int)
+        }),
+    decreases k,
+{
+    if k <= 0 {
+        let r = apply_k(dom, t, k);
+        assert(r =~= dom);
+        assert(r.subrange(r.len() - 0, r.len() as int) =~= t.subrange(t.len() as int, t.len() as int));
+    } else {
+        suffix_invariant(dom, t, k - 1);
+        let d = apply_k(dom, t, k - 1);
+        let e = t[t.len() - k];
+        let r = apply_k(dom, t, k);
+
+        if k == 1 {
+            lemma_remove_value_no_dup(d, e);
+            let d2 = d.remove_value(e);
+            assert(r =~= d2.push(e));
+            lemma_insert_no_dup(d2, d2.len() as int, e);
+            assert(d2.insert(d2.len() as int, e) =~= d2.push(e));
+            assert(r.len() >= 1);
+            assert(r.subrange(r.len() - 1, r.len() as int) =~= t.subrange(t.len() - 1, t.len() as int)) by {
+                assert(r[r.len() - 1] == e);
+            }
+        } else {
+            // 이전 단계의 접미사가 곧 이번 anchor의 근거다.
+            assert(d.subrange(d.len() - (k - 1), d.len() as int)
+                   =~= t.subrange(t.len() - (k - 1), t.len() as int));
+            let suf = d.subrange(d.len() - (k - 1), d.len() as int);
+            assert(suf[0] == t[t.len() - k + 1]);
+            // e는 접미사에 없다 — t에 중복이 없고 e의 인덱스가 접미사 범위 밖이므로.
+            assert(!suf.contains(e)) by {
+                assert forall|j: int| 0 <= j < suf.len() implies suf[j] != e by {
+                    assert(suf[j] == t[t.len() - (k - 1) + j]);
+                    assert(t.len() - (k - 1) + j != t.len() - k);
+                }
+            }
+            lemma_place_extends_suffix(d, k - 1, e);
+            assert(r.subrange(r.len() - k, r.len() as int) =~= seq![e] + suf);
+            assert(seq![e] + suf =~= t.subrange(t.len() - k, t.len() as int)) by {
+                assert forall|j: int| 0 <= j < k
+                    implies (seq![e] + suf)[j] == t.subrange(t.len() - k, t.len() as int)[j] by {
+                    if j == 0 { } else { assert(suf[j - 1] == t[t.len() - (k - 1) + j - 1]); }
+                }
+            }
+        }
+    }
+}
+
+
+/// **정리 (2) — 순서 수렴**. `emit_writes`가 낸 write를 전부 적용하고 나면,
+/// DOM의 **뒤쪽 |target|개가 목표 순서와 정확히 일치**한다.
+///
+/// 접미사로 서술하는 이유(과장하지 않기 위해): `place_in_order`의 호출부는
+/// target에 없는 기존 row를 **별도 경로로** 제거하므로, 이 함수만 놓고 보면
+/// 제거되지 않은 잔여 원소가 앞쪽에 남을 수 있다. 그 잔여를 모델링하지 않고도
+/// 말할 수 있는 가장 강한 참인 명제가 "뒤쪽 n개 = target"이다.
+pub proof fn order_converges(dom: Seq<usize>, t: Seq<usize>)
+    requires dom.no_duplicates(), t.no_duplicates(),
+    ensures
+        ({
+            let r = apply_k(dom, t, t.len() as int);
+            &&& r.len() >= t.len()
+            &&& r.subrange(r.len() - t.len(), r.len() as int) =~= t
+        }),
+{
+    suffix_invariant(dom, t, t.len() as int);
+    assert(t.subrange(0, t.len() as int) =~= t);
+}
+
+/// **따름정리**: 잔여 원소가 없으면(길이가 같으면) 최종 DOM이 목표 순서 **그
+/// 자체**다. 순수 재정렬 워크로드(W1~W4 — §9 판정 셀들)가 정확히 이 경우다.
+pub proof fn order_converges_exactly(dom: Seq<usize>, t: Seq<usize>)
+    requires
+        dom.no_duplicates(),
+        t.no_duplicates(),
+        apply_k(dom, t, t.len() as int).len() == t.len(),
+    ensures
+        apply_k(dom, t, t.len() as int) =~= t,
+{
+    order_converges(dom, t);
+    let r = apply_k(dom, t, t.len() as int);
+    assert(r.subrange(0, r.len() as int) =~= r);
+}
+
 
 fn main() {}
 
