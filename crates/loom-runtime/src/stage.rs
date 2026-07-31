@@ -42,9 +42,21 @@
 use bevy_ecs::prelude::*;
 
 /// 단조 증가하는 밀리초 시계. 브라우저에서는 `performance.now()`(§8이 요구하는
-/// 고해상도 타이머 — COOP/COEP 격리 시 5µs), 네이티브에서는 프로세스 시작
-/// 기준 `Instant`.
-#[cfg(feature = "browser")]
+/// 고해상도 타이머 — COOP/COEP 격리 시 5µs), 그 외에는 프로세스 시작 기준
+/// `Instant`.
+///
+/// **cfg 조건에 `target_arch`가 반드시 들어가야 하는 이유(실제로 깨뜨려 본 뒤
+/// 고침)**: `browser` feature는 "브라우저 지원 코드가 **컴파일에 포함됨**"을
+/// 뜻하지 "**지금 브라우저에서 실행 중**"을 뜻하지 않는다. `cargo test
+/// --workspace`처럼 한 번에 빌드하면 Cargo가 feature를 통합하므로,
+/// `loom-runtime`은 `browser`가 켜진 채 **단 한 벌**로 컴파일되어 네이티브
+/// 크레이트(`loom-fic` 등)에도 그대로 링크된다. 처음엔 이 함수를
+/// `#[cfg(feature = "browser")]`로만 갈랐는데, 그 결과 `LoomApp::tick`이
+/// 네이티브 테스트에서 `web_sys::window()`를 호출해 js-sys가
+/// "cannot access imported statics on non-wasm targets"로 패닉했다
+/// (`loom-fic` 테스트 7개 동시 실패). feature가 아니라 **실행 타겟**으로
+/// 갈라야 맞다.
+#[cfg(all(feature = "browser", any(target_arch = "wasm32", target_arch = "wasm64")))]
 pub fn now_ms() -> f64 {
     web_sys::window()
         .and_then(|w| w.performance())
@@ -52,7 +64,7 @@ pub fn now_ms() -> f64 {
         .unwrap_or(0.0)
 }
 
-#[cfg(not(feature = "browser"))]
+#[cfg(not(all(feature = "browser", any(target_arch = "wasm32", target_arch = "wasm64"))))]
 pub fn now_ms() -> f64 {
     use std::time::Instant;
     thread_local! {
