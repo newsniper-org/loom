@@ -3,7 +3,7 @@
 //! `browser` cargo feature (wasm-bindgen/web-sys aren't needed for the
 //! native `Changed<T>`/reconciliation tests in `tests/`).
 
-use crate::{DomOps, NodeHandle, SharedStore};
+use crate::{DomOps, FragmentHandle, NodeHandle, SharedStore};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -146,6 +146,10 @@ pub fn find_own(host: &web_sys::Element, name: &str) -> web_sys::Element {
 pub struct BrowserDom {
     document: web_sys::Document,
     nodes: Vec<web_sys::Node>,
+    /// RQ1 Track T F 계열의 **비직렬화 사이드테이블**: 분리 보관 중인
+    /// DocumentFragment들. Component에는 `FragmentHandle`(정수)만 들어간다
+    /// (RQ1 "F 공통 코어", CLAUDE.md 금지 4).
+    fragments: Vec<web_sys::DocumentFragment>,
 }
 
 impl BrowserDom {
@@ -153,6 +157,7 @@ impl BrowserDom {
         let dom = BrowserDom {
             document,
             nodes: vec![mount],
+            fragments: Vec::new(),
         };
         (dom, NodeHandle(0))
     }
@@ -161,7 +166,7 @@ impl BrowserDom {
     /// never spawns new top-level structure — every node it needs already
     /// exists in the SSR'd document and is found via `adopt`).
     pub fn new_for_resume(document: web_sys::Document) -> Self {
-        BrowserDom { document, nodes: Vec::new() }
+        BrowserDom { document, nodes: Vec::new(), fragments: Vec::new() }
     }
 
     /// Registers an *already-existing* DOM node (found via `data-loom-id`,
@@ -246,6 +251,31 @@ impl DomOps for BrowserDom {
         el.style()
             .set_property("display", if visible { "" } else { "none" })
             .expect("set display style failed");
+    }
+
+    fn detach_to_fragment(&mut self, node: NodeHandle) -> FragmentHandle {
+        let frag = self.document.create_document_fragment();
+        // **anchor 자신이 아니라 그 자식들**을 옮긴다. anchor를 통째로 옮기면
+        // 재부착 시 "자기 자신을 자기 안에 넣는" 계층 오류가 난다(실제로 그렇게
+        // 짰다가 F-i 셀이 멈춰서 발견). 조건부가 감추려는 것은 어차피 anchor
+        // 아래의 서브트리이므로 이쪽이 의미상으로도 맞다.
+        let parent = self.node(node).clone();
+        while let Some(child) = parent.first_child() {
+            frag.append_child(&child)
+                .expect("detach_to_fragment: append child to fragment failed");
+        }
+        let handle = FragmentHandle(self.fragments.len() as u32);
+        self.fragments.push(frag);
+        handle
+    }
+
+    fn attach_from_fragment(&mut self, parent: NodeHandle, fragment: FragmentHandle) {
+        let frag = self.fragments[fragment.0 as usize].clone();
+        self.node(parent)
+            .append_child(&frag)
+            .expect("attach_from_fragment: append fragment failed");
+        // fragment는 append 시 비워진다(내용이 부모로 옮겨감) — 테이블에는
+        // 빈 껍데기가 남지만, 핸들 안정성을 위해 제거하지 않는다.
     }
 
     fn set_attribute(&mut self, node: NodeHandle, name: &str, value: &str) {

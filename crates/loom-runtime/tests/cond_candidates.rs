@@ -291,3 +291,174 @@ mod subtree_size {
         }
     }
 }
+
+/// RQ1 §10 "F: 3변형 — 셋 다 구현·측정, marker-vs-value 비용 구조가 전제부터
+/// 실측 대상". 세 변형이 **실제로 서로 다르게 동작하는지**를 먼저 못박는다 —
+/// 이게 성립하지 않으면 §9의 F 기각 조항을 변형별로 적용하는 것 자체가
+/// 무의미해진다(허수아비 arm 방지, §2.4).
+mod f_variants {
+    use super::*;
+    use bevy_ecs::prelude::IntoScheduleConfigs;
+    use loom_runtime::{
+        bump_version_system, cond_reconcile_f_i_system, cond_reconcile_f_ii_system,
+        cond_reconcile_f_iii_system, patch_text_f_i_system, patch_text_f_ii_system,
+        patch_text_f_iii_system, BindingVersion, CondEffective, Frozen,
+    };
+
+    /// F 계열 공통: 토글-off는 노드를 **파괴하지 않고 분리**한다. B와 갈리는
+    /// 지점이자, CSS 은닉과도 갈리는 지점(은닉은 문서에 남는다).
+    #[test]
+    fn f_i_detaches_instead_of_destroying_and_keeps_child_state() {
+        let (mut dom, mut app, e, _root) = setup_with_size(
+            (cond_reconcile_f_i_system, patch_text_f_i_system).chain(),
+            3,
+        );
+        set_cond(&mut app, e, true);
+        app.tick(&mut dom);
+        let kids = children_of(&app, e);
+        assert_eq!(kids.len(), 3);
+        // 자식에 상태를 남긴다.
+        app.world.get_mut::<Signal<i32>>(kids[0]).unwrap().0 = 42;
+        app.tick(&mut dom);
+
+        set_cond(&mut app, e, false);
+        app.tick(&mut dom);
+        assert_eq!(dom.detach_calls, 1, "off 전이는 분리 1회여야 한다");
+        // entity와 내부 상태가 살아 있다 — B가 원리적으로 줄 수 없는 것.
+        assert_eq!(app.world.get::<Signal<i32>>(kids[0]).unwrap().0, 42);
+        assert_eq!(children_of(&app, e).len(), 3, "분리는 despawn이 아니다");
+
+        set_cond(&mut app, e, true);
+        app.tick(&mut dom);
+        assert_eq!(dom.attach_calls, 1, "on 전이는 재부착 1회여야 한다");
+        assert_eq!(app.world.get::<Signal<i32>>(kids[0]).unwrap().0, 42);
+    }
+
+    /// F-i의 정의적 비용: 토글 1회 = 서브트리 전 entity에 값 필터 쓰기
+    /// (O(서브트리)). RQ1이 미리 지목한 지점이 실제로 그렇게 동작하는지 확인.
+    #[test]
+    fn f_i_writes_the_value_filter_to_every_child_on_toggle() {
+        let (mut dom, mut app, e, _root) =
+            setup_with_size((cond_reconcile_f_i_system, patch_text_f_i_system).chain(), 4);
+        set_cond(&mut app, e, true);
+        app.tick(&mut dom);
+        let kids = children_of(&app, e);
+        set_cond(&mut app, e, false);
+        app.tick(&mut dom);
+        for &k in &kids {
+            assert!(!app.world.get::<CondEffective>(k).unwrap().0,
+                    "off 후 모든 자식의 CondEffective가 false여야 한다");
+        }
+        set_cond(&mut app, e, true);
+        app.tick(&mut dom);
+        for &k in &kids {
+            assert!(app.world.get::<CondEffective>(k).unwrap().0);
+        }
+    }
+
+    /// F-iii의 정의적 비용: 토글마다 marker를 붙였다 뗀다(archetype 이동 2회).
+    #[test]
+    fn f_iii_moves_children_in_and_out_of_the_frozen_archetype() {
+        let (mut dom, mut app, e, _root) = setup_with_size(
+            (cond_reconcile_f_iii_system, bump_version_system, patch_text_f_iii_system).chain(),
+            3,
+        );
+        set_cond(&mut app, e, true);
+        app.tick(&mut dom);
+        let kids = children_of(&app, e);
+        for &k in &kids {
+            assert!(app.world.get::<Frozen>(k).is_none(), "표시 중엔 Frozen이 없다");
+        }
+        set_cond(&mut app, e, false);
+        app.tick(&mut dom);
+        for &k in &kids {
+            assert!(app.world.get::<Frozen>(k).is_some(), "분리 중엔 Frozen이 붙는다");
+        }
+        set_cond(&mut app, e, true);
+        app.tick(&mut dom);
+        for &k in &kids {
+            assert!(app.world.get::<Frozen>(k).is_none());
+        }
+    }
+
+    /// **세 변형이 정말 다르다**: 동결 중 상류가 바뀔 때 각자가 하는 일이
+    /// 다르다. F-ii는 계속 쓰고(죽은 작업), F-i/F-iii는 안 쓴다.
+    #[test]
+    fn variants_differ_in_what_they_do_while_detached() {
+        // F-ii: 분리 중에도 DOM 쓰기가 계속 나간다.
+        let (mut dom2, mut app2, e2, _r2) =
+            setup_with_size((cond_reconcile_f_ii_system, patch_text_f_ii_system).chain(), 2);
+        set_cond(&mut app2, e2, true);
+        app2.tick(&mut dom2);
+        let kids2 = children_of(&app2, e2);
+        set_cond(&mut app2, e2, false);
+        app2.tick(&mut dom2);
+        let before = dom2.set_text_calls;
+        app2.world.get_mut::<Signal<i32>>(kids2[0]).unwrap().0 = 7;
+        app2.tick(&mut dom2);
+        assert!(dom2.set_text_calls > before,
+                "F-ii는 분리 중에도 계속 패치한다(그게 이 변형의 정의)");
+
+        // F-i: 값 필터가 막아 DOM 쓰기가 나가지 않는다.
+        let (mut dom1, mut app1, e1, _r1) =
+            setup_with_size((cond_reconcile_f_i_system, patch_text_f_i_system).chain(), 2);
+        set_cond(&mut app1, e1, true);
+        app1.tick(&mut dom1);
+        let kids1 = children_of(&app1, e1);
+        set_cond(&mut app1, e1, false);
+        app1.tick(&mut dom1);
+        let before1 = dom1.set_text_calls;
+        app1.world.get_mut::<Signal<i32>>(kids1[0]).unwrap().0 = 7;
+        app1.tick(&mut dom1);
+        assert_eq!(dom1.set_text_calls, before1,
+                   "F-i는 값 필터로 분리 중 쓰기를 막는다");
+    }
+
+    /// **공통 난점의 실증**: 꺼진 동안 스킵된 patch는 `Changed` 틱이 소모되어
+    /// 재부착 시 자동 재실행되지 않는다 → catch-up이 없으면 stale DOM이 남는다.
+    /// F-i는 재부착 시 전파 1회로, F-iii는 버전 불일치분만으로 이를 처리한다.
+    #[test]
+    fn f_i_catches_up_after_reattach() {
+        let (mut dom, mut app, e, _root) =
+            setup_with_size((cond_reconcile_f_i_system, patch_text_f_i_system).chain(), 2);
+        set_cond(&mut app, e, true);
+        app.tick(&mut dom);
+        let kids = children_of(&app, e);
+        set_cond(&mut app, e, false);
+        app.tick(&mut dom);
+        // 동결 중 상류 변경 — 이 patch는 스킵되고 Changed 틱이 소모된다.
+        app.world.get_mut::<Signal<i32>>(kids[0]).unwrap().0 = 99;
+        app.tick(&mut dom);
+        let before = dom.set_text_calls;
+        // 재부착 — catch-up이 없으면 여기서 아무 쓰기도 안 나가야 하지만,
+        // F-i는 전파 System 1회로 다시 세우므로 다음 tick에 반영된다.
+        set_cond(&mut app, e, true);
+        app.tick(&mut dom);
+        app.tick(&mut dom);
+        assert!(dom.set_text_calls > before,
+                "재부착 후 스킵됐던 값이 catch-up으로 반영돼야 한다");
+    }
+
+    /// F-iii의 버전 카운터가 동결 중 dirty를 실제로 추적하는지.
+    #[test]
+    fn f_iii_version_counter_tracks_changes_while_frozen() {
+        let (mut dom, mut app, e, _root) = setup_with_size(
+            (cond_reconcile_f_iii_system, bump_version_system, patch_text_f_iii_system).chain(),
+            2,
+        );
+        set_cond(&mut app, e, true);
+        app.tick(&mut dom);
+        let kids = children_of(&app, e);
+        for &k in &kids {
+            app.world.entity_mut(k).insert(BindingVersion::default());
+        }
+        set_cond(&mut app, e, false);
+        app.tick(&mut dom);
+        app.world.get_mut::<Signal<i32>>(kids[0]).unwrap().0 = 5;
+        app.tick(&mut dom);
+        let v = app.world.get::<BindingVersion>(kids[0]).unwrap();
+        assert!(v.current > v.applied,
+                "동결 중 변경은 current만 올려 불일치를 남긴다 (applied={}, current={})",
+                v.applied, v.current);
+    }
+}

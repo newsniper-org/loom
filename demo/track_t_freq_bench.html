@@ -32,6 +32,8 @@
     const fHz = Number(params.get("f") ?? "1");
     const size = Number(params.get("size") ?? "100");
     const windowMs = Number(params.get("window") ?? "60000");
+    // §4.1 상류 Signal 변경률 축 (0~100). F 변형들을 구별하려면 >0이어야 한다.
+    const changeRate = Number(params.get("rate") ?? "0");
 
     // f는 정수 milli-Hz로 wasm에 넘긴다 — 0.1/s를 부동소수 없이 나르기 위함.
     const fMilliHz = Math.round(fHz * 1000);
@@ -39,9 +41,9 @@
     await init();
 
     const resultEl = document.getElementById("cell-result");
-    resultEl.textContent = `running arm=${arm} f=${fHz}/s size=${size} window=${windowMs}ms ...`;
+    resultEl.textContent = `running arm=${arm} f=${fHz}/s size=${size} window=${windowMs}ms rate=${changeRate}% ...`;
 
-    const cell = new TrackTCell(arm, fMilliHz, size, windowMs);
+    const cell = new TrackTCell(arm, fMilliHz, size, windowMs, changeRate);
 
     function frame(now) {
       // `now`는 rAF가 주는 `performance.now()` 기준 타임스탬프 — wasm 쪽

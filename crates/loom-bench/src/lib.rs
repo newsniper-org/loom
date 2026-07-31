@@ -615,6 +615,9 @@ pub struct TrackTCell {
     total_script_ms: f64,
     frames: u32,
 
+    /// §4.1 "동결/attached 구간 상류 Signal 변경률" 축(0~100%).
+    change_rate_pct: u32,
+
     /// §8 타이머 조항이 "셀별 유효 해상도를 실행 시점 기록"하라고 요구하는
     /// 그 값 — `probe_timer_resolution()`이 셀 시작 시 1회 실측한다. 이게
     /// 없으면 §8의 배치 규칙("median 추정치 < 해상도 × 50이면 배치 측정으로
@@ -674,9 +677,19 @@ impl TrackTCell {
     /// 판정 데이터는 60_000으로만 수집한다(축소 창으로 얻은 수치는 §9 판정에
     /// 쓰지 않는다 — JSON에 `window_ms`가 그대로 실려 나가므로 사후에
     /// 구별 가능).
+    /// `arm`: "B" | "F"(CSS 은닉 겸용) | "F-i" | "F-ii" | "F-iii".
+    /// `change_rate_pct`: §4.1의 "상류 Signal 변경률" 축 — 매 프레임 이 비율만큼의
+    /// 자식 Signal을 건드린다. **이 축이 없으면 F 변형 3개의 J-b가 사실상
+    /// 같아진다**(2026-07-28 f축 스모크런에서 실제로 그렇게 관측됨) — 게이팅
+    /// 비용은 "게이팅할 일이 있을 때"만 드러나기 때문이다.
     #[wasm_bindgen(constructor)]
-    pub fn new(arm: &str, f_millihz: u32, size: usize, window_ms: f64) -> TrackTCell {
-        use loom_runtime::{cond_reconcile_b_system, cond_reconcile_f_system, CondBlock};
+    pub fn new(arm: &str, f_millihz: u32, size: usize, window_ms: f64, change_rate_pct: u32) -> TrackTCell {
+        use loom_runtime::{
+            bump_version_system, cond_reconcile_b_system, cond_reconcile_f_i_system,
+            cond_reconcile_f_ii_system, cond_reconcile_f_iii_system, cond_reconcile_f_system,
+            patch_text_f_i_system, patch_text_f_ii_system, patch_text_f_iii_system, CondBlock,
+        };
+        use bevy_ecs::prelude::IntoScheduleConfigs;
         console_error_panic_hook::set_once();
 
         let document = web_sys::window().unwrap().document().unwrap();
@@ -698,7 +711,21 @@ impl TrackTCell {
             "F" => {
                 app.add_systems(cond_reconcile_f_system);
             }
-            other => panic!("TrackTCell: unknown arm {other:?} (expected \"B\" or \"F\")"),
+            "F-i" => {
+                app.add_systems((cond_reconcile_f_i_system, patch_text_f_i_system).chain());
+            }
+            "F-ii" => {
+                app.add_systems((cond_reconcile_f_ii_system, patch_text_f_ii_system).chain());
+            }
+            "F-iii" => {
+                app.add_systems(
+                    (cond_reconcile_f_iii_system, bump_version_system, patch_text_f_iii_system)
+                        .chain(),
+                );
+            }
+            other => panic!(
+                "TrackTCell: unknown arm {other:?} (expected B | F | F-i | F-ii | F-iii)"
+            ),
         }
         let entity = app
             .world
@@ -714,6 +741,7 @@ impl TrackTCell {
         let now = measure_now();
         let toggle_interval_ms = 1000.0 / (f_millihz as f64 / 1000.0);
         TrackTCell {
+            change_rate_pct,
             timer_resolution_ms,
             app,
             dom,
@@ -750,6 +778,25 @@ impl TrackTCell {
             return false;
         }
         self.frames += 1;
+
+        // §4.1 상류 변경률 축: 매 프레임 자식 Signal의 `change_rate_pct`%를
+        // 건드린다. **이것이 F 변형들을 구별되게 만드는 유일한 장치다** —
+        // 게이팅 비용은 게이팅할 일이 있어야 드러나기 때문(F-i는 필터로 막고,
+        // F-ii는 detached DOM에 계속 쓰고, F-iii는 버전만 올린다).
+        if self.change_rate_pct > 0 {
+            let children: Vec<bevy_ecs::entity::Entity> = self
+                .app
+                .world
+                .get::<loom_runtime::CondBlock>(self.entity)
+                .map(|b| b.children.clone())
+                .unwrap_or_default();
+            let touch = (children.len() * self.change_rate_pct as usize).div_ceil(100);
+            for &child in children.iter().take(touch) {
+                if let Some(mut sig) = self.app.world.get_mut::<Signal<i32>>(child) {
+                    sig.0 = sig.0.wrapping_add(1);
+                }
+            }
+        }
 
         let due = now_ms >= self.next_toggle_at_ms;
         if due {
@@ -813,7 +860,8 @@ impl TrackTCell {
              \"toggle_on_ms\": [{}], \"toggle_off_ms\": [{}], \
              \"residency_total_ms\": {:.4}, \"residency_ticks\": {}, \
              \"j_b_total_script_ms\": {:.4}, \
-             \"timer_resolution_ms\": {:.6}, \"cross_origin_isolated\": {}}}",
+             \"timer_resolution_ms\": {:.6}, \"cross_origin_isolated\": {}, \
+             \"change_rate_pct\": {}}}",
             self.arm,
             self.f_millihz as f64 / 1000.0,
             self.size,
@@ -829,6 +877,7 @@ impl TrackTCell {
             self.total_script_ms,
             self.timer_resolution_ms,
             cross_origin_isolated(),
+            self.change_rate_pct,
         )
     }
 }

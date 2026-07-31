@@ -8,6 +8,18 @@ use loom_runtime::{DomOps, NodeHandle};
 
 #[derive(Default)]
 pub struct MockDom {
+    /// RQ1 트랙 T F 계열: 분리 보관 중인 노드들. 실제 DocumentFragment 대신
+    /// "어느 노드가 문서 밖으로 나갔는가"만 기록한다 — 테스트가 확인해야 할
+    /// 것은 그 사실뿐이다.
+    pub detached: std::collections::HashMap<u32, NodeHandle>,
+    /// 분리된 서브트리의 자식들 — 재부착 시 되돌린다.
+    pub detached_children: std::collections::HashMap<u32, Vec<u32>>,
+    /// detach/attach 호출 횟수 — 세 F 변형의 토글 비용 구조 비교용.
+    pub detach_calls: usize,
+    pub attach_calls: usize,
+    /// `set_text_content` 호출 횟수 — F 변형이 분리 중에 실제로 DOM 쓰기를
+    /// 내는지(F-ii) 막는지(F-i/iii) 구별하는 데 쓴다.
+    pub set_text_calls: usize,
     next_id: u32,
     pub text: std::collections::HashMap<u32, String>,
     pub children: std::collections::HashMap<u32, Vec<u32>>,
@@ -102,6 +114,7 @@ impl DomOps for MockDom {
 
     fn set_text_content(&mut self, target: NodeHandle, text: &str) {
         self.text.insert(target.0, text.to_string());
+        self.set_text_calls += 1;
     }
 
     fn clear_children(&mut self, parent: NodeHandle) {
@@ -129,6 +142,24 @@ impl DomOps for MockDom {
             }
             None => siblings.push(node.0),
         }
+    }
+
+    fn detach_to_fragment(&mut self, node: NodeHandle) -> loom_runtime::FragmentHandle {
+        let h = loom_runtime::FragmentHandle(self.detach_calls as u32);
+        // 실제 구현과 같은 의미론: anchor 자신이 아니라 그 자식들이 나간다.
+        let kids = self.children.remove(&node.0).unwrap_or_default();
+        self.detached.insert(h.0, node);
+        self.detached_children.insert(h.0, kids);
+        self.detach_calls += 1;
+        h
+    }
+
+    fn attach_from_fragment(&mut self, parent: NodeHandle, fragment: loom_runtime::FragmentHandle) {
+        self.detached.remove(&fragment.0);
+        if let Some(kids) = self.detached_children.remove(&fragment.0) {
+            self.children.entry(parent.0).or_default().extend(kids);
+        }
+        self.attach_calls += 1;
     }
 
     fn set_visible(&mut self, node: NodeHandle, visible: bool) {

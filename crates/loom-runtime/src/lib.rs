@@ -45,7 +45,12 @@ pub mod counting;
 pub use counting::{CountingDom, DomOpCounts};
 
 pub mod cond;
-pub use cond::{cond_reconcile_b_system, cond_reconcile_f_system, CondBlock};
+pub use cond::{
+    bump_version_system, cond_reconcile_b_system, cond_reconcile_f_i_system,
+    cond_reconcile_f_ii_system, cond_reconcile_f_iii_system, cond_reconcile_f_system,
+    patch_text_f_i_system, patch_text_f_ii_system, patch_text_f_iii_system, BindingVersion,
+    CondBlock, CondEffective, Frozen,
+};
 
 pub mod island;
 pub use island::{
@@ -181,6 +186,31 @@ pub trait DomOps {
     /// any internal state — the DOM/backend counterpart of "don't despawn,
     /// just hide" (`style.display`), as opposed to candidate B's despawn.
     fn set_visible(&mut self, node: NodeHandle, visible: bool);
+    /// RQ1 Track T **F 계열 공통 코어**: `node`의 **자식들**(= 조건부 서브트리)을
+    /// 떼어 DocumentFragment로 옮겨 보관한다. `node` 자신은 앵커로 문서에
+    /// 남는다 — 통째로 옮기면 재부착 시 자기 자신을 자기 안에 넣는 계층 오류가
+    /// 난다. CSS 은닉(`set_visible`)과 결정적으로 다른 점 — 은닉은
+    /// 노드가 문서에 **남아 있어** 형제 셀렉터(`:nth-child`)·레이아웃 계산·SSR
+    /// 바이트에 계속 참여하지만, 분리는 문서에서 완전히 빠진다. RQ1이 F의
+    /// 정의적 특성으로 규정한 "DOM은 파괴하지 않고 fragment로 분리 보관"이
+    /// 이것이다(entity와 내부 Signal 상태는 그대로 살아 있다).
+    ///
+    /// fragment 핸들은 **비직렬화 사이드테이블**에 두고 Component에는 정수만
+    /// 남긴다(RQ1 "F 공통 코어", CLAUDE.md 금지 4와도 정합).
+    ///
+    /// **기본 구현이 있는 이유**: 이 저장소의 `DomOps` 구현 5개 중 4개는 SSR
+    /// 전용 `StringDom`이고, SSR은 조건부를 **토글하지 않는다**(초기 상태를
+    /// 한 번 그릴 뿐). 그쪽에 의미 없는 코드를 넣는 대신 호출되면 즉시
+    /// 실패하게 두어, 만약 SSR 경로에서 불린다면 조용히 잘못 동작하지 않고
+    /// 바로 드러나게 한다.
+    fn detach_to_fragment(&mut self, _node: NodeHandle) -> FragmentHandle {
+        unimplemented!("detach_to_fragment: 이 DomOps 구현은 F 계열 토글을 지원하지 않는다(SSR 전용)")
+    }
+    /// 분리해 둔 노드를 `parent`의 마지막 자식으로 되돌린다. 기본 구현의
+    /// 이유는 `detach_to_fragment`와 같다.
+    fn attach_from_fragment(&mut self, _parent: NodeHandle, _fragment: FragmentHandle) {
+        unimplemented!("attach_from_fragment: 이 DomOps 구현은 F 계열 토글을 지원하지 않는다(SSR 전용)")
+    }
     /// Sets a single attribute on an element — outside the reactive patch
     /// pipeline (no `DomWrite` variant emits this; codegen calls it directly
     /// during `setup()`, once, same as static markup). Phase 2 resumability
@@ -296,6 +326,12 @@ pub enum DomWrite {
     /// `DomOps::create_element` before any reconcile System ever ran, so it
     /// already has a real `NodeHandle` by the time this write is emitted.
     AppendStaticText { parent: NodeHandle, text: String },
+    /// RQ1 Track T F 계열: 노드를 fragment로 분리한다. 결과 핸들은
+    /// `LoomApp::tick`이 `FragmentTable`에 적재해 `CondBlock`이 정수로만
+    /// 참조하게 한다.
+    DetachToFragment { block: Entity, node: NodeHandle },
+    /// 분리해 둔 것을 되돌린다.
+    AttachFromFragment { block: Entity, parent: NodeHandle },
     /// Compiler-generated `<input>` two-way binding's reactive write (see
     /// `patch_input_system`). Carries an already-resolved `NodeHandle`, same
     /// reason as `AppendStaticText` — an input element is created directly
@@ -304,6 +340,19 @@ pub enum DomWrite {
     /// resolution.
     SetInputValue { node: NodeHandle, value: String },
 }
+
+/// `detach_to_fragment`가 돌려주는 보관함 식별자. `NodeHandle`과 같은 정수
+/// 스킴이지만 **다른 테이블**을 가리키므로 타입을 분리한다 — 섞으면 분리된
+/// 노드를 살아 있는 노드처럼 조작하게 된다.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct FragmentHandle(pub u32);
+
+/// 분리 보관 중인 조건부 블록이 자기 fragment를 가리키는 **정수 하나**.
+/// RQ1 "F 공통 코어"가 요구한 그대로 — 실제 `DocumentFragment`는 `BrowserDom`의
+/// 사이드테이블에만 있고 Component에는 인덱스만 들어간다(CLAUDE.md 금지 4).
+/// 이 Component의 존재 자체가 "지금 분리돼 있다"는 뜻이다.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DetachedFragment(pub FragmentHandle);
 
 #[derive(Resource, Default)]
 pub struct PendingDomWrites(pub Vec<DomWrite>);
@@ -539,6 +588,17 @@ impl LoomApp {
                     for text in &texts {
                         dom.append_static_text(handle, text);
                     }
+                }
+                DomWrite::DetachToFragment { block, node } => {
+                    let handle = dom.detach_to_fragment(node);
+                    self.world.entity_mut(block).insert(DetachedFragment(handle));
+                }
+                DomWrite::AttachFromFragment { block, parent } => {
+                    let Some(frag) = self.world.get::<DetachedFragment>(block).copied() else {
+                        continue;
+                    };
+                    dom.attach_from_fragment(parent, frag.0);
+                    self.world.entity_mut(block).remove::<DetachedFragment>();
                 }
                 DomWrite::AppendStaticText { parent, text } => dom.append_static_text(parent, &text),
                 DomWrite::SetInputValue { node, value } => dom.set_input_value(node, &value),

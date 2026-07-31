@@ -37,6 +37,7 @@ const trials = Number(opt("trials", "10"));
 const gridName = opt("grid", "normal-band");
 const throttleRate = Number(opt("throttle", "1"));
 const arms = opt("arms", "B,F").split(",");
+const changeRate = Number(opt("rate", "0")); // §4.1 상류 변경률 축(%)
 const outPath = opt("out", null);
 const baseUrl = opt("base-url", "http://localhost:8931");
 
@@ -86,7 +87,7 @@ for (const cell of cells) {
 
     const url =
       `${baseUrl}/demo/track_t_freq_bench.html` +
-      `?arm=${cell.arm}&f=${cell.f}&size=${cell.s}&window=${windowMs}`;
+      `?arm=${cell.arm}&f=${cell.f}&size=${cell.s}&window=${windowMs}&rate=${changeRate}`;
     await page.goto(url);
     // 두 번째 위치 인자는 페이지 함수에 넘길 `arg`이고 옵션은 **세 번째**다 —
     // `undefined`를 빼먹으면 `{timeout}`이 arg로 먹히고 기본 30초 타임아웃이
@@ -99,6 +100,7 @@ for (const cell of cells) {
     parsed.trial = trial;
     parsed.browser = browserName;
     parsed.cpu_throttle_rate = throttleRate;
+    parsed.change_rate_pct = changeRate;
     records.push(parsed);
 
     await context.close();
@@ -136,12 +138,13 @@ const payload = {
   trials_per_cell: trials,
   window_ms: windowMs,
   cpu_throttle_rate: throttleRate,
+  change_rate_pct: changeRate,
   is_preregistered_run: windowMs === 60000 && trials === 10 && gridName !== "pilot",
   unisolated_record_count: unisolated,
   known_gaps: [
-    "§4.1이 요구하는 6 arm 중 B와 F(=cond.rs가 'CSS 은닉(v-show형) 대조군을 겸한다'고 명시한 변형) 2개만 존재 — F-i(CondEffective 값 필터)/F-ii(detached DOM 계속 패치)/F-iii(Without<Frozen> marker)는 구현 자체가 없음",
-    "§4.1의 부속 축(서브트리 구성 flat vs 파생 체인 깊이3, catch-up 곡선, attached 구간 변경률) 미구현 — 기본 f×s 격자만",
-    "그 결과 §9 F 기각의 1차 분기('F-i/ii/iii 각각이 통상 구간에서 B를 이기는 셀 부재')는 적용 불가 — 적용 가능한 것은 '또는' 분기(B의 spawn 비용 < 1ms/100 entity, 비스로틀·4× 스로틀 양쪽 성립)뿐",
+    "2026-07-28 갱신: §4.1의 6 arm 중 5개 구현됨 — B, F(CSS 은닉 겸용), F-i(CondEffective 값 필터), F-ii(detached DOM 계속 패치), F-iii(Without<Frozen> marker). 미구현은 'lazy-spawn-then-hide'를 CSS 은닉과 분리한 별도 arm 하나.",
+    "§4.1 부속 축 중 '상류 Signal 변경률'은 --rate로 구현됨(0이면 F 변형들이 구별되지 않으므로 F 판정 수집 시 반드시 >0). 미구현: 서브트리 구성(flat vs 파생 체인 깊이3), catch-up 곡선(동결 기간 × 변경률).",
+    "F-iii의 BindingVersion은 하네스가 자식에 삽입해야 catch-up이 동작한다 — 현재 TrackTCell은 삽입하지 않으므로 F-iii의 catch-up 경로는 이 하네스에서 미가동(네이티브 테스트로만 검증됨).",
   ],
   records,
 };
