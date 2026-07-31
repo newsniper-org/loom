@@ -661,3 +661,64 @@ mod row_bindings_axis {
         }
     }
 }
+
+/// **2026-07-28 R2 축 수리의 인수 조건**. §9 C 기각 조항(W2×R2)이 겨냥하는
+/// 비용은 "슬롯의 아이템이 바뀌면 그 아이템에서 파생된 binding을 **전부**
+/// 다시 써야 한다"(O(n×binding))인데, 수리 전 R2 축은 추가 binding을 spawn 시
+/// 1회 만드는 **정적 텍스트**로 두어 그 비용이 계측에 아예 없었다 —
+/// 그래서 C가 D보다 3~10배 빠르게(임계값과 정반대로) 측정됐다.
+///
+/// 여기서 못박는 것은 그 **비대칭**이다: 재정렬 시 C는 파생 binding을 다시
+/// 쓰고, keyed 후보 D는 retained row를 아예 건드리지 않는다.
+mod r2_value_derived_bindings {
+    use super::*;
+    use bevy_ecs::system::ScheduleSystem;
+
+    fn shuffle_and_count_text_writes<M>(
+        system: impl bevy_ecs::prelude::IntoScheduleConfigs<ScheduleSystem, M>,
+    ) -> usize {
+        let (mut dom, root) = MockDom::new_root();
+        let mut app = LoomApp::new();
+        app.set_row_bindings(8); // R2
+        app.add_systems(system);
+        let initial: Vec<String> = (0..4).map(|i| format!("item-{i}")).collect();
+        let e = app
+            .world
+            .spawn((Signal(initial.clone()), ListRows::default(), DomTarget(root)))
+            .id();
+        app.tick(&mut dom);
+
+        // 재정렬(역순) — 슬롯 기준으로 보면 **모든 슬롯의 아이템이 바뀐다**.
+        let reversed: Vec<String> = initial.iter().rev().cloned().collect();
+        app.world.get_mut::<Signal<Vec<String>>>(e).unwrap().0 = reversed;
+        let before = dom.set_text_calls;
+        app.tick(&mut dom);
+        dom.set_text_calls - before
+    }
+
+    #[test]
+    fn c_repatches_derived_bindings_on_reorder_but_d_does_not() {
+        let c_writes = shuffle_and_count_text_writes(
+            loom_runtime::list_reconcile_c_system::<String>,
+        );
+        let d_writes = shuffle_and_count_text_writes(
+            loom_runtime::list_reconcile_d_system::<String>,
+        );
+
+        // C: 슬롯 4개 × (primary 1 + 파생 7) = 32회 근처. 정확한 수보다
+        // 중요한 것은 "파생 binding까지 다시 쓴다"는 사실이다.
+        assert!(
+            c_writes >= 4 * 8,
+            "C는 재정렬 시 슬롯마다 파생 binding까지 다시 써야 한다 (관측 {c_writes}회)"
+        );
+        // D: retained row를 건드리지 않으므로 텍스트 재기록이 없다.
+        assert_eq!(
+            d_writes, 0,
+            "D는 retained row의 아이템이 그대로이므로 재기록이 없어야 한다 (관측 {d_writes}회)"
+        );
+        assert!(
+            c_writes > d_writes,
+            "이 비대칭이 §9 C 기각 조항이 겨냥하는 바로 그것이다"
+        );
+    }
+}

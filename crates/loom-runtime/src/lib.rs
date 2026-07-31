@@ -326,6 +326,13 @@ pub enum DomWrite {
     /// `DomOps::create_element` before any reconcile System ever ran, so it
     /// already has a real `NodeHandle` by the time this write is emitted.
     AppendStaticText { parent: NodeHandle, text: String },
+    /// R2 축: 이미 만들어진 파생 binding들의 텍스트를 **다시 쓴다**. 슬롯의
+    /// 아이템이 바뀌면 그 아이템에서 파생된 binding이 전부 바뀌므로, 후보 C의
+    /// 재정렬(= 슬롯 값 교체)은 이 write를 row마다 한 번씩 내게 된다 —
+    /// 그것이 §9 C 기각 조항이 겨냥하는 비용이다. keyed 후보(D/E)는 retained
+    /// row의 아이템이 바뀌지 않으므로 이 write를 내지 않는다(그 비대칭이 곧
+    /// RQ1의 예측).
+    SetRowBindingTexts { row: Entity, texts: Vec<String> },
     /// RQ1 Track T F 계열: 노드를 fragment로 분리한다. 결과 핸들은
     /// `LoomApp::tick`이 `FragmentTable`에 적재해 `CondBlock`이 정수로만
     /// 참조하게 한다.
@@ -353,6 +360,15 @@ pub struct FragmentHandle(pub u32);
 /// 이 Component의 존재 자체가 "지금 분리돼 있다"는 뜻이다.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DetachedFragment(pub FragmentHandle);
+
+/// RQ1 row 깊이 축(R2)의 추가 binding들이 붙은 DOM 노드 핸들. **2026-07-28
+/// 신설** — 그 전까지 추가 binding은 핸들 없는 정적 텍스트 노드라 한 번
+/// 만들어지면 다시 쓸 수 없었고, 그 때문에 §9 C 기각 조항이 겨냥하는
+/// "O(n×binding) retained-slot value-patch" 비용이 계측에 존재하지 않았다
+/// (상세는 RQ1의 "C 기각 조건 재검토" 절). 핸들을 들고 있어야 슬롯 값이
+/// 바뀔 때 파생 binding을 재기록할 수 있다.
+#[derive(Component, Debug, Clone, Default)]
+pub struct RowBindingTargets(pub Vec<NodeHandle>);
 
 #[derive(Resource, Default)]
 pub struct PendingDomWrites(pub Vec<DomWrite>);
@@ -585,8 +601,24 @@ impl LoomApp {
                     let Some(handle) = self.dom_target(row) else {
                         continue;
                     };
+                    // 2026-07-28: `append_static_text`(핸들 없는 텍스트 노드)
+                    // 대신 추적되는 엘리먼트를 만든다 — 그래야 슬롯 값이 바뀔 때
+                    // 재기록할 수 있고, R2가 "binding 8개"를 실제로 모델링하게
+                    // 된다(binding site = 동적 텍스트를 갖는 엘리먼트).
+                    let mut targets = Vec::with_capacity(texts.len());
                     for text in &texts {
-                        dom.append_static_text(handle, text);
+                        let child = dom.create_element(handle, "span", None);
+                        dom.set_text_content(child, text);
+                        targets.push(child);
+                    }
+                    self.world.entity_mut(row).insert(RowBindingTargets(targets));
+                }
+                DomWrite::SetRowBindingTexts { row, texts } => {
+                    let Some(targets) = self.world.get::<RowBindingTargets>(row).cloned() else {
+                        continue;
+                    };
+                    for (handle, text) in targets.0.iter().zip(texts.iter()) {
+                        dom.set_text_content(*handle, text);
                     }
                 }
                 DomWrite::DetachToFragment { block, node } => {

@@ -56,8 +56,17 @@ pub fn list_reconcile_c_system<T>(
                     slot_value.0 = new_text.clone();
                     pending.0.push(DomWrite::SetText {
                         target: target.0,
-                        text: new_text,
+                        text: new_text.clone(),
                     });
+                    // **2026-07-28 R2 축 수리**: 이 슬롯의 아이템이 바뀌었으므로
+                    // 그 아이템에서 파생된 binding도 전부 다시 써야 한다.
+                    // 이것이 RQ1이 C의 비용으로 예측한 "O(n×binding) retained-slot
+                    // value-patch"이고, 그 전까지 계측에 존재하지 않던 부분이다
+                    // (§9 C 기각 조항이 겨냥하는 바로 그 비용).
+                    let extra = crate::extra_binding_texts(row_bindings.0, &new_text);
+                    if !extra.is_empty() {
+                        pending.0.push(DomWrite::SetRowBindingTexts { row: entity, texts: extra });
+                    }
                 }
             }
         }

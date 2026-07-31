@@ -15,18 +15,14 @@ row_bindings=8(R2) × shuffle(W2)에 C 표본이 이미 들어 있다. 그런데
 데이터가 없어 미검증"으로만 적혀 있었다 — R3가 필요한 것은 **뒷 분기뿐**인데
 앞 분기까지 함께 미검증으로 묶여 있었던 셈이다(2026-07-28 발견).
 
-⚠️ **그러나 이 스크립트가 내는 수치를 §9 판정에 그대로 쓰면 안 된다.**
-계산해 보니 C가 D보다 3~10배 *빠르게* 나오는데(기각 임계값과 정반대 방향),
-그 원인은 C가 실제로 빠른 게 아니라 **R2 축이 기각 조항이 겨냥하는 비용을
-모델링하지 않기 때문**이다 — `DomWrite::AppendStaticChildren`의 doc comment가
-스스로 밝히듯 이 축은 row *생성* 비용만 깊이에 비례시키고, C의
-"O(n×binding) retained-slot value-patch" 비용은 재현하지 않는다
-(`list_reconcile_c_system`도 유지 슬롯에 대해 primary text 1개만 재기록한다).
-즉 §11-1(b) "측정 방법 결함" 상태다. 상세와 필요한 수리는
-`RQ1-dynamic-control-flow-scheduling.md`의 "C 기각 조건 재검토"(2026-07-28) 절 참고.
-
-이 스크립트는 그 사실을 **기록**하기 위해 남긴다 — 수치를 산출하되 판정으로
-쓰지 못하게 출력에 경고를 함께 찍는다.
+**2026-07-28 (2단계) — 측정 방법 결함이 수리되어 이제 이 수치는 유효하다.**
+처음 계산했을 때는 C가 D보다 3~10배 *빠르게*(임계값과 정반대로) 나왔는데, 원인은
+C가 실제로 빠른 게 아니라 R2 축이 추가 binding을 spawn 시 1회 만드는 **정적
+텍스트**로 두어, 조항이 겨냥하는 "O(n×binding) retained-slot value-patch" 비용이
+계측에 아예 없었기 때문이었다(§11-1(b) 측정 방법 결함). 그 축을 **값 파생
+binding**으로 바꾸고(`RowBindingTargets` + `DomWrite::SetRowBindingTexts`,
+슬롯 값이 바뀌면 파생 binding 전부 재기록) 재수집(v9)한 결과 방향이 뒤집혔다 —
+Chromium C/D = [1.736, 2.290]으로 C가 D보다 ~2배 느리다(RQ1 예측과 일치).
 
 방법론은 `rq1-paired-bootstrap.py`/`rq1-row-depth-bootstrap.py`와 동일한
 paired bootstrap(같은 rep 인덱스로 리샘플 — `loom-bench`가 후보마다 RNG를
@@ -106,38 +102,31 @@ def analyze(path, label):
 
 results = []
 for browser, path in [
-    ("CHROMIUM (1차 판정)", f"{DATA}/rq1-phase1-track-l-core-grid-v6-chromium.json"),
-    ("FIREFOX (교차 확인)", f"{DATA}/rq1-phase1-track-l-core-grid-v6-firefox.json"),
+    ("CHROMIUM (1차 판정)", f"{DATA}/rq1-phase1-track-l-core-grid-v9-chromium.json"),
+    ("FIREFOX (교차 확인)", f"{DATA}/rq1-phase1-track-l-core-grid-v9-firefox.json"),
 ]:
     r = analyze(path, browser)
     if r:
         results.append(r)
 
-print(f"\n{'=' * 78}\n종합 — 이 수치는 §9 판정에 쓸 수 없다\n{'=' * 78}")
-print("""
-  위 비율은 임계값(하한 ≥ 3)과 **정반대 방향**으로 나온다(C가 D보다 빠름).
-  그러나 이는 C가 실제로 빠르다는 뜻이 아니라, R2 축이 §9 C 기각 조항이
-  겨냥하는 비용을 재현하지 않는다는 뜻이다:
-
-    · DomWrite::AppendStaticChildren = 추가 binding을 spawn 시 1회 만드는
-      **정적 자식**으로 모델링 (자기 doc comment가 "this axis doesn't test
-      that half of R2's prediction"이라고 명시).
-    · list_reconcile_c_system = 유지 슬롯에 대해 primary text 1개만 재기록,
-      추가 binding은 spawn 경로에서만 생성.
-    → 길이 불변 shuffle에서 C의 R2 비용 ≈ R1 비용. RQ1이 예측한
-      "O(n×binding) retained-slot value-patch" 비용이 계측에 부재.
-
-  ⇒ 앞 분기의 정확한 상태는 "R3가 없어 미검증"이 아니라
-     **§11-1(b) 측정 방법 결함으로 측정 무효**.
-
-  수리: R2 축의 추가 binding을 "정적 텍스트"에서 "슬롯 값에서 파생되어 값이
-  바뀌면 전부 재기록되는 값 파생 binding"으로 바꾼 뒤 해당 셀 재실행.
-  (keyed 후보 D/E는 retained row의 아이템이 안 바뀌므로 재기록 불필요 —
-   그 비대칭이 곧 RQ1의 예측이고, 지금은 그게 안 보인다.)
-
-  기존 D/E 판정에는 영향 없음: D 기각(iii)/E 기각(i)이 쓰는 비대칭
-  ("K는 매 tick 전량 재생성, D/E는 retained row 무접촉")은 정적 자식
-  모델로도 정확히 재현되므로 그 결론은 그대로 유효하다.
-
-  ※ 판정은 §8 커버리지 표대로 Chromium(1차 판정)에서만 — Firefox는 교차 확인.
-""")
+print(f"\n{'=' * 78}\n종합\n{'=' * 78}")
+primary = next((r for r in results if r["label"].startswith("CHROMIUM")), None)
+if primary:
+    if primary["fired"]:
+        print("  §9 C 기각 앞 분기 **발동** — C는 기각이며, 뒷 분기(W2×R3의")
+        print("  archetype move 지배)는 측정할 필요가 없어진다('또는'로 연결).")
+    else:
+        print(f"  §9 C 기각 앞 분기 **미발동** — C/D 비율 CI 하한 {primary['ci_lo']:.3f} < 3.")
+        print("  단, 이제는 계측 결함 때문이 아니라 **실제로 3배까지 느리지 않아서**다")
+        print("  (2026-07-28 R2 축 값 파생 수리 이후). 방향 자체는 RQ1 예측대로")
+        print("  C가 D보다 느린 쪽으로 뒤집혔다.")
+        print()
+        print("  ⇒ C 기각 여부는 뒷 분기(W2 × R3 프로파일에서 archetype move 구간이")
+        print("     스크립트 시간의 50% 이상)에 달려 있고, 그건 R3 row 유형 +")
+        print("     §7.1 단계 귀속 계측이 둘 다 있어야 측정 가능하다(§7.1은 구현됨,")
+        print("     R3 row 유형은 미구현).")
+print()
+print("  ※ 판정은 §8 커버리지 표대로 Chromium(1차 판정)에서만 — Firefox는 교차 확인.")
+fx = next((r for r in results if r["label"].startswith("FIREFOX")), None)
+if primary and fx and (primary["ci_lo"] > 1) != (fx["ci_lo"] > 1):
+    print("  ⚠️ Firefox가 우세 방향을 뒤집는다 — §11-1(b) 검토 대상 등재 사유.")
