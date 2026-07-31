@@ -19,6 +19,8 @@
 
 use vstd::prelude::*;
 use vstd::seq_lib::*;
+use vstd::hash_map::*;
+use vstd::std_specs::hash::*;
 
 verus! {
 
@@ -719,6 +721,493 @@ pub proof fn order_converges_with_skip(dom: Seq<usize>, t: Seq<usize>)
     skip_optimization_is_safe(dom, t, t.len() as int);
     order_converges(dom, t);
 }
+
+
+// ===========================================================================
+// Chain ↔ adjacent 대응 (모델-구현 결선)
+// ===========================================================================
+
+
+/// `list.rs`의 `Chain`이 **어떤 시퀀스를 표기하는가**를 규정한다.
+/// `Chain`은 head/tail + next/prev 두 맵으로 순서를 들고 있는데, 그것이
+/// 시퀀스 `s`를 올바르게 표기한다는 것이 이 술어다. 도달가능성/무순환을
+/// 따로 논증하지 않는 이유는 `s`를 고스트로 함께 들고 다니기 때문이다 —
+/// 표현이 아니라 **표현과 의미의 대응**을 불변식으로 유지한다.
+pub open spec fn chain_denotes(
+    next: Map<int, usize>,
+    prev: Map<int, usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
+    s: Seq<usize>,
+) -> bool {
+    &&& s.no_duplicates()
+    &&& (if s.len() == 0 { head is None } else { head == Some(s[0]) })
+    &&& (if s.len() == 0 { tail is None } else { tail == Some(s[s.len() - 1]) })
+    // next: s[i] -> s[i+1], 마지막 원소는 next 없음
+    &&& forall|i: int| #![trigger s[i]]
+            0 <= i < s.len() - 1 ==> next.contains_key(s[i] as int) && next[s[i] as int] == s[i + 1]
+    &&& !(s.len() > 0 && next.contains_key(s[s.len() - 1] as int))
+    // prev: s[i] -> s[i-1], 첫 원소는 prev 없음
+    &&& forall|i: int| #![trigger s[i]]
+            0 < i < s.len() ==> prev.contains_key(s[i] as int) && prev[s[i] as int] == s[i - 1]
+    &&& !(s.len() > 0 && prev.contains_key(s[0] as int))
+    // 맵의 정의역은 시퀀스 밖으로 새지 않는다 (없는 원소를 조회하면 None).
+    &&& forall|k: int| #![trigger next.contains_key(k)]
+            next.contains_key(k) ==> exists|i: int| 0 <= i < s.len() - 1 && s[i] as int == k
+    &&& forall|k: int| #![trigger prev.contains_key(k)]
+            prev.contains_key(k) ==> exists|i: int| 0 < i < s.len() && s[i] as int == k
+}
+
+/// **Chain ↔ adjacent 대응 (질의 방향)**: `Chain::next_of(e) == Some(a)`는
+/// 표기 시퀀스에서 `e`가 `a` 바로 앞에 있다는 것과 **동치**다.
+///
+/// 이것이 `place_in_order`의 `already_adjacent` 판정이 정당한 이유다 —
+/// 원본은 O(1) 맵 조회로 판정하고, 정리 (2)의 스킵 안전성 증명은 시퀀스상의
+/// 인접성을 가정하는데, 그 둘이 같은 것임을 여기서 잇는다.
+pub proof fn chain_next_of_iff_adjacent(
+    next: Map<int, usize>,
+    prev: Map<int, usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
+    s: Seq<usize>,
+    e: usize,
+    a: usize,
+)
+    requires chain_denotes(next, prev, head, tail, s),
+    ensures
+        (next.contains_key(e as int) && next[e as int] == a) <==> adjacent(s, e, a),
+{
+    // (⇐) 인접하면 next가 그렇게 매핑한다 — chain_denotes의 첫 forall 그대로.
+    if adjacent(s, e, a) {
+        let i = choose|i: int| 0 <= i < s.len() - 1 && #[trigger] s[i] == e && s[i + 1] == a;
+        assert(next.contains_key(s[i] as int));
+        assert(next[s[i] as int] == s[i + 1]);
+    }
+    // (⇒) next에 있으면 그 키는 시퀀스 안의 어떤 s[i](i < len-1)이고,
+    //     그 자리에서 next의 값은 s[i+1]이다. 중복이 없으므로 e의 자리는 유일.
+    if next.contains_key(e as int) && next[e as int] == a {
+        let i = choose|i: int| 0 <= i < s.len() - 1 && s[i] as int == e as int;
+        assert(s[i] == e);
+        assert(next[s[i] as int] == s[i + 1]);
+        assert(s[i + 1] == a);
+        assert(adjacent(s, e, a));
+    }
+}
+
+/// **Chain ↔ tail 대응**: `Chain::is_tail(e)`는 표기 시퀀스의 마지막 원소가
+/// `e`라는 것과 동치다 — `next_anchor == None`일 때의 스킵 판정 근거.
+pub proof fn chain_is_tail_iff_last(
+    next: Map<int, usize>,
+    prev: Map<int, usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
+    s: Seq<usize>,
+    e: usize,
+)
+    requires chain_denotes(next, prev, head, tail, s),
+    ensures (tail == Some(e)) <==> (s.len() > 0 && s[s.len() - 1] == e),
+{
+}
+
+
+/// `Chain::unlink`의 맵 조작을 그대로 옮긴 것(`list.rs` 참고).
+/// 네 갈래는 원본의 `match (p, n)`과 1:1이다.
+pub open spec fn unlink_next(next: Map<int, usize>, prev: Map<int, usize>, e: usize) -> Map<int, usize> {
+    let has_p = prev.contains_key(e as int);
+    let has_n = next.contains_key(e as int);
+    let n0 = next.remove(e as int);
+    if has_p && has_n {
+        n0.insert(prev[e as int] as int, next[e as int])
+    } else if has_p && !has_n {
+        n0.remove(prev[e as int] as int)
+    } else {
+        n0
+    }
+}
+
+pub open spec fn unlink_prev(next: Map<int, usize>, prev: Map<int, usize>, e: usize) -> Map<int, usize> {
+    let has_p = prev.contains_key(e as int);
+    let has_n = next.contains_key(e as int);
+    let p0 = prev.remove(e as int);
+    if has_p && has_n {
+        p0.insert(next[e as int] as int, prev[e as int])
+    } else if !has_p && has_n {
+        p0.remove(next[e as int] as int)
+    } else {
+        p0
+    }
+}
+
+pub open spec fn unlink_head(next: Map<int, usize>, prev: Map<int, usize>, head: Option<usize>, e: usize) -> Option<usize> {
+    let has_p = prev.contains_key(e as int);
+    let has_n = next.contains_key(e as int);
+    if !has_p && has_n { Some(next[e as int]) }
+    else if !has_p && !has_n { None }
+    else { head }
+}
+
+pub open spec fn unlink_tail(next: Map<int, usize>, prev: Map<int, usize>, tail: Option<usize>, e: usize) -> Option<usize> {
+    let has_p = prev.contains_key(e as int);
+    let has_n = next.contains_key(e as int);
+    if has_p && !has_n { Some(prev[e as int]) }
+    else if !has_p && !has_n { None }
+    else { tail }
+}
+
+/// **Chain ↔ adjacent 대응 (변이 방향, unlink)**: 표기 `s`인 chain에서
+/// `e`를 unlink하면 표기가 `s.remove_value(e)`가 된다.
+pub proof fn chain_unlink_denotes_remove(
+    next: Map<int, usize>,
+    prev: Map<int, usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
+    s: Seq<usize>,
+    e: usize,
+)
+    requires
+        chain_denotes(next, prev, head, tail, s),
+        s.contains(e),
+    ensures
+        chain_denotes(
+            unlink_next(next, prev, e),
+            unlink_prev(next, prev, e),
+            unlink_head(next, prev, head, e),
+            unlink_tail(next, prev, tail, e),
+            s.remove_value(e),
+        ),
+{
+    s.index_of_first_ensures(e);
+    let i = s.index_of_first(e).unwrap();
+    assert(s[i] == e);
+    let t = s.remove(i);
+    assert(s.remove_value(e) =~= t);
+    s.remove_ensures(i);
+
+    // e의 앞/뒤 존재 여부는 곧 i의 위치다.
+    assert(prev.contains_key(e as int) <==> i > 0) by {
+        if i > 0 { assert(prev.contains_key(s[i] as int)); }
+        if i == 0 { assert(!prev.contains_key(s[0] as int)); }
+    }
+    assert(next.contains_key(e as int) <==> i < s.len() - 1) by {
+        if i < s.len() - 1 { assert(next.contains_key(s[i] as int)); }
+        if i == s.len() - 1 { assert(!next.contains_key(s[s.len() - 1] as int)); }
+    }
+    assert(t.no_duplicates()) by {
+        assert forall|j: int, l: int|
+            0 <= j < t.len() && 0 <= l < t.len() && j != l implies t[j] != t[l] by {
+            let jj = if j < i { j } else { j + 1 };
+            let ll = if l < i { l } else { l + 1 };
+            assert(t[j] == s[jj]);
+            assert(t[l] == s[ll]);
+            assert(jj != ll);
+        }
+    }
+
+    let n2 = unlink_next(next, prev, e);
+    let p2 = unlink_prev(next, prev, e);
+    let h2 = unlink_head(next, prev, head, e);
+    let t2 = unlink_tail(next, prev, tail, e);
+
+    // head/tail
+    assert(if t.len() == 0 { h2 is None } else { h2 == Some(t[0]) });
+    assert(if t.len() == 0 { t2 is None } else { t2 == Some(t[t.len() - 1]) });
+
+    // next 방향
+    assert forall|j: int| #![trigger t[j]]
+        0 <= j < t.len() - 1 implies n2.contains_key(t[j] as int) && n2[t[j] as int] == t[j + 1] by {
+        if j < i - 1 {
+            assert(t[j] == s[j] && t[j + 1] == s[j + 1]);
+            assert(next.contains_key(s[j] as int) && next[s[j] as int] == s[j + 1]);
+            assert(s[j] != s[i]);
+        } else if j == i - 1 {
+            assert(t[j] == s[i - 1] && t[j + 1] == s[i + 1]);
+        } else {
+            assert(t[j] == s[j + 1] && t[j + 1] == s[j + 2]);
+            assert(next.contains_key(s[j + 1] as int) && next[s[j + 1] as int] == s[j + 2]);
+            assert(s[j + 1] != s[i]);
+        }
+    }
+    assert(!(t.len() > 0 && n2.contains_key(t[t.len() - 1] as int))) by {
+        if t.len() > 0 {
+            if i < s.len() - 1 {
+                // e가 마지막이 아니면 t의 끝은 그대로 s의 끝이고,
+                // next는 원래 그 키를 갖지 않았다. 삽입 키 s[i-1]도 그것과 다르다.
+                assert(t[t.len() - 1] == s[s.len() - 1]);
+                assert(!next.contains_key(s[s.len() - 1] as int));
+            } else {
+                // e가 마지막이면 t의 끝은 s[i-1]이고, unlink가 그 키를 지웠다.
+                assert(t[t.len() - 1] == s[i - 1]);
+            }
+        }
+    }
+
+    // prev 방향
+    assert forall|j: int| #![trigger t[j]]
+        0 < j < t.len() implies p2.contains_key(t[j] as int) && p2[t[j] as int] == t[j - 1] by {
+        if j < i {
+            assert(t[j] == s[j] && t[j - 1] == s[j - 1]);
+            assert(prev.contains_key(s[j] as int) && prev[s[j] as int] == s[j - 1]);
+            assert(s[j] != s[i]);
+        } else if j == i {
+            assert(t[j] == s[i + 1] && t[j - 1] == s[i - 1]);
+        } else {
+            assert(t[j] == s[j + 1] && t[j - 1] == s[j]);
+            assert(prev.contains_key(s[j + 1] as int) && prev[s[j + 1] as int] == s[j]);
+            assert(s[j + 1] != s[i]);
+        }
+    }
+    assert(!(t.len() > 0 && p2.contains_key(t[0] as int))) by {
+        if t.len() > 0 {
+            if i > 0 {
+                // e가 첫 원소가 아니면 t의 머리는 그대로 s[0]이고,
+                // prev는 원래 그 키를 갖지 않았다. 삽입 키 s[i+1]도 그것과 다르다.
+                assert(t[0] == s[0]);
+                assert(!prev.contains_key(s[0] as int));
+            } else {
+                // e가 첫 원소면 t의 머리는 s[1]이고, unlink가 그 키를 지웠다.
+                assert(t[0] == s[1]);
+            }
+        }
+    }
+
+    // 정의역이 새지 않음
+    assert forall|k: int| #![trigger p2.contains_key(k)]
+        p2.contains_key(k) implies exists|j: int| 0 < j < t.len() && t[j] as int == k by {
+        if p2.contains_key(k) {
+            if i > 0 && i < s.len() - 1 && k == s[i + 1] as int {
+                assert(t[i] as int == k);
+                assert(0 < i < t.len());
+            } else {
+                let j0 = choose|j0: int| 0 < j0 < s.len() && s[j0] as int == k;
+                assert(s[j0] as int == k);
+                assert(j0 != i);
+                let j = if j0 < i { j0 } else { j0 - 1 };
+                assert(t[j] as int == k);
+                assert(0 < j < t.len());
+            }
+        }
+    }
+    assert forall|k: int| #![trigger n2.contains_key(k)]
+        n2.contains_key(k) implies exists|j: int| 0 <= j < t.len() - 1 && t[j] as int == k by {
+        if n2.contains_key(k) {
+            if i > 0 && i < s.len() - 1 && k == s[i - 1] as int {
+                assert(t[i - 1] as int == k);
+                assert(0 <= i - 1 < t.len() - 1);
+            } else {
+                let j0 = choose|j0: int| 0 <= j0 < s.len() - 1 && s[j0] as int == k;
+                assert(s[j0] as int == k);
+                assert(j0 != i);
+                let j = if j0 < i { j0 } else { j0 - 1 };
+                assert(t[j] as int == k);
+                assert(0 <= j < t.len() - 1);
+            }
+        }
+    }
+}
+
+
+/// `Chain::insert_before(e, Some(a))`의 맵 조작을 그대로 옮긴 것.
+pub open spec fn ib_next(next: Map<int, usize>, prev: Map<int, usize>, e: usize, a: usize) -> Map<int, usize> {
+    let n1 = if prev.contains_key(a as int) { next.insert(prev[a as int] as int, e) } else { next };
+    n1.insert(e as int, a)
+}
+
+pub open spec fn ib_prev(prev: Map<int, usize>, e: usize, a: usize) -> Map<int, usize> {
+    let p1 = if prev.contains_key(a as int) { prev.insert(e as int, prev[a as int]) } else { prev };
+    p1.insert(a as int, e)
+}
+
+pub open spec fn ib_head(prev: Map<int, usize>, head: Option<usize>, e: usize, a: usize) -> Option<usize> {
+    if prev.contains_key(a as int) { head } else { Some(e) }
+}
+
+/// **Chain ↔ adjacent 대응 (변이 방향, insert_before)**: 표기 `s`인 chain에
+/// (아직 없는) `e`를 `a` 바로 앞에 끼우면 표기가 `s.insert(j, e)`가 된다
+/// (`j`는 `a`의 위치).
+pub proof fn chain_insert_before_denotes_insert(
+    next: Map<int, usize>,
+    prev: Map<int, usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
+    s: Seq<usize>,
+    e: usize,
+    a: usize,
+    j: int,
+)
+    requires
+        chain_denotes(next, prev, head, tail, s),
+        !s.contains(e),
+        0 <= j < s.len(),
+        s[j] == a,
+    ensures
+        chain_denotes(
+            ib_next(next, prev, e, a),
+            ib_prev(prev, e, a),
+            ib_head(prev, head, e, a),
+            tail,
+            s.insert(j, e),
+        ),
+{
+    let t = s.insert(j, e);
+    s.insert_ensures(j, e);
+    let n2 = ib_next(next, prev, e, a);
+    let p2 = ib_prev(prev, e, a);
+    let h2 = ib_head(prev, head, e, a);
+
+    assert(prev.contains_key(a as int) <==> j > 0) by {
+        if j > 0 { assert(prev.contains_key(s[j] as int)); }
+        if j == 0 { assert(!prev.contains_key(s[0] as int)); }
+    }
+
+    assert(t.no_duplicates()) by {
+        assert forall|x: int, y: int|
+            0 <= x < t.len() && 0 <= y < t.len() && x != y implies t[x] != t[y] by {
+            if x == j { assert(t[x] == e); if y < j { assert(t[y] == s[y]); } else { assert(t[y] == s[y - 1]); } }
+            else if y == j { assert(t[y] == e); if x < j { assert(t[x] == s[x]); } else { assert(t[x] == s[x - 1]); } }
+            else {
+                let xx = if x < j { x } else { x - 1 };
+                let yy = if y < j { y } else { y - 1 };
+                assert(t[x] == s[xx]); assert(t[y] == s[yy]); assert(xx != yy);
+            }
+        }
+    }
+
+    assert(h2 == Some(t[0])) by {
+        if j > 0 { assert(t[0] == s[0]); } else { assert(t[0] == e); }
+    }
+    assert(tail == Some(t[t.len() - 1])) by {
+        assert(t[t.len() - 1] == s[s.len() - 1]);
+    }
+
+    assert forall|x: int| #![trigger t[x]]
+        0 <= x < t.len() - 1 implies n2.contains_key(t[x] as int) && n2[t[x] as int] == t[x + 1] by {
+        if x == j {
+            assert(t[x] == e && t[x + 1] == a);
+        } else if x == j - 1 {
+            assert(t[x] == s[j - 1] && t[x + 1] == e);
+        } else if x < j - 1 {
+            assert(t[x] == s[x] && t[x + 1] == s[x + 1]);
+            assert(next.contains_key(s[x] as int) && next[s[x] as int] == s[x + 1]);
+            assert(s[x] != e && s[x] != s[j - 1]);
+        } else {
+            assert(t[x] == s[x - 1] && t[x + 1] == s[x]);
+            assert(next.contains_key(s[x - 1] as int) && next[s[x - 1] as int] == s[x]);
+            assert(s[x - 1] != e);
+            if j > 0 { assert(s[x - 1] != s[j - 1]); }
+        }
+    }
+    assert(!(t.len() > 0 && n2.contains_key(t[t.len() - 1] as int))) by {
+        assert(t[t.len() - 1] == s[s.len() - 1]);
+        assert(!next.contains_key(s[s.len() - 1] as int));
+        assert(s[s.len() - 1] != e);
+        if j > 0 { assert(s[s.len() - 1] != s[j - 1]); }
+    }
+
+    assert forall|x: int| #![trigger t[x]]
+        0 < x < t.len() implies p2.contains_key(t[x] as int) && p2[t[x] as int] == t[x - 1] by {
+        if x == j {
+            assert(t[x] == e && t[x - 1] == s[j - 1]);
+        } else if x == j + 1 {
+            assert(t[x] == a && t[x - 1] == e);
+        } else if x < j {
+            assert(t[x] == s[x] && t[x - 1] == s[x - 1]);
+            assert(prev.contains_key(s[x] as int) && prev[s[x] as int] == s[x - 1]);
+            assert(s[x] != e && s[x] != a);
+        } else {
+            assert(t[x] == s[x - 1] && t[x - 1] == s[x - 2]);
+            assert(prev.contains_key(s[x - 1] as int) && prev[s[x - 1] as int] == s[x - 2]);
+            assert(s[x - 1] != e && s[x - 1] != a);
+        }
+    }
+    assert(!(t.len() > 0 && p2.contains_key(t[0] as int))) by {
+        if j > 0 {
+            assert(t[0] == s[0]);
+            assert(!prev.contains_key(s[0] as int));
+            assert(s[0] != e && s[0] != a);
+        } else {
+            assert(t[0] == e);
+        }
+    }
+
+    assert forall|k: int| #![trigger p2.contains_key(k)]
+        p2.contains_key(k) implies exists|x: int| 0 < x < t.len() && t[x] as int == k by {
+        if p2.contains_key(k) {
+            if k == a as int {
+                assert(t[j + 1] as int == k); assert(0 < j + 1 < t.len());
+            } else if j > 0 && k == e as int {
+                assert(t[j] as int == k); assert(0 < j < t.len());
+            } else {
+                let x0 = choose|x0: int| 0 < x0 < s.len() && s[x0] as int == k;
+                let x = if x0 < j { x0 } else { x0 + 1 };
+                assert(t[x] as int == k); assert(0 < x < t.len());
+            }
+        }
+    }
+    assert forall|k: int| #![trigger n2.contains_key(k)]
+        n2.contains_key(k) implies exists|x: int| 0 <= x < t.len() - 1 && t[x] as int == k by {
+        if n2.contains_key(k) {
+            if k == e as int {
+                assert(t[j] as int == k); assert(0 <= j < t.len() - 1);
+            } else if j > 0 && k == s[j - 1] as int {
+                assert(t[j - 1] as int == k); assert(0 <= j - 1 < t.len() - 1);
+            } else {
+                let x0 = choose|x0: int| 0 <= x0 < s.len() - 1 && s[x0] as int == k;
+                let x = if x0 < j { x0 } else { x0 + 1 };
+                assert(t[x] as int == k); assert(0 <= x < t.len() - 1);
+            }
+        }
+    }
+}
+
+
+/// **합성 — Chain ↔ `place_before` 대응 (본정리)**: `place_in_order`가
+/// 비인접 Retained에 대해 하는 `unlink(e)` → `insert_before(e, Some(a))`
+/// 시퀀스는, 표기 수준에서 정확히 `place_before(s, e, Some(a))`다.
+///
+/// 이로써 정리 (2)/스킵 안전성이 `place_before` 위에서 증명한 모든 것이
+/// **원본의 `Chain` 조작에 그대로 적용**된다 — 앞선 라운드에서 "코드를 읽어
+/// 확인했을 뿐 정리로 잇지 않았다"고 남겨 둔 간극이 여기서 닫힌다.
+pub proof fn chain_ops_match_place_before(
+    next: Map<int, usize>,
+    prev: Map<int, usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
+    s: Seq<usize>,
+    e: usize,
+    a: usize,
+)
+    requires
+        chain_denotes(next, prev, head, tail, s),
+        s.contains(e),
+        s.remove_value(e).contains(a),
+    ensures
+        ({
+            let s1 = s.remove_value(e);
+            let n1 = unlink_next(next, prev, e);
+            let p1 = unlink_prev(next, prev, e);
+            let h1 = unlink_head(next, prev, head, e);
+            let t1 = unlink_tail(next, prev, tail, e);
+            let j = s1.index_of_first(a).unwrap();
+            &&& chain_denotes(
+                    ib_next(n1, p1, e, a), ib_prev(p1, e, a), ib_head(p1, h1, e, a), t1,
+                    place_before(s, e, Some(a)),
+                )
+        }),
+{
+    chain_unlink_denotes_remove(next, prev, head, tail, s, e);
+    let s1 = s.remove_value(e);
+    let n1 = unlink_next(next, prev, e);
+    let p1 = unlink_prev(next, prev, e);
+    let h1 = unlink_head(next, prev, head, e);
+    let t1 = unlink_tail(next, prev, tail, e);
+    s1.index_of_first_ensures(a);
+    let j = s1.index_of_first(a).unwrap();
+    lemma_remove_value_no_dup(s, e);
+    assert(!s1.contains(e));
+    chain_insert_before_denotes_insert(n1, p1, h1, t1, s1, e, a, j);
+    assert(place_before(s, e, Some(a)) =~= s1.insert(j, e));
+}
+
 
 fn main() {}
 

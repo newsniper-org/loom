@@ -24,7 +24,7 @@ Rust 구간이라 **실제 함수에 `requires`/`ensures`를 걸 수 있다**. �
 verus formal-verification/verus/flush_order.rs
 ```
 
-현재 결과: **20 verified, 0 errors** (Verus 업스트림 설치본, `/usr/bin/verus`).
+현재 결과: **25 verified, 0 errors** (Verus 업스트림 설치본, `/usr/bin/verus`).
 
 ## 무엇이 증명됐나 (2026-07-28)
 
@@ -102,6 +102,9 @@ L1~L6 여섯 개 보조정리로 깔았다(`no_duplicates` 보존 포함).
 | C | 정리 (2) | `t.no_duplicates()` 전제 제거 | `assertion failed` |
 | D | 스킵 안전성 | 인접 조건을 무시하고 Retained를 **무조건 스킵** | `postcondition not satisfied` |
 | E | 스킵 안전성 | 인접 판정을 "한 칸 건너"(`d[i+2]==a`)로 잘못 둠 | `assertion failed` |
+| F | Chain 대응 | `unlink`의 중간 노드 갈래에서 **재결선 누락** | `assertion failed` |
+| G | Chain 대응 | `insert_before`에서 `prev[a]=e` 갱신 누락 | `assertion failed` |
+| H | Chain 대응 | `chain_denotes`에서 `next` 정의역 조항 제거 | `assertion failed` ×4 |
 
 대조 A가 특히 중요하다 — 정리 (1)이 배제하는 바로 그 폴백을 강제로 켜면 (2)가
 깨진다는 것이, 두 정리가 실제로 맞물려 있음을 보여 준다.
@@ -130,18 +133,56 @@ L1~L6 여섯 개 보조정리로 깔았다(`no_duplicates` 보존 포함).
 자료구조이므로 의미는 `adjacent(d, e, a)` 술어와 같다. 이 대응 자체는 눈으로
 확인한 것이고 정리로 잇지 않았다(아래 남은 것 참고).
 
+## Chain ↔ adjacent 대응 — 증명 완료 (2026-07-28)
+
+앞선 라운드에서 "원본은 인접성 질의를 `Chain`(`next_of`)으로 O(1)에 하고 모델은
+`adjacent` 술어로 하는데, 그 대응은 **코드를 읽어 확인했을 뿐 정리로 잇지
+않았다**"고 남겨 둔 간극을 닫았다.
+
+`Chain`은 head/tail + next/prev 두 맵으로 순서를 들고 있다. 그것이 **어떤
+시퀀스를 표기하는가**를 `chain_denotes`로 규정하고(도달가능성·무순환을 따로
+논증하지 않는 이유는 표기 시퀀스를 고스트로 함께 들고 다니기 때문 — 표현이
+아니라 **표현과 의미의 대응**을 불변식으로 유지한다), 네 정리를 증명했다:
+
+| 방향 | 정리 | 내용 |
+|---|---|---|
+| 질의 | `chain_next_of_iff_adjacent` | `next_of(e) == Some(a)` ⟺ 표기 시퀀스에서 `e`가 `a` 바로 앞 |
+| 질의 | `chain_is_tail_iff_last` | `is_tail(e)` ⟺ 표기 시퀀스의 마지막이 `e` |
+| 변이 | `chain_unlink_denotes_remove` | `unlink(e)` 후 표기 = `s.remove_value(e)` |
+| 변이 | `chain_insert_before_denotes_insert` | `insert_before(e, a)` 후 표기 = `s.insert(j, e)` |
+
+**합성 본정리 `chain_ops_match_place_before`**: `place_in_order`가 비인접
+Retained에 대해 하는 `unlink(e)` → `insert_before(e, Some(a))` 시퀀스가 표기
+수준에서 정확히 `place_before(s, e, Some(a))`다. 이로써 정리 (2)/스킵 안전성이
+`place_before` 위에서 증명한 모든 것이 **원본의 `Chain` 조작에 그대로 적용**된다.
+
+변이 정리들의 맵 조작(`unlink_next`/`unlink_prev`/`ib_next`/`ib_prev` 등)은
+`list.rs`의 `match (p, n)` 네 갈래와 `insert_before`의 두 갈래를 1:1로 옮긴
+것이다 — 즉 "그 코드가 하는 맵 수술이 실제로 리스트를 올바르게 재결선하는가"가
+증명 대상이었고, 대조 F/G가 그 수술의 어느 한 줄만 빠져도 증명이 깨짐을 보인다.
+
 ## 남은 것 (숨기지 않음)
 
-1. **모델-구현 결선 미완**: 이 파일은 `place_in_order`의 구조를 옮겨 적은
-   것이지, `list.rs`의 그 함수를 직접 검증한 것이 아니다. 직접 검증하려면
-   `Chain`(std `HashMap` 2개)을 Verus가 다룰 수 있는 형태로 재작성해야 하고,
-   그건 §2.5 동결 규율상 트랙 L 재수집을 동반한다(RQ5 문서의 비용 분석 참고).
-   따라서 현재 상태는 "Lean4보다는 코드에 가깝지만 아직 코드 그 자체는 아님"
-   이다 — 이 한계를 과장하지 말 것.
+증명된 것과 남은 것의 경계를 정확히 그어 둔다. **알고리즘 내용은 전부
+증명됐고**, 남은 것은 타입/표현 수준의 결선 하나다.
+
+1. **`std::HashMap<Entity, Entity>` ↔ `Map<int, usize>`**: 위 증명은 `Chain`의
+   두 맵을 Verus의 `Map`으로 모델링한다. 실제 코드는 `std::collections::HashMap`
+   에 `bevy_ecs::entity::Entity` 키를 쓴다. 이 간극은 두 조각이다 —
+   (a) *`std::HashMap`이 부분함수로서 `Map`처럼 행동하는가*: `vstd`가
+   `HashMapWithView`로 이미 명세를 제공하며, 이 명제 자체는 진지한 의심의
+   대상이 아니다(표준 라이브러리 계약). (b) *`Entity` 키가 `usize`처럼
+   구별되는가*: `Entity`는 불투명 id이고 `Eq`/`Hash`가 동일성과 일치한다.
+   → 이 결선을 코드 수준에서 못박으려면 `Chain`을 `HashMapWithView<u64, u64>`
+   (`Entity::to_bits()`)로 바꾸고 `place_in_order`를 `verus!` 블록 안으로
+   옮겨야 한다. 그건 **§2.5 동결 규율상 트랙 L 재수집을 동반**한다
+   (`place_in_order`는 D/E/D-LIS/E-LIS 4개 후보의 공유 경로 — RQ5 문서의 비용
+   분석 참고). 재수집 비용 자체는 낮다(트랙 L은 반복 기반, 페이지 로드 몇 번).
+
 2. **`emit_writes`와 `apply_k`의 결선**: `apply_k`는 `emit_writes`의 사후조건을
-   `t`(목표 id열)만으로 다시 쓴 것이다. 둘이 같은 시퀀스를 가리킨다는 것을
-   별도 정리로 잇지 않았다 — 사후조건을 눈으로 대조한 상태다.
-3. **`Chain` ↔ `adjacent` 대응 미정리화**: 스킵 판정을 원본은 `Chain`으로,
-   모델은 `adjacent` 술어로 한다. `Chain`이 "방출한 write를 적용한 뒤의 순서"를
-   정확히 추적한다는 것은 코드를 읽어 확인했을 뿐 정리로 잇지 않았다 —
-   위 2번(모델-구현 결선)의 일부다.
+   목표 id열만으로 다시 쓴 것이다. 둘이 같은 시퀀스를 가리킨다는 것을 별도
+   정리로 잇지 않았다 — 사후조건을 눈으로 대조한 상태다.
+
+**과장하지 말 것**: 현재 상태는 "`place_in_order`의 알고리즘과 그것이 의존하는
+`Chain` 자료구조 수술이 Verus로 증명됐다"이지, "`list.rs`의 그 함수 바이트가
+검증됐다"가 아니다.
