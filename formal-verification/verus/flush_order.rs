@@ -550,6 +550,176 @@ pub proof fn order_converges_exactly(dom: Seq<usize>, t: Seq<usize>)
 }
 
 
+
+// ===========================================================================
+// already_adjacent 스킵 최적화의 안전성
+// ===========================================================================
+
+/// `place_in_order`의 `already_adjacent` 판정 중 anchor가 있는 쪽:
+/// "`e`가 `d` 안에서 `a` **바로 앞**에 있는가". 원본은 이 질의를 `Chain`
+/// (`next_of`)으로 O(1)에 하지만, `Chain`은 지금까지 방출한 write를 적용한
+/// 뒤의 순서를 그대로 추적하는 자료구조이므로 의미는 이 술어와 같다.
+pub open spec fn adjacent(d: Seq<usize>, e: usize, a: usize) -> bool {
+    exists|i: int| 0 <= i < d.len() - 1 && #[trigger] d[i] == e && d[i + 1] == a
+}
+
+/// **스킵 안전성 (anchor 있는 경우)**: 이미 인접해 있으면 그 write는 **항등**
+/// 이다 — 즉 방출하지 않아도 DOM은 같다. 이것이 `already_adjacent` 분기가
+/// 정합성을 해치지 않는 이유다.
+pub proof fn lemma_skip_is_noop(d: Seq<usize>, e: usize, a: usize)
+    requires d.no_duplicates(), adjacent(d, e, a),
+    ensures place_before(d, e, Some(a)) =~= d,
+{
+    let i = choose|i: int| 0 <= i < d.len() - 1 && #[trigger] d[i] == e && d[i + 1] == a;
+    d.index_of_first_ensures(e);
+    // e의 첫 occurrence는 i다 (중복이 없으므로).
+    assert(d.index_of_first(e) == Some(i)) by {
+        assert(d.contains(e));
+        let j = d.index_of_first(e).unwrap();
+        assert(d[j] == e);
+        assert(j == i);
+    }
+    let d2 = d.remove(i);
+    assert(d.remove_value(e) =~= d2);
+    d.remove_ensures(i);
+
+    // d2에서 a의 첫 위치는 i다.
+    assert(d2[i] == a);
+    assert(d2.index_of_first(a) == Some(i)) by {
+        d2.index_of_first_ensures(a);
+        assert(d2.contains(a));
+        let j = d2.index_of_first(a).unwrap();
+        assert(d2[j] == a);
+        // d2[j]는 d[j] (j<i) 또는 d[j+1] (j>=i) 이고, 중복이 없으므로 j==i.
+        if j < i {
+            assert(d2[j] == d[j]);
+            assert(d[j] != d[i + 1]);
+        } else if j > i {
+            assert(d2[j] == d[j + 1]);
+            assert(d[j + 1] != d[i + 1]);
+        }
+    }
+
+    // i 위치에 e를 다시 끼우면 원래 d가 된다.
+    assert(d2.insert(i, e) =~= d) by {
+        assert(d2.insert(i, e).len() == d.len());
+        assert forall|j: int| 0 <= j < d.len() implies d2.insert(i, e)[j] == d[j] by {
+            d2.insert_ensures(i, e);
+            if j < i {
+                assert(d2.insert(i, e)[j] == d2[j]);
+                assert(d2[j] == d[j]);
+            } else if j == i {
+                assert(d2.insert(i, e)[i] == e);
+            } else {
+                assert(d2.insert(i, e)[j] == d2[j - 1]);
+                assert(d2[j - 1] == d[j]);
+            }
+        }
+    }
+}
+
+/// **스킵 안전성 (anchor 없는 경우)**: `next_anchor == None`일 때 원본은
+/// `chain.is_tail(entity)`로 판정한다 — 이미 꼬리면 그 write도 항등이다.
+pub proof fn lemma_skip_is_noop_tail(d: Seq<usize>, e: usize)
+    requires d.no_duplicates(), d.len() > 0, d[d.len() - 1] == e,
+    ensures place_before(d, e, None) =~= d,
+{
+    let i = d.len() - 1;
+    d.index_of_first_ensures(e);
+    assert(d.index_of_first(e) == Some(i)) by {
+        assert(d.contains(e));
+        let j = d.index_of_first(e).unwrap();
+        assert(d[j] == e);
+        assert(j == i);
+    }
+    d.remove_ensures(i);
+    let d2 = d.remove(i);
+    assert(d.remove_value(e) =~= d2);
+    assert(d2.push(e) =~= d) by {
+        assert forall|j: int| 0 <= j < d.len() implies d2.push(e)[j] == d[j] by {
+            if j < i { assert(d2.push(e)[j] == d2[j]); assert(d2[j] == d[j]); }
+            else { assert(d2.push(e)[i] == e); }
+        }
+    }
+}
+
+
+/// `place_in_order`가 **실제로** 하는 것 — `already_adjacent`이면 write를
+/// 방출하지 않는다. `apply_k`(스킵 없는 상위집합)와 대비되는, 원본 코드에
+/// 대응하는 버전이다.
+pub open spec fn apply_k_opt(dom: Seq<usize>, t: Seq<usize>, k: int) -> Seq<usize>
+    decreases k
+{
+    if k <= 0 {
+        dom
+    } else {
+        let prev = apply_k_opt(dom, t, k - 1);
+        let e = t[t.len() - k];
+        if k == 1 {
+            // 원본의 `chain.is_tail(entity)` 분기.
+            if prev.len() > 0 && prev[prev.len() - 1] == e {
+                prev
+            } else {
+                place_before(prev, e, None)
+            }
+        } else {
+            // 원본의 `chain.next_of(entity) == Some(a)` 분기.
+            let a = t[t.len() - k + 1];
+            if adjacent(prev, e, a) {
+                prev
+            } else {
+                place_before(prev, e, Some(a))
+            }
+        }
+    }
+}
+
+/// **스킵 최적화 안전성 (본정리)**: 스킵하는 실제 구현과 스킵하지 않는
+/// 상위집합이 **같은 DOM**을 낸다. 따라서 정리 (2)가 상위집합에 대해 증명된
+/// 것으로 충분하며, 최적화가 순서 정합성을 바꾸지 않는다.
+pub proof fn skip_optimization_is_safe(dom: Seq<usize>, t: Seq<usize>, k: int)
+    requires
+        dom.no_duplicates(),
+        t.no_duplicates(),
+        0 <= k <= t.len(),
+    ensures
+        apply_k_opt(dom, t, k) =~= apply_k(dom, t, k),
+    decreases k,
+{
+    if k <= 0 {
+    } else {
+        skip_optimization_is_safe(dom, t, k - 1);
+        suffix_invariant(dom, t, k - 1);
+        let prev = apply_k(dom, t, k - 1);
+        assert(apply_k_opt(dom, t, k - 1) == prev);
+        let e = t[t.len() - k];
+        if k == 1 {
+            if prev.len() > 0 && prev[prev.len() - 1] == e {
+                lemma_skip_is_noop_tail(prev, e);
+            }
+        } else {
+            let a = t[t.len() - k + 1];
+            if adjacent(prev, e, a) {
+                lemma_skip_is_noop(prev, e, a);
+            }
+        }
+    }
+}
+
+/// **따름정리**: 실제 구현(스킵 포함)도 목표 순서로 수렴한다.
+pub proof fn order_converges_with_skip(dom: Seq<usize>, t: Seq<usize>)
+    requires dom.no_duplicates(), t.no_duplicates(),
+    ensures
+        ({
+            let r = apply_k_opt(dom, t, t.len() as int);
+            &&& r.len() >= t.len()
+            &&& r.subrange(r.len() - t.len(), r.len() as int) =~= t
+        }),
+{
+    skip_optimization_is_safe(dom, t, t.len() as int);
+    order_converges(dom, t);
+}
+
 fn main() {}
 
 }

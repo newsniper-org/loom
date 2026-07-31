@@ -24,7 +24,7 @@ Rust 구간이라 **실제 함수에 `requires`/`ensures`를 걸 수 있다**. �
 verus formal-verification/verus/flush_order.rs
 ```
 
-현재 결과: **15 verified, 0 errors** (Verus 업스트림 설치본, `/usr/bin/verus`).
+현재 결과: **20 verified, 0 errors** (Verus 업스트림 설치본, `/usr/bin/verus`).
 
 ## 무엇이 증명됐나 (2026-07-28)
 
@@ -100,24 +100,48 @@ L1~L6 여섯 개 보조정리로 깔았다(`no_duplicates` 보존 포함).
 | A | 정리 (2) | `place_before`가 **항상 끝에 붙이도록**(= tick의 폴백이 매번 발동) | `assertion failed` |
 | B | 정리 (2) | `apply_k`의 anchor를 왼쪽 이웃으로 | `postcondition not satisfied` |
 | C | 정리 (2) | `t.no_duplicates()` 전제 제거 | `assertion failed` |
+| D | 스킵 안전성 | 인접 조건을 무시하고 Retained를 **무조건 스킵** | `postcondition not satisfied` |
+| E | 스킵 안전성 | 인접 판정을 "한 칸 건너"(`d[i+2]==a`)로 잘못 둠 | `assertion failed` |
 
 대조 A가 특히 중요하다 — 정리 (1)이 배제하는 바로 그 폴백을 강제로 켜면 (2)가
 깨진다는 것이, 두 정리가 실제로 맞물려 있음을 보여 준다.
 
+## `already_adjacent` 스킵 최적화 안전성 — 증명 완료 (2026-07-28)
+
+`place_in_order`는 Retained row가 **이미 올바른 위치에 있으면** write를 방출하지
+않는다(`chain.next_of(entity) == Some(a)`, anchor가 없으면 `chain.is_tail`).
+앞선 라운드에서는 이 최적화를 모델에서 **생략**하고 "스킵은 write를 줄이기만
+하므로 (1)을 깨뜨릴 수 없다"는 비형식 논증만 남겨 두었다. 이번에 정리로 만들었다.
+
+**핵심 관찰**: 스킵된 write는 애초에 **항등(no-op)**이었다.
+
+- `lemma_skip_is_noop`: `e`가 `d`에서 `a` 바로 앞에 있으면
+  `place_before(d, e, Some(a)) == d`.
+- `lemma_skip_is_noop_tail`: `e`가 `d`의 꼬리면 `place_before(d, e, None) == d`.
+
+**본정리 `skip_optimization_is_safe`**: 스킵하는 실제 구현(`apply_k_opt`)과
+스킵하지 않는 상위집합(`apply_k`)이 **같은 DOM을 낸다** — 접미사 성질이 양쪽에서
+성립한다는 약한 진술이 아니라 **시퀀스 자체가 동일**하다는 강한 진술이다.
+따라서 정리 (2)를 상위집합에 대해 증명한 것으로 충분하고, 따름정리
+`order_converges_with_skip`이 실제 구현의 수렴을 직접 준다.
+
+**모델링 노트**: 원본은 인접성 질의를 `Chain`(`next_of`)으로 O(1)에 하지만,
+`Chain`은 "지금까지 방출한 write를 적용한 뒤의 순서"를 그대로 추적하는
+자료구조이므로 의미는 `adjacent(d, e, a)` 술어와 같다. 이 대응 자체는 눈으로
+확인한 것이고 정리로 잇지 않았다(아래 남은 것 참고).
+
 ## 남은 것 (숨기지 않음)
 
-1. **`already_adjacent` 스킵 최적화의 안전성**: 모델은 스킵을 생략하고 Retained도
-   항상 `Move`를 방출하는 **상위집합**을 증명한다. 스킵은 write를 줄이기만 하고
-   스킵된 row는 Retained라 `current.contains`로 계속 해석 가능하므로 (1)을
-   깨뜨릴 수 없다 — 그러나 **이 논증 자체를 정리로 만들지는 않았다**. (2)에
-   대해서는 더 강한 주장이 필요하다: 스킵된 row가 "이미 올바른 위치에 있다"는
-   것을 증명해야 접미사 불변식이 유지된다.
-2. **모델-구현 결선 미완**: 이 파일은 `place_in_order`의 구조를 옮겨 적은
+1. **모델-구현 결선 미완**: 이 파일은 `place_in_order`의 구조를 옮겨 적은
    것이지, `list.rs`의 그 함수를 직접 검증한 것이 아니다. 직접 검증하려면
    `Chain`(std `HashMap` 2개)을 Verus가 다룰 수 있는 형태로 재작성해야 하고,
    그건 §2.5 동결 규율상 트랙 L 재수집을 동반한다(RQ5 문서의 비용 분석 참고).
    따라서 현재 상태는 "Lean4보다는 코드에 가깝지만 아직 코드 그 자체는 아님"
    이다 — 이 한계를 과장하지 말 것.
-3. **`emit_writes`와 `apply_k`의 결선**: `apply_k`는 `emit_writes`의 사후조건을
+2. **`emit_writes`와 `apply_k`의 결선**: `apply_k`는 `emit_writes`의 사후조건을
    `t`(목표 id열)만으로 다시 쓴 것이다. 둘이 같은 시퀀스를 가리킨다는 것을
    별도 정리로 잇지 않았다 — 사후조건을 눈으로 대조한 상태다.
+3. **`Chain` ↔ `adjacent` 대응 미정리화**: 스킵 판정을 원본은 `Chain`으로,
+   모델은 `adjacent` 술어로 한다. `Chain`이 "방출한 write를 적용한 뒤의 순서"를
+   정확히 추적한다는 것은 코드를 읽어 확인했을 뿐 정리로 잇지 않았다 —
+   위 2번(모델-구현 결선)의 일부다.
