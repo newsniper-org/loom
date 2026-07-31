@@ -164,58 +164,59 @@ fn place_in_order(
     pending: &mut PendingDomWrites,
     row_bindings: usize,
 ) {
-    let mut chain = loom_flush_core::Chain::from_slice(
+    // 순서 결정은 전부 검증된 `loom_flush_core::plan_writes`가 한다 — 이
+    // 함수에 남은 일은 그 계획을 `DomWrite`로 옮겨 적는 것뿐이다.
+    let ops = loom_flush_core::plan_writes(
         &current.iter().map(|e| e.to_bits()).collect::<Vec<u64>>(),
+        &target.iter().map(|s| slot_entity(s).to_bits()).collect::<Vec<u64>>(),
+        &target.iter().map(|s| matches!(s, Slot::Fresh { .. })).collect::<Vec<bool>>(),
+        &vec![false; target.len()], // LIS 변형이 아니므로 강제 유지 없음
     );
-    let mut next_anchor: Option<Entity> = None;
+    emit_plan(parent, target, &ops, pending, row_bindings);
+}
 
-    for slot in target.iter().rev() {
-        let entity = match slot {
-            Slot::Fresh { entity, text } => {
-                pending.0.push(DomWrite::SpawnRow {
-                    entity: *entity,
-                    parent,
-                    tag: "li",
-                    text: text.clone(),
-                    before: next_anchor,
-                });
-                let extra = crate::extra_binding_texts(row_bindings, text);
-                if !extra.is_empty() {
-                    pending.0.push(DomWrite::AppendStaticChildren { row: *entity, texts: extra });
-                }
-                chain_insert(&mut chain, *entity, next_anchor);
-                *entity
-            }
-            Slot::Retained(entity) => {
-                let already_adjacent = match next_anchor {
-                    Some(a) => chain.next_is(entity.to_bits(), a.to_bits()),
-                    None => chain.is_tail(entity.to_bits()),
-                };
-                if !already_adjacent {
-                    chain.unlink(entity.to_bits());
-                    chain_insert(&mut chain, *entity, next_anchor);
-                    pending.0.push(DomWrite::Reposition {
-                        parent,
-                        entity: *entity,
-                        before: next_anchor,
-                    });
-                }
-                *entity
-            }
-        };
-        next_anchor = Some(entity);
+/// `Slot`에서 Entity 하나를 꺼낸다.
+fn slot_entity(slot: &Slot) -> Entity {
+    match slot {
+        Slot::Fresh { entity, .. } => *entity,
+        Slot::Retained(entity) => *entity,
     }
 }
 
-
-/// `loom_flush_core::Chain`은 anchor 있는 삽입(`insert_before`)과 꼬리 덧붙이기
-/// (`push_back`)를 **별도 메서드**로 나눠 놓았다 — 각자의 사후조건(표기 효과)이
-/// 다르기 때문이다. 손코딩 시절의 `insert_before(e, Option<anchor>)` 한 개
-/// 시그니처를 여기서 두 갈래로 되돌린다.
-fn chain_insert(chain: &mut loom_flush_core::Chain, entity: Entity, anchor: Option<Entity>) {
-    match anchor {
-        Some(a) => chain.insert_before(entity.to_bits(), a.to_bits()),
-        None => chain.push_back(entity.to_bits()),
+/// 검증된 계획(`PlanOp` 열, 방출 순서 그대로)을 실제 `DomWrite`로 옮긴다.
+/// **순서 판단은 여기 없다** — `before` anchor도 `plan_writes`가 정한 것을
+/// 그대로 쓴다. 이 함수가 하는 일은 Entity/텍스트를 붙이는 것뿐이다.
+fn emit_plan(
+    parent: NodeHandle,
+    target: &[Slot],
+    ops: &[loom_flush_core::PlanOp],
+    pending: &mut PendingDomWrites,
+    row_bindings: usize,
+) {
+    for op in ops {
+        let slot = &target[op.idx];
+        let entity = slot_entity(slot);
+        // `plan_writes`의 anchor는 u64(Entity::to_bits)이므로 되돌린다.
+        let before = op.before.map(Entity::from_bits);
+        if op.spawn {
+            let text = match slot {
+                Slot::Fresh { text, .. } => text.clone(),
+                Slot::Retained(_) => unreachable!("plan_writes marks spawn only for Fresh slots"),
+            };
+            pending.0.push(DomWrite::SpawnRow {
+                entity,
+                parent,
+                tag: "li",
+                text: text.clone(),
+                before,
+            });
+            let extra = crate::extra_binding_texts(row_bindings, &text);
+            if !extra.is_empty() {
+                pending.0.push(DomWrite::AppendStaticChildren { row: entity, texts: extra });
+            }
+        } else {
+            pending.0.push(DomWrite::Reposition { parent, entity, before });
+        }
     }
 }
 
@@ -223,8 +224,12 @@ fn chain_insert(chain: &mut loom_flush_core::Chain, entity: Entity, anchor: Opti
 /// 대체됐다**(RQ5 후보 #4). 이전에는 여기 `std::collections::HashMap` 두 개로
 /// 된 이중연결리스트가 손코딩돼 있었고, 그 맵 수술(`unlink`의 네 갈래,
 /// `insert_before`의 두 갈래)이 실제로 순서를 올바르게 재결선하는지는
-/// 검증되지 않은 채였다. 지금은 `loom_flush_core::Chain`이 표기 시퀀스를
-/// 고스트로 들고 다니며 각 연산의 표기 효과를 사후조건으로 못박는다 —
+/// 검증되지 않은 채였다.
+///
+/// **2026-07-28 (같은 날, 2단계)**: 방출 루프 자체도 검증 크레이트로 옮겼다.
+/// 이제 `list.rs`는 `Chain`을 **직접 만지지 않고** `plan_writes`가 돌려준
+/// 계획을 `DomWrite`로 옮겨 적기만 한다 — 순서 판단이 이 파일에서 완전히
+/// 사라졌으므로, Chain 연산의 사전조건 준수까지 기계적으로 검증된다.
 /// `formal-verification/verus/README.md` 참고.
 ///
 /// `Entity`는 Verus가 다룰 수 없는 불투명 타입이라 `to_bits()`로 `u64`를
@@ -314,56 +319,17 @@ fn place_in_order_lis(
         }
     }
 
-    let mut chain = loom_flush_core::Chain::from_slice(
+    // 순서 결정은 검증된 `plan_writes`가 한다 — LIS가 고른 "유지" 표시는
+    // `keep`으로 넘긴다. **LIS 판단 자체의 정당성은 검증 범위 밖**이고
+    // (`lis_indices`는 비검증 코드), `plan_writes`가 보장하는 것은 그 표시를
+    // 받아들였을 때도 Chain 조작의 사전조건이 지켜진다는 것이다.
+    let ops = loom_flush_core::plan_writes(
         &current.iter().map(|e| e.to_bits()).collect::<Vec<u64>>(),
+        &target.iter().map(|s| slot_entity(s).to_bits()).collect::<Vec<u64>>(),
+        &target.iter().map(|s| matches!(s, Slot::Fresh { .. })).collect::<Vec<bool>>(),
+        &keep_in_place,
     );
-    let mut next_anchor: Option<Entity> = None;
-
-    for (i, slot) in target.iter().enumerate().rev() {
-        let entity = match slot {
-            Slot::Fresh { entity, text } => {
-                pending.0.push(DomWrite::SpawnRow {
-                    entity: *entity,
-                    parent,
-                    tag: "li",
-                    text: text.clone(),
-                    before: next_anchor,
-                });
-                let extra = crate::extra_binding_texts(row_bindings, text);
-                if !extra.is_empty() {
-                    pending.0.push(DomWrite::AppendStaticChildren { row: *entity, texts: extra });
-                }
-                chain_insert(&mut chain, *entity, next_anchor);
-                *entity
-            }
-            Slot::Retained(entity) => {
-                if keep_in_place[i] {
-                    // Trust the LIS proof: this entity's relative order is
-                    // already correct, no adjacency check or move needed.
-                } else {
-                    // Still worth a cheap adjacency check: LIS picks *a*
-                    // maximal subsequence, not necessarily the only one, so
-                    // an entity outside it can occasionally already be
-                    // correctly placed too — skip a redundant DOM write.
-                    let already_adjacent = match next_anchor {
-                        Some(a) => chain.next_is(entity.to_bits(), a.to_bits()),
-                        None => chain.is_tail(entity.to_bits()),
-                    };
-                    if !already_adjacent {
-                        chain.unlink(entity.to_bits());
-                        chain_insert(&mut chain, *entity, next_anchor);
-                        pending.0.push(DomWrite::Reposition {
-                            parent,
-                            entity: *entity,
-                            before: next_anchor,
-                        });
-                    }
-                }
-                *entity
-            }
-        };
-        next_anchor = Some(entity);
-    }
+    emit_plan(parent, target, &ops, pending, row_bindings);
 }
 
 // ============================================================================

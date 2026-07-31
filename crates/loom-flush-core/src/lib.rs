@@ -136,6 +136,16 @@ impl Chain {
     }
 
 
+    #[verifier::rlimit(400)]
+    /// `well_formed()`가 `closed`라 밖에서 본문을 못 펴므로, 필요한 사실
+    /// 하나(표기에 중복이 없다)만 별도로 노출한다 — `plan_writes`가
+    /// `unlink` 직후 "e가 정말 사라졌다"를 유도하는 데 쓴다.
+    pub proof fn no_dup(&self)
+        requires self.well_formed(),
+        ensures self.denotes().no_duplicates(),
+    {
+    }
+
     /// 원본 `Chain::unlink`와 **같은 코드**. 사후조건이 표기 수준의 효과를
     /// 못박는다: 표기가 `s.remove_value(e)`가 된다.
     pub fn unlink(&mut self, e: u64)
@@ -724,6 +734,355 @@ pub proof fn chain_push_back_denotes(
             }
         }
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// 집합 멤버십 보조정리 — `plan_writes`의 루프 불변식 유지에 쓰인다.
+// ---------------------------------------------------------------------------
+
+/// 다른 원소를 지워도 `x`는 남는다.
+pub proof fn lemma_remove_value_keeps_other(s: Seq<u64>, e: u64, x: u64)
+    requires s.contains(x), x != e,
+    ensures s.remove_value(e).contains(x),
+{
+    s.index_of_first_ensures(e);
+    let ix = choose|i: int| 0 <= i < s.len() && s[i] == x;
+    if let Some(i) = s.index_of_first(e) {
+        s.remove_ensures(i);
+        assert(ix != i);
+        let j = if ix < i { ix } else { ix - 1 };
+        assert(s.remove(i)[j] == x);
+        assert(s.remove(i).contains(x));
+    }
+}
+
+/// 삽입은 기존 원소를 잃지 않는다.
+pub proof fn lemma_insert_keeps(s: Seq<u64>, j: int, e: u64, x: u64)
+    requires s.contains(x), 0 <= j <= s.len(),
+    ensures s.insert(j, e).contains(x),
+{
+    s.insert_ensures(j, e);
+    let ix = choose|i: int| 0 <= i < s.len() && s[i] == x;
+    let k = if ix < j { ix } else { ix + 1 };
+    assert(s.insert(j, e)[k] == x);
+}
+
+/// 삽입된 원소는 들어 있다.
+pub proof fn lemma_insert_has_new(s: Seq<u64>, j: int, e: u64)
+    requires 0 <= j <= s.len(),
+    ensures s.insert(j, e).contains(e),
+{
+    s.insert_ensures(j, e);
+    assert(s.insert(j, e)[j] == e);
+}
+
+/// 꼬리 덧붙이기도 기존 원소를 잃지 않고, 새 원소를 갖는다.
+pub proof fn lemma_push_keeps(s: Seq<u64>, e: u64, x: u64)
+    requires s.contains(x),
+    ensures s.push(e).contains(x), s.push(e).contains(e),
+{
+    let ix = choose|i: int| 0 <= i < s.len() && s[i] == x;
+    assert(s.push(e)[ix] == x);
+    assert(s.push(e)[s.len() as int] == e);
+}
+
+
+
+/// 역방향: 삽입 결과에 있는 것은 원래 있었거나 새로 넣은 그것이다.
+pub proof fn lemma_insert_only(s: Seq<u64>, j: int, e: u64, x: u64)
+    requires s.insert(j, e).contains(x), 0 <= j <= s.len(),
+    ensures s.contains(x) || x == e,
+{
+    s.insert_ensures(j, e);
+    let t = s.insert(j, e);
+    let k = choose|k: int| 0 <= k < t.len() && t[k] == x;
+    if k != j {
+        let kk = if k < j { k } else { k - 1 };
+        assert(t[k] == s[kk]);
+    }
+}
+
+/// 역방향: 꼬리 덧붙이기도 마찬가지.
+pub proof fn lemma_push_only(s: Seq<u64>, e: u64, x: u64)
+    requires s.push(e).contains(x),
+    ensures s.contains(x) || x == e,
+{
+    let t = s.push(e);
+    let k = choose|k: int| 0 <= k < t.len() && t[k] == x;
+    if k < s.len() { assert(t[k] == s[k]); }
+}
+
+/// 역방향: 지우기는 새 원소를 만들지 않는다.
+pub proof fn lemma_remove_value_only(s: Seq<u64>, e: u64, x: u64)
+    requires s.remove_value(e).contains(x),
+    ensures s.contains(x),
+{
+    s.index_of_first_ensures(e);
+    if let Some(i) = s.index_of_first(e) {
+        s.remove_ensures(i);
+        let t = s.remove(i);
+        let k = choose|k: int| 0 <= k < t.len() && t[k] == x;
+        let kk = if k < i { k } else { k + 1 };
+        assert(t[k] == s[kk]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 방출 루프 — `place_in_order`의 순서 결정 전체
+// ---------------------------------------------------------------------------
+
+/// "표기의 원소 집합이 이전 집합 ∪ {e}가 됐다" — 세 분기가 공통으로 만족하는
+/// 모양. 이것 하나로 루프 불변식 (b)/(c)/(d)를 균일하게 유도한다.
+pub open spec fn same_plus(new: Seq<u64>, old: Seq<u64>, e: u64) -> bool {
+    forall|x: u64| #![trigger new.contains(x)]
+        new.contains(x) <==> (old.contains(x) || x == e)
+}
+
+/// 방출할 write 하나. 호출부(`list.rs`)는 `idx`로 `target` 슬롯에서
+/// Entity/텍스트를 꺼내 실제 `DomWrite`를 만든다 — 여기서는 **순서 결정만**
+/// 한다(무엇을 언제 어느 anchor 앞에 놓을지).
+pub struct PlanOp {
+    /// `target`에서의 인덱스.
+    pub idx: usize,
+    /// true면 SpawnRow, false면 Reposition.
+    pub spawn: bool,
+    /// anchor — `None`이면 꼬리.
+    pub before: Option<u64>,
+}
+
+/// **`place_in_order`의 순서 결정 전체**를 검증된 코드로 옮긴 것.
+/// 반환된 `PlanOp` 열은 **방출 순서 그대로**다(= target의 역순, 스킵 제외).
+///
+/// 이 함수가 존재하는 이유: 이전에는 `Chain`만 검증돼 있고 그 **사전조건**을
+/// 호출부(`list.rs`, 비검증 코드)가 지키는지는 기계적으로 확인되지 않았다.
+/// 루프를 여기로 옮기면 `unlink`/`insert_before`/`push_back`의 사전조건이
+/// **전부 이 안에서 증명으로 해소**된다.
+#[verifier::rlimit(4000)]
+pub fn plan_writes(
+    current: &Vec<u64>,
+    target_ids: &Vec<u64>,
+    target_fresh: &Vec<bool>,
+    keep: &Vec<bool>,
+) -> (ops: Vec<PlanOp>)
+    requires
+        current@.no_duplicates(),
+        target_ids@.no_duplicates(),
+        target_fresh@.len() == target_ids@.len(),
+        keep@.len() == target_ids@.len(),
+        // 호출부가 지키는 전제: Fresh는 아직 DOM에 없고, Retained는 이미 있다.
+        forall|i: int| #![trigger target_fresh@[i]]
+            0 <= i < target_ids@.len() ==>
+                (target_fresh@[i] ==> !current@.contains(target_ids@[i]))
+                && (!target_fresh@[i] ==> current@.contains(target_ids@[i])),
+    ensures
+        // 방출된 op의 인덱스는 전부 유효하고, spawn 여부는 target과 일치한다.
+        forall|k: int| #![trigger ops@[k]]
+            0 <= k < ops@.len() ==>
+                ops@[k].idx < target_ids@.len()
+                && ops@[k].spawn == target_fresh@[ops@[k].idx as int],
+{
+    let n = target_ids.len();
+    let mut chain = Chain::from_slice(current);
+    let mut ops: Vec<PlanOp> = Vec::new();
+    let mut next_anchor: Option<u64> = None;
+    let mut i: usize = n;
+
+    while i > 0
+        invariant
+            i <= n,
+            n == target_ids@.len(),
+            target_fresh@.len() == target_ids@.len(),
+            keep@.len() == target_ids@.len(),
+            current@.no_duplicates(),
+            target_ids@.no_duplicates(),
+            forall|j: int| #![trigger target_fresh@[j]]
+                0 <= j < n ==>
+                    (target_fresh@[j] ==> !current@.contains(target_ids@[j]))
+                    && (!target_fresh@[j] ==> current@.contains(target_ids@[j])),
+            chain.well_formed(),
+            // (b) 처음부터 있던 것은 사라지지 않는다.
+            forall|x: u64| #![trigger current@.contains(x)]
+                current@.contains(x) ==> chain.denotes().contains(x),
+            // (c) 없던 것이 생기지 않는다 — chain은 current ∪ 이미 처리한 target.
+            forall|x: u64| #![trigger chain.denotes().contains(x)]
+                chain.denotes().contains(x) ==>
+                    current@.contains(x) || target_ids@.subrange(i as int, n as int).contains(x),
+            // (d) 이미 처리한 target 원소는 chain 안에 있다(= anchor 해석 가능).
+            forall|j: int| #![trigger target_ids@[j]]
+                i <= j < n ==> chain.denotes().contains(target_ids@[j]),
+            next_anchor == if i == n { None::<u64> } else { Some(target_ids@[i as int]) },
+            forall|k: int| #![trigger ops@[k]]
+                0 <= k < ops@.len() ==>
+                    ops@[k].idx < n && ops@[k].spawn == target_fresh@[ops@[k].idx as int],
+        decreases i,
+    {
+        i = i - 1;
+        let e = target_ids[i];
+        let fresh = target_fresh[i];
+        let ghost prev_denotes = chain.denotes();
+
+        proof {
+            // e는 target의 i번째이고 중복이 없으므로 [i+1, n) 구간에 없다.
+            assert(!target_ids@.subrange(i as int + 1, n as int).contains(e)) by {
+                let sub = target_ids@.subrange(i as int + 1, n as int);
+                assert forall|j: int| #![trigger sub[j]]
+                    0 <= j < sub.len() implies sub[j] != e by {
+                    assert(sub[j] == target_ids@[i as int + 1 + j]);
+                }
+            }
+        }
+
+        if fresh {
+            // Fresh: chain에 없음이 (c)로부터 따라온다 → insert 사전조건 충족.
+            match next_anchor {
+                Some(a) => {
+                    proof {
+                        // a == target_ids[i+1] 이고, 불변식 (d)가 그것이 chain
+                        // 안에 있음을 준다 → index_of_first가 범위 안.
+                        assert(chain.denotes().contains(a));
+                        chain.denotes().index_of_first_ensures(a);
+                        lemma_insert_has_new(chain.denotes(),
+                            chain.denotes().index_of_first(a).unwrap(), e);
+                    }
+                    let ghost j0 = chain.denotes().index_of_first(a).unwrap();
+                    chain.insert_before(e, a);
+                    proof {
+                        assert forall|x: u64| #![trigger chain.denotes().contains(x)]
+                            chain.denotes().contains(x) <==> (prev_denotes.contains(x) || x == e) by {
+                            if chain.denotes().contains(x) { lemma_insert_only(prev_denotes, j0, e, x); }
+                            if prev_denotes.contains(x) { lemma_insert_keeps(prev_denotes, j0, e, x); }
+                            if x == e { lemma_insert_has_new(prev_denotes, j0, e); }
+                        }
+                    }
+                }
+                None => {
+                    chain.push_back(e);
+                    proof {
+                        assert forall|x: u64| #![trigger chain.denotes().contains(x)]
+                            chain.denotes().contains(x) <==> (prev_denotes.contains(x) || x == e) by {
+                            if chain.denotes().contains(x) { lemma_push_only(prev_denotes, e, x); }
+                            if prev_denotes.contains(x) { lemma_push_keeps(prev_denotes, e, x); }
+                            if x == e { assert(prev_denotes.push(e)[prev_denotes.len() as int] == e); }
+                        }
+                    }
+                }
+            }
+            assert(same_plus(chain.denotes(), prev_denotes, e));
+            ops.push(PlanOp { idx: i, spawn: true, before: next_anchor });
+        } else {
+            // `keep[i]`는 호출부(LIS 변형)가 "이 원소는 이미 상대 순서가
+            // 맞으니 건드리지 말라"고 표시한 것. 스킵은 write를 내지 않고
+            // chain도 그대로 두므로 chain은 계속 DOM과 일치한다 — 다만
+            // **LIS 판단 자체의 정당성은 여기서 검증하지 않는다**(호출부 책임).
+            let already_adjacent = keep[i] || match next_anchor {
+                Some(a) => chain.next_is(e, a),
+                None => chain.is_tail(e),
+            };
+            if !already_adjacent {
+                // Retained: (b)로부터 chain에 있음 → unlink 사전조건 충족.
+                let ghost before = chain.denotes();
+                proof { chain.no_dup(); }
+                chain.unlink(e);
+                proof {
+                    // 중복이 없었으므로 unlink로 e는 완전히 사라졌다 —
+                    // 이어지는 삽입의 사전조건(!contains(e))이 여기서 나온다.
+                    lemma_remove_value_no_dup(before, e);
+                    assert(!chain.denotes().contains(e));
+                    // anchor는 e와 다른 원소이므로 unlink에도 살아남는다.
+                    if let Some(a) = next_anchor {
+                        assert(a != e);
+                        lemma_remove_value_keeps_other(before, e, a);
+                    }
+                }
+                let ghost mid = chain.denotes();
+                match next_anchor {
+                    Some(a) => {
+                        proof {
+                            assert(chain.denotes().contains(a));
+                            chain.denotes().index_of_first_ensures(a);
+                            lemma_insert_has_new(chain.denotes(),
+                                chain.denotes().index_of_first(a).unwrap(), e);
+                        }
+                        let ghost j0 = chain.denotes().index_of_first(a).unwrap();
+                        chain.insert_before(e, a);
+                        proof {
+                            assert forall|x: u64| #![trigger chain.denotes().contains(x)]
+                                chain.denotes().contains(x) <==> (prev_denotes.contains(x) || x == e) by {
+                                if chain.denotes().contains(x) {
+                                    lemma_insert_only(mid, j0, e, x);
+                                    if x != e { lemma_remove_value_only(prev_denotes, e, x); }
+                                }
+                                if prev_denotes.contains(x) && x != e {
+                                    lemma_remove_value_keeps_other(prev_denotes, e, x);
+                                    lemma_insert_keeps(mid, j0, e, x);
+                                }
+                                if x == e { lemma_insert_has_new(mid, j0, e); }
+                            }
+                        }
+                    }
+                    None => {
+                        chain.push_back(e);
+                        proof {
+                            assert forall|x: u64| #![trigger chain.denotes().contains(x)]
+                                chain.denotes().contains(x) <==> (prev_denotes.contains(x) || x == e) by {
+                                if chain.denotes().contains(x) {
+                                    lemma_push_only(mid, e, x);
+                                    if x != e { lemma_remove_value_only(prev_denotes, e, x); }
+                                }
+                                if prev_denotes.contains(x) && x != e {
+                                    lemma_remove_value_keeps_other(prev_denotes, e, x);
+                                    lemma_push_keeps(mid, e, x);
+                                }
+                                if x == e { assert(mid.push(e)[mid.len() as int] == e); }
+                            }
+                        }
+                    }
+                }
+                assert(same_plus(chain.denotes(), prev_denotes, e));
+                ops.push(PlanOp { idx: i, spawn: false, before: next_anchor });
+            } else {
+                // 스킵: 표기 불변. e는 Retained이므로 이미 들어 있다.
+                assert(current@.contains(e));
+                assert(same_plus(chain.denotes(), prev_denotes, e));
+            }
+        }
+        proof {
+            // 세 분기 모두 결과가 같은 모양이다: 표기의 원소 집합이
+            // "이전 집합 ∪ {e}"가 된다(스킵 분기는 e가 이미 있으므로 그대로).
+            // 이 하나로 불변식 (b)/(c)/(d)를 균일하게 유도한다.
+            assert(same_plus(chain.denotes(), prev_denotes, e));
+            assert forall|x: u64| #![trigger current@.contains(x)]
+                current@.contains(x) implies chain.denotes().contains(x) by {
+                if current@.contains(x) {
+                    assert(prev_denotes.contains(x));
+                }
+            }
+            let sub_new = target_ids@.subrange(i as int, n as int);
+            let sub_old = target_ids@.subrange(i as int + 1, n as int);
+            assert(sub_new[0] == e);
+            assert(sub_new.contains(e));
+            // 이전 구간은 새 구간의 부분이다 — 불변식 (c)를 한 칸 넓히는 단계.
+            assert forall|x: u64| sub_old.contains(x) implies sub_new.contains(x) by {
+                let k = choose|k: int| 0 <= k < sub_old.len() && sub_old[k] == x;
+                assert(sub_old[k] == target_ids@[i as int + 1 + k]);
+                assert(sub_new[k + 1] == target_ids@[i as int + 1 + k]);
+            }
+            assert forall|x: u64| #![trigger chain.denotes().contains(x)]
+                chain.denotes().contains(x)
+                implies current@.contains(x) || sub_new.contains(x) by {
+                if chain.denotes().contains(x) && x != e {
+                    assert(prev_denotes.contains(x));
+                }
+            }
+            assert forall|j: int| #![trigger target_ids@[j]]
+                i <= j < n implies chain.denotes().contains(target_ids@[j]) by {
+                if j > i { assert(prev_denotes.contains(target_ids@[j])); }
+            }
+        }
+        next_anchor = Some(e);
+    }
+    ops
 }
 
 } // verus!

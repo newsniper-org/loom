@@ -24,7 +24,7 @@ Rust 구간이라 **실제 함수에 `requires`/`ensures`를 걸 수 있다**. �
 verus formal-verification/verus/flush_order.rs
 ```
 
-현재 결과: **25 verified, 0 errors** (Verus 업스트림 설치본, `/usr/bin/verus`).
+현재 결과: **25 verified, 0 errors**(모델 파일) + **22 verified, 0 errors**(`crates/loom-flush-core`, `cargo verus verify`) (Verus 업스트림 설치본, `/usr/bin/verus`).
 
 ## 무엇이 증명됐나 (2026-07-28)
 
@@ -209,17 +209,44 @@ Chain 교체 때문이 아니라 **COOP/COEP 격리로 타이머 클램프(Firef
 쓰는 것은 후보 간 **비율**이고, 그 비율의 방향은 전부 보존됐다 — 이 교란을
 숨기지 않고 기록한다.
 
+### 방출 루프 이관 완료 — `plan_writes` (2026-07-28, 2단계)
+
+이전 라운드의 남은 항목("`place_in_order`가 Chain의 사전조건을 지키는지는
+기계적으로 확인되지 않는다")을 해소했다. **순서 결정 루프 전체가
+`loom_flush_core::plan_writes`로 옮겨졌다.**
+
+`list.rs`의 `place_in_order`/`place_in_order_lis`는 이제 `Chain`을 **직접
+만지지 않는다** — `plan_writes`가 돌려준 `PlanOp` 열을 `DomWrite`로 옮겨 적는
+`emit_plan`만 남았다. 순서 판단이 그 파일에서 완전히 사라졌으므로
+`unlink`/`insert_before`/`push_back`의 사전조건은 **전부 검증 크레이트 안에서
+증명으로 해소**된다.
+
+루프 불변식 네 개로 사전조건을 유도한다: (a) `chain.well_formed()`,
+(b) 처음부터 있던 원소는 사라지지 않는다, (c) 없던 원소가 생기지 않는다
+(= chain ⊆ current ∪ 이미 처리한 target), (d) 이미 처리한 target 원소는 chain
+안에 있다(= anchor가 항상 해석 가능). 세 분기(Fresh / Retained-스킵 /
+Retained-이동)가 공통으로 만족하는 모양을 `same_plus`(표기 집합 = 이전 집합 ∪
+{e})로 뽑아 불변식을 균일하게 유도했다.
+
+**LIS 변형도 같은 함수를 쓴다**: `place_in_order_lis`의 "이 원소는 상대 순서가
+이미 맞으니 건드리지 말라"는 표시를 `keep` 파라미터로 받는다. 스킵은 write를
+내지 않고 chain도 그대로 두므로 chain은 계속 DOM과 일치한다. **단, LIS 판단
+자체의 정당성은 검증 범위 밖**이다(`lis_indices`는 비검증 코드) — 검증된 것은
+"그 표시를 받아들여도 Chain 조작의 사전조건이 지켜진다"까지다.
+
+§2.5 재수집(v7 → **v8**): §9 판정 전부 동일(CI 폭만 미세 변동).
+
 ## 남은 것 (숨기지 않음)
 
-1. **`place_in_order` 자체는 아직 검증 대상이 아니다**: 검증된 것은 `Chain`의
-   각 연산이다. `place_in_order`(`list.rs`, 비검증 코드)가 그 **사전조건**을
-   지키는지는 기계적으로 확인되지 않는다 — 일반 `cargo build`에서는
-   `requires`가 지워지기 때문이다. 이는 "검증된 라이브러리를 비검증 코드가
-   호출하는" 통상적 상황이고, 사전조건 자체는 단순하고 국소적으로 감사
-   가능하다(`unlink`는 e가 표기에 있을 것, `insert_before`는 e가 없고 a가
-   있을 것). 이걸 없애려면 방출 루프 전체를 `loom-flush-core`로 옮겨
-   `plan_writes`로 만들어야 한다 — 다음 단계.
-2. **`emit_writes`와 `apply_k`의 결선**: `apply_k`는 `emit_writes`의 사후조건을
+1. **`plan_writes`의 사후조건은 아직 "수렴"이 아니다**: 현재 사후조건은 방출된
+   op의 인덱스 유효성과 spawn 플래그 일치까지다. "적용하면 target 순서가
+   된다"(정리 (2))는 `formal-verification/verus/flush_order.rs`에서 **모델에
+   대해** 증명돼 있고, 그것을 `plan_writes`의 사후조건으로 끌어오려면 루프
+   불변식에 접미사 조건을 추가해야 한다. 즉 사전조건 준수는 실제 코드에서
+   기계 검증됐지만, 수렴은 아직 모델 수준이다.
+2. **`lis_indices`는 비검증**: LIS 계산 자체(그리고 그 결과를 `keep`으로 쓰는
+   것의 정당성)는 검증 대상이 아니다.
+3. **`emit_writes`와 `apply_k`의 결선**: `apply_k`는 `emit_writes`의 사후조건을
    목표 id열만으로 다시 쓴 것이다. 둘이 같은 시퀀스를 가리킨다는 것을 별도
    정리로 잇지 않았다.
 
@@ -236,6 +263,7 @@ Chain 교체 때문이 아니라 **COOP/COEP 격리로 타이머 클램프(Firef
    구별되는가*: `Entity`는 불투명 id이고 `Eq`/`Hash`가 동일성과 일치한다.
    — 이 서술은 위 결선으로 해소됐다.)
 
-**과장하지 말 것**: 현재 상태는 "`Chain`의 각 연산이 검증된 실행 코드이고
-`place_in_order`가 그것을 호출한다"이지, "`place_in_order` 전체가 검증됐다"가
-아니다.
+**과장하지 말 것**: 현재 상태는 "순서 결정 루프와 그것이 쓰는 `Chain`이 검증된
+실행 코드이고, 그 안에서 모든 사전조건이 증명으로 해소된다"이지, "그 루프가
+target 순서로 수렴함이 실제 코드에 대해 증명됐다"가 아니다 — 수렴은 모델
+수준(위 남은 것 1번).
