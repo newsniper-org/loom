@@ -554,6 +554,117 @@ pub proof fn order_converges_exactly(dom: Seq<usize>, t: Seq<usize>)
 
 
 // ===========================================================================
+// emit_writes ↔ apply_k 결선
+// ===========================================================================
+//
+// 여기까지의 정리 (2)는 `apply_k`에 대해 서술돼 있는데, `apply_k`는
+// `emit_writes`의 사후조건을 **손으로 `t`만으로 다시 쓴 것**이다. 그 재작성이
+// 옳다는 것 자체는 아직 증명되지 않았고, 만약 틀렸다면 정리 (2)는 실제
+// 방출 시퀀스와 무관한 명제가 된다. 이 절이 그 간극을 닫는다.
+
+/// `writes`를 **그 자체로** 적용한 결과 — 각 write가 실제로 들고 있는
+/// `id()`/`before()`를 그대로 쓴다. `LoomApp::tick`의 적용 루프에 대응한다.
+pub open spec fn apply_writes(dom: Seq<usize>, writes: Seq<Write>, k: int) -> Seq<usize>
+    decreases k
+{
+    if k <= 0 {
+        dom
+    } else {
+        place_before(
+            apply_writes(dom, writes, k - 1),
+            writes[k - 1].id(),
+            writes[k - 1].before(),
+        )
+    }
+}
+
+/// target 슬롯열에서 id만 뽑은 시퀀스 — 정리 (2)가 말하는 `t`가 실제로 이것이다.
+pub open spec fn ids_of(target: Seq<Slot>) -> Seq<usize> {
+    Seq::new(target.len(), |i: int| target[i].id())
+}
+
+/// **결선 정리**: `emit_writes`의 사후조건을 만족하는 write 시퀀스를 그대로
+/// 적용한 것(`apply_writes`)과, 그것을 `t`만으로 다시 쓴 것(`apply_k`)은
+/// 모든 `k`에서 같은 DOM을 낸다.
+pub proof fn lemma_emit_matches_apply_k(
+    dom: Seq<usize>,
+    target: Seq<Slot>,
+    writes: Seq<Write>,
+    k: int,
+)
+    requires
+        writes.len() == target.len(),
+        forall|j: int| #![trigger writes[j]]
+            0 <= j < writes.len() ==> writes[j].id() == target[target.len() - 1 - j].id(),
+        forall|j: int| #![trigger writes[j]]
+            0 <= j < writes.len() ==> writes[j].before() == if j == 0 {
+                None::<usize>
+            } else {
+                Some(target[target.len() - j].id())
+            },
+        0 <= k <= writes.len(),
+    ensures
+        apply_writes(dom, writes, k) =~= apply_k(dom, ids_of(target), k),
+    decreases k,
+{
+    let t = ids_of(target);
+    assert(t.len() == target.len());
+    if k <= 0 {
+    } else {
+        lemma_emit_matches_apply_k(dom, target, writes, k - 1);
+        // 원소: writes[k-1].id() == target[len-1-(k-1)].id() == t[t.len()-k]
+        assert(target.len() - 1 - (k - 1) == target.len() - k);
+        assert(t[t.len() - k] == target[target.len() - k].id());
+        // anchor: k==1이면 None, 아니면 Some(target[len-(k-1)].id()) == Some(t[t.len()-k+1])
+        if k > 1 {
+            assert(target.len() - (k - 1) == target.len() - k + 1);
+            assert(t[t.len() - k + 1] == target[target.len() - k + 1].id());
+        }
+    }
+}
+
+/// **정리 (1) + (2)를 실제 함수의 실제 출력에 대해 한 문장으로**.
+///
+/// `emit_writes`를 호출해 얻은 바로 그 `Vec<Write>`에 대해:
+///   - anchor는 항상 해석 가능하고(정리 (1) — `tick`의 두 조용한 폴백은 미도달),
+///   - 그 write들을 순서대로 적용하면 DOM의 뒤쪽 |target|개가 목표 순서와
+///     정확히 일치한다(정리 (2)).
+///
+/// 이전까지는 두 정리가 각각 "사후조건을 만족하는 어떤 시퀀스"와 "손으로 다시
+/// 쓴 `apply_k`"에 대해 서술돼 있어, 둘과 실제 방출물 사이에 사람이 눈으로
+/// 이은 대응이 남아 있었다. 이 함수가 그 대응을 기계 검사로 바꾼다.
+pub fn emit_writes_verified(
+    target: &Vec<Slot>,
+    Ghost(dom): Ghost<Seq<usize>>,
+) -> (writes: Vec<Write>)
+    requires
+        dom.no_duplicates(),
+        ids_of(target@).no_duplicates(),
+        // 호출부가 지키는 전제(정리 (1)과 동일): Retained는 이미 DOM에 있다.
+        forall|m: int| #![trigger target@[m]]
+            0 <= m < target@.len() && !target@[m].is_fresh() ==> dom.contains(target@[m].id()),
+    ensures
+        writes@.len() == target@.len(),
+        anchors_always_resolvable(dom, writes@),
+        ({
+            let r = apply_writes(dom, writes@, writes@.len() as int);
+            &&& r.len() >= target@.len()
+            &&& r.subrange(r.len() - target@.len(), r.len() as int) =~= ids_of(target@)
+        }),
+{
+    let writes = emit_writes(target);
+    proof {
+        let t = ids_of(target@);
+        assert(t.len() == target@.len());
+        anchor_precedence(dom, target@, writes@);
+        lemma_emit_matches_apply_k(dom, target@, writes@, writes@.len() as int);
+        order_converges(dom, t);
+    }
+    writes
+}
+
+
+// ===========================================================================
 // already_adjacent 스킵 최적화의 안전성
 // ===========================================================================
 

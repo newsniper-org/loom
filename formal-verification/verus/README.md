@@ -316,6 +316,56 @@ raw `no_duplicates`를 호출할 때마다 문맥에 되돌려 주입한 것이�
 버그가 아니었다 — 낮은 rlimit에서는 깨끗한 "초과"가 나오므로 Z3가 오래·크게
 돌다 비정상 출력을 낸 증상이었고, 부담을 줄이자 사라졌다.
 
+## `emit_writes` ↔ `apply_k` 결선 — 완료 (2026-08-02)
+
+정리 (2)까지의 서술에는 사람이 눈으로 이은 대응이 하나 남아 있었다. `apply_k`는
+`emit_writes`의 사후조건을 **손으로 목표 id열만으로 다시 쓴 것**이고, 그 재작성이
+옳다는 정리가 없었다. 만약 재작성이 틀렸다면 정리 (2)는 실제 방출 시퀀스와
+무관한 명제가 된다.
+
+`flush_order.rs`에 셋을 추가해 닫았다(**28 verified, 0 errors**, 첫 시도 통과):
+
+- `apply_writes(dom, writes, k)` — 각 write가 **실제로 들고 있는**
+  `id()`/`before()`를 그대로 적용한다(`LoomApp::tick`의 적용 루프에 대응).
+- `lemma_emit_matches_apply_k` — `emit_writes`의 사후조건을 만족하는 시퀀스에
+  대해 `apply_writes(dom, writes, k) =~= apply_k(dom, ids_of(target), k)`.
+- `emit_writes_verified` — **exec 함수**. `emit_writes`를 호출해 얻은 바로 그
+  `Vec<Write>`에 대해 정리 (1)과 (2)를 한 문장으로 낸다:
+
+```rust
+ensures
+    writes@.len() == target@.len(),
+    anchors_always_resolvable(dom, writes@),          // 정리 (1)
+    ({ let r = apply_writes(dom, writes@, writes@.len() as int);
+       &&& r.len() >= target@.len()
+       &&& r.subrange(r.len() - target@.len(), r.len() as int) =~= ids_of(target@) }),
+```
+
+이제 "사후조건을 만족하는 **어떤** 시퀀스"가 아니라 **그 함수가 실제로 낸
+시퀀스**에 대해 서술된다.
+
+### 음성 대조 3건 (전부 거부 확인)
+
+| # | 고의 결함 | 결과 |
+|---|---|---|
+| NC-1 | `apply_writes`가 write를 **반대 순서**로 적용 | `postcondition not satisfied` |
+| NC-2 | `ids_of`를 target **역순**으로 정의 | `assertion failed` ×2 |
+| NC-3 | 결선 정리에서 `before()` 사후조건 전제를 제거 | `postcondition not satisfied` |
+
+### 남은 비대칭 — 정직하게
+
+`emit_writes`는 `already_adjacent` 스킵을 하지 **않는** 상위집합이다(모델 파일이
+의도적으로 그렇게 뒀고, `skip_optimization_is_safe`가 `apply_k_opt =~= apply_k`로
+그 차이를 메운다). 스킵을 실제로 하는 exec 함수는 모델 파일에 없다 — **그건
+`crates/loom-flush-core::plan_writes_converging`이고, 거기서는 스킵 분기를 포함한
+채로 수렴이 직접 증명돼 있다**(모델이 아니라 배포되는 코드). 즉 이 비대칭은
+간극이 아니라 역할 분담이다.
+
+한 가지는 여전히 모델에만 있다: **정리 (1)("두 폴백 경로가 한 번도 실행되지
+않는다")**. `loom-flush-core`의 `place_before`는 폴백 가지를 그대로 모델링하고도
+수렴을 증명하므로 "폴백이 순서를 깨뜨리지 않는다"는 결론은 코드 쪽에도 있지만,
+"폴백이 아예 도달 불가"라는 더 강한 명제는 `flush_order.rs`의 것이다.
+
 ## 남은 것 (숨기지 않음)
 
 1. ~~`plan_writes`의 사후조건이 "수렴"이 아니다~~ → **2026-08-01 해결**
@@ -324,9 +374,8 @@ raw `no_duplicates`를 호출할 때마다 문맥에 되돌려 주입한 것이�
 
 2. **`lis_indices`는 비검증**: LIS 계산 자체(그리고 그 결과를 `keep`으로 쓰는
    것의 정당성)는 검증 대상이 아니다.
-3. **`emit_writes`와 `apply_k`의 결선**: `apply_k`는 `emit_writes`의 사후조건을
-   목표 id열만으로 다시 쓴 것이다. 둘이 같은 시퀀스를 가리킨다는 것을 별도
-   정리로 잇지 않았다.
+3. ~~`emit_writes`와 `apply_k`의 결선~~ → **2026-08-02 해결**
+   (아래 "`emit_writes` ↔ `apply_k` 결선" 절).
 
 ### (해소됨) `std::HashMap` ↔ `Map` 결선
 
