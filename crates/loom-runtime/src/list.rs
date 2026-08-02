@@ -361,9 +361,37 @@ fn place_in_order_lis(
     }
 
     // 순서 결정은 검증된 `plan_writes`가 한다 — LIS가 고른 "유지" 표시는
-    // `keep`으로 넘긴다. **LIS 판단 자체의 정당성은 검증 범위 밖**이고
-    // (`lis_indices`는 비검증 코드), `plan_writes`가 보장하는 것은 그 표시를
-    // 받아들였을 때도 Chain 조작의 사전조건이 지켜진다는 것이다.
+    // `keep`으로 넘긴다.
+    //
+    // **`keep`이 지켜야 하는 조건 P**:
+    // 표시된 원소들의 `current` 내 상대 순서가 target 순서와 같아야 한다.
+    // 이것이 정확히 필요충분조건임은 전수 탐색으로 확인됐다(2026-08-02) —
+    // P를 위반하면 **100%** 순서가 깨진다. `lis_indices`가 P를 세운다는 것
+    // (= LIS 건전성)은 아직 증명되지 않았으므로, 디버그 빌드에서 실제로
+    // 검사한다(P를 Verus 명세로 올리는 것은 실패했다 —
+    // `formal-verification/verus/README.md`의 "검증이 rlimit 경계에 붙어
+    // 있다" 절). 여기서 필요한 건 건전성뿐이고 **최적성은 아니다** — LIS가
+    // 최적이 아니면 이동이 더 나올 뿐 순서는 깨지지 않는다(성능 성질).
+    debug_assert!(
+        {
+            let mut last: Option<usize> = None;
+            let mut ok = true;
+            for (i, slot) in target.iter().enumerate() {
+                if keep_in_place[i] {
+                    if let Slot::Retained(e) = slot {
+                        let pos = old_index_of[e];
+                        if last.is_some_and(|l| pos <= l) {
+                            ok = false;
+                        }
+                        last = Some(pos);
+                    }
+                }
+            }
+            ok
+        },
+        "lis_indices가 사전조건 P를 위반했다 — 표시된 원소들의 current 내 \
+         상대 순서가 target 순서와 다르다. 이 상태로 진행하면 DOM 순서가 깨진다."
+    );
     let ops = loom_flush_core::plan_writes(
         &current.iter().map(|e| e.to_bits()).collect::<Vec<u64>>(),
         &target.iter().map(|s| slot_entity(s).to_bits()).collect::<Vec<u64>>(),
@@ -747,6 +775,48 @@ mod lis_tests {
         // A full reversal has no increasing run longer than 1.
         let lis = lis_indices(&[4, 3, 2, 1, 0]);
         assert_eq!(lis.len(), 1);
+    }
+
+    /// **사전조건 P의 건전성 무작위 검사** — `lis_indices`가 돌려준 인덱스
+    /// 집합이 정말 *증가* 부분수열인가. 이것이 `plan_writes`의 `keep`이
+    /// 지켜야 하는 조건(`loom_flush_core::kept_order_preserved`)의 전부다.
+    ///
+    /// 최적성(정말 *가장 긴가*)은 **검사하지 않는다** — 최적이 아니면 이동이
+    /// 더 나올 뿐 순서는 깨지지 않으므로 성능 성질이지 정합성 성질이 아니다.
+    /// (전수 탐색 결과는 `formal-verification/verus/README.md` 참고.)
+    #[test]
+    fn lis_result_is_always_an_increasing_subsequence() {
+        // PCG64 대신 결정적 xorshift로 충분 — 이건 판정용 표본이 아니라
+        // 속성 검사이고, 시드가 고정이면 재현된다.
+        let mut state: u64 = 0x2026_0802_0000_0001;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for n in 1..=40usize {
+            for _ in 0..50 {
+                // 임의의 순열 (Fisher-Yates)
+                let mut seq: Vec<usize> = (0..n).collect();
+                for i in (1..n).rev() {
+                    let j = (next() as usize) % (i + 1);
+                    seq.swap(i, j);
+                }
+                let lis = lis_indices(&seq);
+                let mut idx: Vec<usize> = lis.into_iter().collect();
+                idx.sort_unstable();
+                assert!(!idx.is_empty(), "비어 있지 않은 입력에 빈 LIS: {seq:?}");
+                for w in idx.windows(2) {
+                    assert!(
+                        seq[w[0]] < seq[w[1]],
+                        "P 위반: seq={seq:?} idx={idx:?} — {} !< {}",
+                        seq[w[0]],
+                        seq[w[1]]
+                    );
+                }
+            }
+        }
     }
 
     #[test]
