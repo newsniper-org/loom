@@ -12,3 +12,4 @@ __pycache__/
 /bench/e2e/test-results
 /bench/e2e/results
 /bench/e2e/playwright-report
+.verus-solver-log/

@@ -204,11 +204,14 @@ fn place_in_order(
 ) {
     // 순서 결정은 전부 검증된 `loom_flush_core::plan_writes`가 한다 — 이
     // 함수에 남은 일은 그 계획을 `DomWrite`로 옮겨 적는 것뿐이다.
-    let ops = loom_flush_core::plan_writes(
+    // **수렴까지 증명된 판본**을 쓴다(2026-08-01). `plan_writes`(LIS 변형용)와
+    // 달리 `keep`이 없어 불변식이 전부 무조건이고, 그래서 "방출한 op를 적용하면
+    // DOM의 뒤쪽 |target|개가 목표 순서와 일치한다"가 **사후조건으로** 증명된다
+    // (RQ5 #4 정리 (2) — `formal-verification/verus/README.md` 참고).
+    let ops = loom_flush_core::plan_writes_converging(
         &current.iter().map(|e| e.to_bits()).collect::<Vec<u64>>(),
         &target.iter().map(|s| slot_entity(s).to_bits()).collect::<Vec<u64>>(),
         &target.iter().map(|s| matches!(s, Slot::Fresh { .. })).collect::<Vec<bool>>(),
-        &vec![false; target.len()], // LIS 변형이 아니므로 강제 유지 없음
     );
     emit_plan(parent, target, &ops, pending, row_bindings);
 }

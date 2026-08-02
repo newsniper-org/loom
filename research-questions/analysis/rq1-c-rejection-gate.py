@@ -102,8 +102,8 @@ def analyze(path, label):
 
 results = []
 for browser, path in [
-    ("CHROMIUM (1차 판정)", f"{DATA}/rq1-phase1-track-l-core-grid-v13-chromium.json"),
-    ("FIREFOX (교차 확인)", f"{DATA}/rq1-phase1-track-l-core-grid-v13-firefox.json"),
+    ("CHROMIUM (1차 판정)", f"{DATA}/rq1-phase1-track-l-core-grid-v14-chromium.json"),
+    ("FIREFOX (교차 확인)", f"{DATA}/rq1-phase1-track-l-core-grid-v14-firefox.json"),
 ]:
     r = analyze(path, browser)
     if r:

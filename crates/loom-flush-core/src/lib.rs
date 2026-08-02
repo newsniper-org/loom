@@ -56,6 +56,34 @@ pub open spec fn chain_denotes(
             prev.contains_key(k) ==> exists|i: int| 0 < i < s.len() && s[i] == k
 }
 
+
+/// **`no_duplicates`를 가두는 불투명 래퍼**(2026-08-01, 프로파일 근거).
+///
+/// `Seq::no_duplicates()`는 `forall|i, j| ... ==> s[i] != s[j]` — 인덱스 **쌍**
+/// 전체에 대한 2변수 양화자다. 이 사실이 루프 문맥에 떠 있으면 Z3가 O(n²)
+/// 패턴을 폭발적으로 인스턴스화한다: `--profile` 결과 이 하나가 전체 인스턴스화의
+/// **88%**(2,286,314 / 2,584,749)를 차지해 루프 검증이 자원 벽에 부딪혔다.
+///
+/// 래퍼를 `opaque`로 두면 루프는 "중복이 없다"는 **명제만** 들고 다니고
+/// 양화자는 보지 않는다. 실제로 펼치는 것은 그것이 필요한 보조정리 안뿐이며,
+/// 그 안의 검증 조건은 작아서 감당된다.
+#[verifier::opaque]
+pub open spec fn seq_nodup(s: Seq<u64>) -> bool {
+    s.no_duplicates()
+}
+
+/// 래퍼를 벗긴다 — 양화자가 필요한 지점에서만 쓴다.
+pub proof fn lemma_nodup_unwrap(s: Seq<u64>)
+    requires seq_nodup(s),
+    ensures s.no_duplicates(),
+{ reveal(seq_nodup); }
+
+/// 래퍼를 씌운다.
+pub proof fn lemma_nodup_wrap(s: Seq<u64>)
+    requires s.no_duplicates(),
+    ensures seq_nodup(s),
+{ reveal(seq_nodup); }
+
 /// `d` 안에서 `e`가 `a` 바로 앞에 있는가 — `already_adjacent` 판정의 의미.
 pub open spec fn adjacent(d: Seq<u64>, e: u64, a: u64) -> bool {
     exists|i: int| 0 <= i < d.len() - 1 && #[trigger] d[i] == e && d[i + 1] == a
@@ -144,6 +172,15 @@ impl Chain {
         requires self.well_formed(),
         ensures self.denotes().no_duplicates(),
     {
+    }
+
+    /// `no_dup`의 불투명 판본 — 루프가 양화자를 보지 않도록 이쪽을 쓴다.
+    pub proof fn no_dup_opaque(&self)
+        requires self.well_formed(),
+        ensures seq_nodup(self.denotes()),
+    {
+        self.no_dup();
+        lemma_nodup_wrap(self.denotes());
     }
 
     /// 원본 `Chain::unlink`와 **같은 코드**. 사후조건이 표기 수준의 효과를
@@ -280,11 +317,15 @@ impl Chain {
 /// **L5**: 중복 없는 시퀀스에서 첫 occurrence를 지우면 그 값은 사라지고,
 /// 중복 없음도 유지된다.
 pub proof fn lemma_remove_value_no_dup(s: Seq<u64>, e: u64)
-    requires s.no_duplicates(),
+    requires seq_nodup(s),
     ensures
-        s.remove_value(e).no_duplicates(),
+        // **불투명 형태로 낸다**: raw `no_duplicates`를 ensures에 두면 이 정리를
+        // 부르는 쪽(루프) 문맥에 2변수 양화자가 다시 주입된다 — 프로파일에서
+        // 래퍼를 씌우고도 89%가 그대로였던 원인이 이것이었다.
+        seq_nodup(s.remove_value(e)),
         !s.remove_value(e).contains(e),
 {
+    lemma_nodup_unwrap(s);
     s.index_of_first_ensures(e);
     if let Some(i) = s.index_of_first(e) {
         s.remove_ensures(i);
@@ -302,6 +343,7 @@ pub proof fn lemma_remove_value_no_dup(s: Seq<u64>, e: u64)
             assert(jj != ll);
         }
     }
+    lemma_nodup_wrap(s.remove_value(e));
 }
 
 
@@ -828,6 +870,551 @@ pub proof fn lemma_remove_value_only(s: Seq<u64>, e: u64, x: u64)
     }
 }
 
+/// **L1**: 뒤쪽 조각에 `e`가 없으면, 이어붙인 시퀀스에서 첫 occurrence를 지우는
+/// 것은 앞쪽 조각에서만 지우는 것과 같다.
+pub proof fn lemma_remove_value_in_prefix(p: Seq<u64>, s: Seq<u64>, e: u64)
+    requires !s.contains(e),
+    ensures (p + s).remove_value(e) =~= p.remove_value(e) + s,
+{
+    (p + s).index_of_first_ensures(e);
+    p.index_of_first_ensures(e);
+    if p.contains(e) {
+        let i = p.index_of_first(e).unwrap();
+        assert((p + s).index_of_first(e) == Some(i)) by {
+            assert((p + s)[i] == p[i]);
+            assert(forall|j: int| 0 <= j < i ==> (p + s)[j] == p[j]);
+        }
+        assert((p + s).remove(i) =~= p.remove(i) + s);
+    } else {
+        assert(!(p + s).contains(e)) by {
+            assert forall|j: int| 0 <= j < (p + s).len() implies (p + s)[j] != e by {
+                if j < p.len() { assert((p + s)[j] == p[j]); }
+                else { assert((p + s)[j] == s[j - p.len()]); }
+            }
+        }
+    }
+}
+
+
+/// **L2**: 앞쪽 조각에 `a`가 없고 뒤쪽 조각이 `a`로 시작하면, 이어붙인
+/// 시퀀스에서 `a`의 첫 위치는 정확히 앞쪽 조각의 길이다.
+pub proof fn lemma_index_of_first_at_boundary(p: Seq<u64>, s: Seq<u64>, a: u64)
+    requires !p.contains(a), s.len() > 0, s[0] == a,
+    ensures (p + s).index_of_first(a) == Some(p.len() as int),
+{
+    (p + s).index_of_first_ensures(a);
+    assert((p + s)[p.len() as int] == a);
+    assert forall|j: int| 0 <= j < p.len() implies (p + s)[j] != a by {
+        assert((p + s)[j] == p[j]);
+    }
+}
+
+
+/// **L3**: 경계 위치에 삽입하면 앞쪽 조각 끝에 붙는 것과 같다.
+pub proof fn lemma_insert_at_boundary(p: Seq<u64>, s: Seq<u64>, e: u64)
+    ensures (p + s).insert(p.len() as int, e) =~= p.push(e) + s,
+{
+    assert((p + s).subrange(0, p.len() as int) =~= p);
+    assert((p + s).subrange(p.len() as int, (p + s).len() as int) =~= s);
+}
+
+
+
+/// **L4**: 원소를 지워도 "원래 없던 것은 여전히 없다".
+pub proof fn lemma_remove_value_preserves_absence(s: Seq<u64>, e: u64, x: u64)
+    requires !s.contains(x),
+    ensures !s.remove_value(e).contains(x),
+{
+    s.index_of_first_ensures(e);
+    if let Some(i) = s.index_of_first(e) {
+        s.remove_ensures(i);
+        assert forall|j: int| 0 <= j < s.remove(i).len() implies s.remove(i)[j] != x by {
+            if j < i { assert(s.remove(i)[j] == s[j]); }
+            else { assert(s.remove(i)[j] == s[j + 1]); }
+        }
+    }
+}
+
+
+/// **L6**: 없던 원소를 끼워 넣으면 중복 없음이 유지된다.
+pub proof fn lemma_insert_no_dup(s: Seq<u64>, i: int, e: u64)
+    requires s.no_duplicates(), !s.contains(e), 0 <= i <= s.len(),
+    ensures s.insert(i, e).no_duplicates(),
+{
+    s.insert_ensures(i, e);
+    let t = s.insert(i, e);
+    assert forall|j: int, l: int|
+        0 <= j < t.len() && 0 <= l < t.len() && j != l implies t[j] != t[l] by {
+        if j == i {
+            assert(t[j] == e);
+            if l < i { assert(t[l] == s[l]); } else { assert(t[l] == s[l - 1]); }
+        } else if l == i {
+            assert(t[l] == e);
+            if j < i { assert(t[j] == s[j]); } else { assert(t[j] == s[j - 1]); }
+        } else {
+            let jj = if j < i { j } else { j - 1 };
+            let ll = if l < i { l } else { l - 1 };
+            assert(t[j] == s[jj]);
+            assert(t[l] == s[ll]);
+            assert(jj != ll);
+        }
+    }
+}
+
+
+
+/// **단계 보조정리**: DOM의 뒤쪽 `k`개가 이미 목표 접미사와 같을 때,
+/// "`e`를 그 접미사의 첫 원소 앞에 놓는" write 하나를 적용하면 뒤쪽 `k+1`개가
+/// `[e] ++ 접미사`가 된다. 이게 귀납의 한 걸음이다.
+pub proof fn lemma_place_extends_suffix(d: Seq<u64>, k: int, e: u64)
+    requires
+        seq_nodup(d),
+        0 < k <= d.len(),
+        !d.subrange(d.len() - k, d.len() as int).contains(e),
+    ensures
+        ({
+            let suf = d.subrange(d.len() - k, d.len() as int);
+            let r = place_before(d, e, Some(suf[0]));
+            &&& seq_nodup(r)
+            &&& r.len() >= k + 1
+            &&& r.subrange(r.len() - (k + 1), r.len() as int) =~= seq![e] + suf
+        }),
+{
+    lemma_nodup_unwrap(d);
+    let p = d.subrange(0, d.len() - k);
+    let suf = d.subrange(d.len() - k, d.len() as int);
+    let a = suf[0];
+    assert(d =~= p + suf);
+
+    // a는 접미사의 첫 원소이므로, 중복이 없으니 앞쪽 조각에는 없다.
+    assert(!p.contains(a)) by {
+        assert forall|j: int| 0 <= j < p.len() implies p[j] != a by {
+            assert(p[j] == d[j]);
+            assert(a == d[d.len() - k]);
+            assert(j != d.len() - k);
+        }
+    }
+
+    lemma_remove_value_in_prefix(p, suf, e);
+    lemma_remove_value_no_dup(d, e);
+    let p2 = p.remove_value(e);
+    assert(d.remove_value(e) =~= p2 + suf);
+    lemma_remove_value_preserves_absence(p, e, a);
+    lemma_index_of_first_at_boundary(p2, suf, a);
+    lemma_insert_at_boundary(p2, suf, e);
+
+    let r = place_before(d, e, Some(a));
+    assert(r =~= p2.push(e) + suf);
+    // `lemma_remove_value_no_dup`이 이제 불투명 형태로 내주므로 여기서 벗긴다
+    // (이 proof fn 안이라 루프 문맥으로는 새지 않는다).
+    lemma_nodup_unwrap(d.remove_value(e));
+    lemma_insert_no_dup(d.remove_value(e), p2.len() as int, e);
+    assert(r.subrange(r.len() - (k + 1), r.len() as int) =~= seq![e] + suf) by {
+        assert(r.len() == p2.len() + 1 + suf.len());
+        assert forall|j: int| 0 <= j < k + 1
+            implies r.subrange(r.len() - (k + 1), r.len() as int)[j] == (seq![e] + suf)[j] by {
+            if j == 0 {
+                assert(r[p2.len() as int] == e);
+            } else {
+                assert(r[p2.len() + j] == suf[j - 1]);
+            }
+        }
+    }
+    lemma_nodup_wrap(place_before(d, e, Some(d.subrange(d.len() - k, d.len() as int)[0])));
+}
+
+
+
+
+/// `LoomApp::tick` 적용 루프 한 걸음(표기 수준).
+pub open spec fn place_before(dom: Seq<u64>, e: u64, before: Option<u64>) -> Seq<u64> {
+    let d = dom.remove_value(e);
+    match before {
+        None => d.push(e),
+        Some(a) => match d.index_of_first(a) {
+            Some(i) => d.insert(i, e),
+            None => d.push(e),
+        },
+    }
+}
+
+/// 없는 원소를 지우려 하면 아무 일도 없다.
+pub proof fn lemma_remove_value_absent(s: Seq<u64>, e: u64)
+    requires !s.contains(e),
+    ensures s.remove_value(e) =~= s,
+{ s.index_of_first_ensures(e); }
+
+/// **인접해서 스킵한 경우의 접미사 확장**.
+pub proof fn lemma_adjacent_skip_extends_suffix(
+    d: Seq<u64>, t: Seq<u64>, i: int, n: int, e: u64, a: u64,
+)
+    requires
+        seq_nodup(d), seq_nodup(t), n == t.len(),
+        0 <= i, i + 1 < n, e == t[i], a == t[i + 1],
+        d.len() >= n - i - 1,
+        d.subrange(d.len() - (n - i - 1), d.len() as int) =~= t.subrange(i + 1, n),
+        adjacent(d, e, a),
+    ensures
+        d.len() >= n - i,
+        d.subrange(d.len() - (n - i), d.len() as int) =~= t.subrange(i, n),
+{
+    lemma_nodup_unwrap(d); lemma_nodup_unwrap(t);
+    let k = n - i - 1;
+    let suf = d.subrange(d.len() - k, d.len() as int);
+    assert(suf[0] == t.subrange(i + 1, n)[0]);
+    assert(t.subrange(i + 1, n)[0] == t[i + 1]);
+    assert(d[d.len() - k] == a);
+    let j = choose|j: int| 0 <= j < d.len() - 1 && #[trigger] d[j] == e && d[j + 1] == a;
+    assert(j + 1 == d.len() - k) by { assert(d[j + 1] == d[d.len() - k]); }
+    assert(d.len() >= n - i);
+    assert(d.subrange(d.len() - (k + 1), d.len() as int) =~= t.subrange(i, n)) by {
+        assert forall|m: int| 0 <= m < k + 1 implies
+            d[d.len() - (k + 1) + m] == t.subrange(i, n)[m] by {
+            if m == 0 { assert(d.len() - (k + 1) == j); }
+            else {
+                assert(suf[m - 1] == d[d.len() - k + m - 1]);
+                assert(t.subrange(i + 1, n)[m - 1] == t[i + m]);
+            }
+        }
+    }
+}
+
+/// **꼬리라서 스킵한 경우**(i == n-1).
+pub proof fn lemma_tail_skip_extends_suffix(d: Seq<u64>, t: Seq<u64>, i: int, n: int, e: u64)
+    requires n == t.len(), 0 <= i, i + 1 == n, e == t[i], d.len() > 0, d[d.len() - 1] == e,
+    ensures d.len() >= n - i, d.subrange(d.len() - (n - i), d.len() as int) =~= t.subrange(i, n),
+{
+    assert(t.subrange(i, n).len() == 1);
+    assert(t.subrange(i, n)[0] == t[i]);
+}
+
+/// 비스킵 분기의 마지막 연결: `[e] ++ 이전접미사`를 `target[i..n]`으로 읽는다.
+pub proof fn lemma_move_extends_suffix(
+    d_new: Seq<u64>, suf_old: Seq<u64>, t: Seq<u64>, i: int, n: int, e: u64,
+)
+    requires
+        n == t.len(), 0 <= i, i + 1 <= n, e == t[i],
+        suf_old =~= t.subrange(i + 1, n),
+        d_new.len() >= n - i,
+        d_new.subrange(d_new.len() - (n - i), d_new.len() as int) =~= seq![e] + suf_old,
+    ensures d_new.subrange(d_new.len() - (n - i), d_new.len() as int) =~= t.subrange(i, n),
+{
+    assert(seq![e] + suf_old =~= t.subrange(i, n)) by {
+        assert forall|m: int| 0 <= m < n - i implies
+            (seq![e] + suf_old)[m] == t.subrange(i, n)[m] by {
+            if m == 0 { } else { assert(suf_old[m - 1] == t[i + m]); }
+        }
+    }
+}
+
+
+/// 방출된 op 열을 앞에서부터 `k`개 적용한 결과.
+pub open spec fn apply_ops(dom: Seq<u64>, ops: Seq<PlanOp>, k: int) -> Seq<u64>
+    decreases k
+{
+    if k <= 0 { dom } else { place_before(apply_ops(dom, ops, k - 1), ops[k - 1].id, ops[k - 1].before) }
+}
+
+/// `apply_ops`는 앞의 `k`개만 읽으므로 뒤에 덧붙여도 앞부분 결과는 그대로다.
+pub proof fn lemma_apply_ops_prefix_stable(
+    dom: Seq<u64>, ops1: Seq<PlanOp>, ops2: Seq<PlanOp>, k: int,
+)
+    requires
+        0 <= k <= ops1.len(), k <= ops2.len(),
+        forall|j: int| #![trigger ops1[j]] 0 <= j < k ==> ops1[j] == ops2[j],
+    ensures apply_ops(dom, ops1, k) =~= apply_ops(dom, ops2, k),
+    decreases k,
+{
+    if k > 0 {
+        lemma_apply_ops_prefix_stable(dom, ops1, ops2, k - 1);
+        assert(ops1[k - 1] == ops2[k - 1]);
+    }
+}
+
+/// "chain 표기 = 방출 op 적용 결과" 불변식을 한 걸음 잇는다.
+pub proof fn lemma_step_keeps_link(
+    dom: Seq<u64>, prev_ops: Seq<PlanOp>, ops: Seq<PlanOp>,
+    prev_denotes: Seq<u64>, now_denotes: Seq<u64>, op: PlanOp,
+)
+    requires
+        prev_denotes =~= apply_ops(dom, prev_ops, prev_ops.len() as int),
+        ops =~= prev_ops.push(op),
+        now_denotes =~= place_before(prev_denotes, op.id, op.before),
+    ensures now_denotes =~= apply_ops(dom, ops, ops.len() as int),
+{
+    lemma_apply_ops_prefix_stable(dom, prev_ops, ops, prev_ops.len() as int);
+    assert(ops[prev_ops.len() as int] == op);
+}
+
+/// 삽입은 "이전 집합 ∪ {e}"를 만든다 — 루프 안의 forall 추론을 밖으로 뺀 것.
+pub proof fn lemma_insert_same_plus(prev: Seq<u64>, j: int, e: u64)
+    requires 0 <= j <= prev.len(),
+    ensures same_plus(prev.insert(j, e), prev, e),
+{
+    assert forall|x: u64| #![trigger prev.insert(j, e).contains(x)]
+        prev.insert(j, e).contains(x) <==> (prev.contains(x) || x == e) by {
+        if prev.insert(j, e).contains(x) { lemma_insert_only(prev, j, e, x); }
+        if prev.contains(x) { lemma_insert_keeps(prev, j, e, x); }
+        if x == e { lemma_insert_has_new(prev, j, e); }
+    }
+}
+
+/// 꼬리 덧붙이기도 마찬가지.
+pub proof fn lemma_push_same_plus(prev: Seq<u64>, e: u64)
+    ensures same_plus(prev.push(e), prev, e),
+{
+    assert forall|x: u64| #![trigger prev.push(e).contains(x)]
+        prev.push(e).contains(x) <==> (prev.contains(x) || x == e) by {
+        if prev.push(e).contains(x) { lemma_push_only(prev, e, x); }
+        if prev.contains(x) { lemma_push_keeps(prev, e, x); }
+        if x == e { assert(prev.push(e)[prev.len() as int] == e); }
+    }
+}
+
+/// 지운 뒤 다시 끼우는 경우(Retained 이동)도 집합은 그대로 + e.
+pub proof fn lemma_remove_then_place_same_plus(
+    prev: Seq<u64>, mid: Seq<u64>, now: Seq<u64>, e: u64,
+)
+    requires mid =~= prev.remove_value(e), same_plus(now, mid, e),
+    ensures same_plus(now, prev, e),
+{
+    assert forall|x: u64| #![trigger now.contains(x)]
+        now.contains(x) <==> (prev.contains(x) || x == e) by {
+        if now.contains(x) && x != e { lemma_remove_value_only(prev, e, x); }
+        if prev.contains(x) && x != e { lemma_remove_value_keeps_other(prev, e, x); }
+    }
+}
+
+/// 멤버십 불변식 (b)/(c)를 한 걸음 전진시킨다.
+pub proof fn lemma_membership_step(
+    prev: Seq<u64>, now: Seq<u64>, cur: Seq<u64>, t: Seq<u64>, idx: int, n: int, e: u64,
+)
+    requires
+        n == t.len(), 0 <= idx, idx + 1 <= n, e == t[idx],
+        same_plus(now, prev, e),
+        forall|x: u64| #![trigger cur.contains(x)] cur.contains(x) ==> prev.contains(x),
+        forall|x: u64| #![trigger prev.contains(x)]
+            prev.contains(x) ==> cur.contains(x) || t.subrange(idx + 1, n).contains(x),
+    ensures
+        forall|x: u64| #![trigger cur.contains(x)] cur.contains(x) ==> now.contains(x),
+        forall|x: u64| #![trigger now.contains(x)]
+            now.contains(x) ==> cur.contains(x) || t.subrange(idx, n).contains(x),
+{
+    let sub_new = t.subrange(idx, n);
+    let sub_old = t.subrange(idx + 1, n);
+    assert(sub_new[0] == e);
+    assert forall|x: u64| sub_old.contains(x) implies sub_new.contains(x) by {
+        let m = choose|m: int| 0 <= m < sub_old.len() && sub_old[m] == x;
+        assert(sub_new[m + 1] == sub_old[m]);
+    }
+}
+
+
+/// **`place_in_order`의 순서 결정 — 수렴까지 증명된 판본**.
+///
+/// `plan_writes`(LIS 변형용, `keep` 있음)와 갈라 둔 이유는 **사실에 맞추기
+/// 위해서**다. LIS가 `keep`으로 "이건 이미 제자리"라고 표시하면 그 원소는
+/// 인접하지 않아도 스킵되는데, 그 판단의 정당성은 비검증 `lis_indices`에
+/// 있다 — 그래서 그쪽은 수렴을 주장할 수 없다. 두 경로를 한 함수에 담으면
+/// 불변식이 전부 조건부가 되어 SMT가 감당하지 못한다(2026-07-28에 실제로
+/// 그래서 실패했다 — `formal-verification/verus/README.md` 참고).
+#[verifier::rlimit(2000)]
+pub fn plan_writes_converging(
+    current: &Vec<u64>,
+    target_ids: &Vec<u64>,
+    target_fresh: &Vec<bool>,
+) -> (ops: Vec<PlanOp>)
+    requires
+        current@.no_duplicates(),
+        target_ids@.no_duplicates(),
+        target_fresh@.len() == target_ids@.len(),
+        forall|i: int| #![trigger target_fresh@[i]]
+            0 <= i < target_ids@.len() ==>
+                (target_fresh@[i] ==> !current@.contains(target_ids@[i]))
+                && (!target_fresh@[i] ==> current@.contains(target_ids@[i])),
+    ensures
+        forall|k: int| #![trigger ops@[k]]
+            0 <= k < ops@.len() ==>
+                ops@[k].idx < target_ids@.len()
+                && ops@[k].spawn == target_fresh@[ops@[k].idx as int],
+        // **수렴(RQ5 #4 정리 (2))**: 방출된 op를 순서대로 적용하면 DOM의 뒤쪽
+        // |target|개가 목표 순서와 정확히 일치한다.
+        ({
+            let d = apply_ops(current@, ops@, ops@.len() as int);
+            &&& d.len() >= target_ids@.len()
+            &&& d.subrange(d.len() - target_ids@.len(), d.len() as int) =~= target_ids@
+        }),
+{
+    let n = target_ids.len();
+    let mut chain = Chain::from_slice(current);
+    // 불투명 형태로 바꿔 루프에 넘긴다 — 루프가 `no_duplicates`의 2변수
+    // 양화자를 보지 않게 하기 위함(프로파일상 그 하나가 인스턴스화의 88%).
+    proof { lemma_nodup_wrap(current@); lemma_nodup_wrap(target_ids@); }
+    let mut ops: Vec<PlanOp> = Vec::new();
+    let mut next_anchor: Option<u64> = None;
+    let mut i: usize = n;
+
+    while i > 0
+        invariant
+            i <= n,
+            n == target_ids@.len(),
+            target_fresh@.len() == target_ids@.len(),
+            // Verus의 `while`은 불변식만으로 모듈러 검증되므로, 함수
+            // `requires`의 사실이라도 여기 다시 적어야 한다.
+            seq_nodup(current@),
+            seq_nodup(target_ids@),
+            forall|m: int| #![trigger target_fresh@[m]]
+                0 <= m < n ==>
+                    (target_fresh@[m] ==> !current@.contains(target_ids@[m]))
+                    && (!target_fresh@[m] ==> current@.contains(target_ids@[m])),
+            chain.well_formed(),
+            forall|x: u64| #![trigger current@.contains(x)]
+                current@.contains(x) ==> chain.denotes().contains(x),
+            forall|x: u64| #![trigger chain.denotes().contains(x)]
+                chain.denotes().contains(x) ==>
+                    current@.contains(x) || target_ids@.subrange(i as int, n as int).contains(x),
+            next_anchor == if i == n { None::<u64> } else { Some(target_ids@[i as int]) },
+            forall|k: int| #![trigger ops@[k]]
+                0 <= k < ops@.len() ==>
+                    ops@[k].idx < n && ops@[k].spawn == target_fresh@[ops@[k].idx as int],
+            chain.denotes() =~= apply_ops(current@, ops@, ops@.len() as int),
+            chain.denotes().len() >= n - i,
+            chain.denotes().subrange(chain.denotes().len() - (n - i) as int,
+                                     chain.denotes().len() as int)
+                =~= target_ids@.subrange(i as int, n as int),
+        decreases i,
+    {
+        // `i`는 루프 **끝에서만** 줄인다 — 먼저 줄이면 불변식의 `i`(옛 값)와
+        // 본문의 `i`(새 값)를 프루버가 잇지 못한다.
+        let idx = i - 1;
+        let e = target_ids[idx];
+        let fresh = target_fresh[idx];
+        let ghost prev_denotes = chain.denotes();
+        let ghost prev_ops = ops@;
+        let ghost k_old = (n - i) as int;
+        let ghost suf_old =
+            prev_denotes.subrange(prev_denotes.len() - k_old, prev_denotes.len() as int);
+
+        proof {
+            chain.no_dup_opaque();
+            assert(suf_old =~= target_ids@.subrange(i as int, n as int));
+            assert(!suf_old.contains(e)) by {
+                // 여기서만 양화자를 펼친다 — `by` 블록 안이라 루프 본체의
+                // 검증 조건으로 새지 않는다.
+                lemma_nodup_unwrap(target_ids@);
+                assert forall|j: int| #![trigger suf_old[j]]
+                    0 <= j < suf_old.len() implies suf_old[j] != e by {
+                    assert(suf_old[j] == target_ids@.subrange(i as int, n as int)[j]);
+                    assert(target_ids@.subrange(i as int, n as int)[j] == target_ids@[i as int + j]);
+                    assert(e == target_ids@[idx as int]);
+                    assert(i as int + j != idx as int);
+                }
+            }
+            if i < n {
+                assert(suf_old[0] == target_ids@[i as int]);
+                assert(prev_denotes[prev_denotes.len() - k_old] == suf_old[0]);
+                assert(prev_denotes.contains(target_ids@[i as int]));
+            }
+        }
+
+        let adj = match next_anchor {
+            Some(a) => chain.next_is(e, a),
+            None => chain.is_tail(e),
+        };
+
+        if fresh || !adj {
+            if !fresh {
+                proof {
+                    assert(!target_fresh@[idx as int]);
+                    assert(current@.contains(target_ids@[idx as int]));
+                    assert(chain.denotes().contains(e));
+                    lemma_remove_value_no_dup(prev_denotes, e);
+                }
+                chain.unlink(e);
+                proof {
+                    let p_old = prev_denotes.subrange(0, prev_denotes.len() - k_old);
+                    assert(prev_denotes =~= p_old + suf_old);
+                    lemma_remove_value_in_prefix(p_old, suf_old, e);
+                    let d2 = chain.denotes();
+                    assert(d2 =~= p_old.remove_value(e) + suf_old);
+                    assert(d2.subrange(d2.len() - k_old, d2.len() as int) =~= suf_old) by {
+                        assert forall|j: int| #![trigger suf_old[j]] 0 <= j < k_old implies
+                            d2[d2.len() - k_old + j] == suf_old[j] by {
+                            assert(d2[p_old.remove_value(e).len() + j] == suf_old[j]);
+                        }
+                    }
+                    if let Some(a) = next_anchor {
+                        assert(a != e);
+                        lemma_remove_value_keeps_other(prev_denotes, e, a);
+                    }
+                }
+            } else {
+                proof { lemma_remove_value_absent(prev_denotes, e); }
+            }
+            let ghost d_mid = chain.denotes();
+            proof {
+                chain.no_dup_opaque();
+                if i < n { lemma_place_extends_suffix(d_mid, k_old, e); }
+            }
+            match next_anchor {
+                Some(a) => {
+                    proof { d_mid.index_of_first_ensures(a); }
+                    let ghost j0 = d_mid.index_of_first(a).unwrap();
+                    chain.insert_before(e, a);
+                    proof {
+                        lemma_move_extends_suffix(chain.denotes(), suf_old, target_ids@,
+                                                  idx as int, n as int, e);
+                        lemma_insert_same_plus(d_mid, j0, e);
+                        if !fresh {
+                            lemma_remove_then_place_same_plus(prev_denotes, d_mid, chain.denotes(), e);
+                        }
+                    }
+                }
+                None => {
+                    chain.push_back(e);
+                    proof {
+                        assert(i == n);
+                        let d = chain.denotes();
+                        assert(d[d.len() - 1] == e);
+                        assert(target_ids@.subrange(idx as int, n as int).len() == 1);
+                        assert(target_ids@.subrange(idx as int, n as int)[0] == target_ids@[idx as int]);
+                        lemma_push_same_plus(d_mid, e);
+                        if !fresh {
+                            lemma_remove_then_place_same_plus(prev_denotes, d_mid, d, e);
+                        }
+                    }
+                }
+            }
+            let ghost now_d = chain.denotes();
+            ops.push(PlanOp { idx, id: e, spawn: fresh, before: next_anchor });
+            proof {
+                lemma_step_keeps_link(current@, prev_ops, ops@, prev_denotes, now_d,
+                    PlanOp { idx, id: e, spawn: fresh, before: next_anchor });
+            }
+        } else {
+            proof {
+                assert(current@.contains(e));
+                assert(same_plus(chain.denotes(), prev_denotes, e));
+                match next_anchor {
+                    Some(a) => lemma_adjacent_skip_extends_suffix(
+                        chain.denotes(), target_ids@, idx as int, n as int, e, a),
+                    None => lemma_tail_skip_extends_suffix(
+                        chain.denotes(), target_ids@, idx as int, n as int, e),
+                }
+            }
+        }
+
+        proof {
+            lemma_membership_step(prev_denotes, chain.denotes(), current@, target_ids@,
+                                  idx as int, n as int, e);
+        }
+        next_anchor = Some(e);
+        i = idx;
+    }
+    proof { assert(target_ids@.subrange(0, n as int) =~= target_ids@); }
+    ops
+}
+
 // ---------------------------------------------------------------------------
 // 방출 루프 — `place_in_order`의 순서 결정 전체
 // ---------------------------------------------------------------------------
@@ -845,6 +1432,9 @@ pub open spec fn same_plus(new: Seq<u64>, old: Seq<u64>, e: u64) -> bool {
 pub struct PlanOp {
     /// `target`에서의 인덱스.
     pub idx: usize,
+    /// 이 op가 움직이는 entity의 id. 사후조건(`apply_ops`)이 `target`을
+    /// 참조하지 않고 자립하도록 함께 싣는다.
+    pub id: u64,
     /// true면 SpawnRow, false면 Reposition.
     pub spawn: bool,
     /// anchor — `None`이면 꼬리.
@@ -969,7 +1559,7 @@ pub fn plan_writes(
                 }
             }
             assert(same_plus(chain.denotes(), prev_denotes, e));
-            ops.push(PlanOp { idx: i, spawn: true, before: next_anchor });
+            ops.push(PlanOp { idx: i, id: e, spawn: true, before: next_anchor });
         } else {
             // `keep[i]`는 호출부(LIS 변형)가 "이 원소는 이미 상대 순서가
             // 맞으니 건드리지 말라"고 표시한 것. 스킵은 write를 내지 않고
@@ -982,7 +1572,7 @@ pub fn plan_writes(
             if !already_adjacent {
                 // Retained: (b)로부터 chain에 있음 → unlink 사전조건 충족.
                 let ghost before = chain.denotes();
-                proof { chain.no_dup(); }
+                proof { chain.no_dup_opaque(); }
                 chain.unlink(e);
                 proof {
                     // 중복이 없었으므로 unlink로 e는 완전히 사라졌다 —
@@ -1040,7 +1630,7 @@ pub fn plan_writes(
                     }
                 }
                 assert(same_plus(chain.denotes(), prev_denotes, e));
-                ops.push(PlanOp { idx: i, spawn: false, before: next_anchor });
+                ops.push(PlanOp { idx: i, id: e, spawn: false, before: next_anchor });
             } else {
                 // 스킵: 표기 불변. e는 Retained이므로 이미 들어 있다.
                 assert(current@.contains(e));
