@@ -15,17 +15,23 @@
     한 페이지 = 한 시행이고, 셀/시행 순회는 바깥(Playwright 등)이 맡는다.
     파라미터는 쿼리스트링으로 받는다:
 
-      ?arm=B&f=1&size=100&window=60000
+      ?arm=B&f=1&size=100&window=60000&rate=0&comp=flat
+      ?axis=catchup&arm=F-i&size=100&freeze=1000&rate=100&comp=flat
 
     f는 초당 토글 횟수(사전 등록 격자 {0.1, 1, 10, 30, 60}), size는 서브트리
     entity 수({1, 10, 100, 1000}), window는 구동 창 ms(사전 등록값 60000).
+    arm은 §4의 6개 {B, F(CSS 은닉), F-i, F-ii, F-iii, lazy}.
+    comp는 §4.1 서브트리 구성 축 {flat, chain3} — 조항상 s=100 행에서만 양쪽.
+    axis=catchup이면 §4.1 catch-up 곡선 축(M6)으로 전환한다: f/window 대신
+    freeze(동결 기간 ms, 사전 등록 {1000, 10000})를 쓰고, rate는 **동결 중**
+    상류 변경률이 된다.
 
     끝나면 `#cell-result`의 textContent에 JSON 한 줄이 들어가고
     `window.__loomTrackTDone`이 true가 된다 — 드라이버는 그 플래그를 기다린다.
   -->
   <pre id="cell-result">idle</pre>
   <script type="module">
-    import init, { TrackTCell } from "./pkg-bench/loom_bench.js";
+    import init, { TrackTCell, CatchUpCell } from "./pkg-bench/loom_bench.js";
 
     const params = new URLSearchParams(location.search);
     const arm = params.get("arm") ?? "B";
@@ -34,6 +40,9 @@
     const windowMs = Number(params.get("window") ?? "60000");
     // §4.1 상류 Signal 변경률 축 (0~100). F 변형들을 구별하려면 >0이어야 한다.
     const changeRate = Number(params.get("rate") ?? "0");
+    const composition = params.get("comp") ?? "flat";
+    const axis = params.get("axis") ?? "frequency";
+    const freezeMs = Number(params.get("freeze") ?? "1000");
 
     // f는 정수 milli-Hz로 wasm에 넘긴다 — 0.1/s를 부동소수 없이 나르기 위함.
     const fMilliHz = Math.round(fHz * 1000);
@@ -41,21 +50,36 @@
     await init();
 
     const resultEl = document.getElementById("cell-result");
-    resultEl.textContent = `running arm=${arm} f=${fHz}/s size=${size} window=${windowMs}ms rate=${changeRate}% ...`;
 
-    const cell = new TrackTCell(arm, fMilliHz, size, windowMs, changeRate);
-
-    function frame(now) {
-      // `now`는 rAF가 주는 `performance.now()` 기준 타임스탬프 — wasm 쪽
-      // `measure_now()`와 같은 시계라 그대로 넘겨도 정합적이다.
-      if (cell.step(now)) {
-        requestAnimationFrame(frame);
-      } else {
-        resultEl.textContent = cell.finish(performance.now());
-        window.__loomTrackTDone = true;
-      }
+    if (axis === "catchup") {
+      resultEl.textContent =
+        `running catchup arm=${arm} size=${size} freeze=${freezeMs}ms rate=${changeRate}% comp=${composition} ...`;
+      const cell = new CatchUpCell(arm, size, freezeMs, changeRate, composition);
+      const frame = (now) => {
+        if (cell.step(now)) {
+          requestAnimationFrame(frame);
+        } else {
+          resultEl.textContent = cell.finish();
+          window.__loomTrackTDone = true;
+        }
+      };
+      requestAnimationFrame(frame);
+    } else {
+      resultEl.textContent =
+        `running arm=${arm} f=${fHz}/s size=${size} window=${windowMs}ms rate=${changeRate}% comp=${composition} ...`;
+      const cell = new TrackTCell(arm, fMilliHz, size, windowMs, changeRate, composition);
+      const frame = (now) => {
+        // `now`는 rAF가 주는 `performance.now()` 기준 타임스탬프 — wasm 쪽
+        // `measure_now()`와 같은 시계라 그대로 넘겨도 정합적이다.
+        if (cell.step(now)) {
+          requestAnimationFrame(frame);
+        } else {
+          resultEl.textContent = cell.finish(performance.now());
+          window.__loomTrackTDone = true;
+        }
+      };
+      requestAnimationFrame(frame);
     }
-    requestAnimationFrame(frame);
   </script>
 </body>
 </html>

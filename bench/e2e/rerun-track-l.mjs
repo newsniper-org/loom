@@ -31,7 +31,7 @@ await page.waitForFunction(
     return el && el.textContent && el.textContent !== "running...";
   },
   undefined,
-  { timeout: 900000 }
+  { timeout: 21600000 }
 );
 
 const listJson = await page.locator("#results").textContent();

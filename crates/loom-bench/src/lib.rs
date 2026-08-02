@@ -1013,12 +1013,22 @@ pub struct TrackTCell {
     /// 토글이 없는 프레임의 tick 시간 합 — J-b의 "토글 간 상주" 항.
     residency_total_ms: f64,
     residency_ticks: u32,
+    /// §4.1(v1.1 — F-1) "**동결/은닉 중** 누적 CPU 시간은 6 arm 전부 보고".
+    /// 상주 시간을 조건 상태별로 갈라야 이 조항이 성립한다 — 뭉쳐 놓으면
+    /// "B=0(부재 자체가 데이터)"라는 기준선도, "F-ii·CSS=계속되는 패치"라는
+    /// 표적도 수치로 확인할 수 없다(2026-08-02 발견: 그동안 뭉쳐 있었다).
+    residency_hidden_ms: f64,
+    residency_hidden_ticks: u32,
+    residency_shown_ms: f64,
+    residency_shown_ticks: u32,
     /// J-b 그 자체: 창 안의 모든 tick 시간 합(토글 + 상주).
     total_script_ms: f64,
     frames: u32,
 
     /// §4.1 "동결/attached 구간 상류 Signal 변경률" 축(0~100%).
     change_rate_pct: u32,
+    /// §4.1 서브트리 구성 축: "flat" | "chain3".
+    composition: String,
 
     /// §8 타이머 조항이 "셀별 유효 해상도를 실행 시점 기록"하라고 요구하는
     /// 그 값 — `probe_timer_resolution()`이 셀 시작 시 1회 실측한다. 이게
@@ -1070,26 +1080,22 @@ fn probe_timer_resolution_ms() -> f64 {
     }
 }
 
-#[wasm_bindgen]
-impl TrackTCell {
-    /// `arm`: "B" | "F". `f_millihz`: 사전 등록 격자 {100, 1000, 10000,
-    /// 30000, 60000}. `size`: 서브트리 entity 수 {1, 10, 100, 1000}.
-    /// `window_ms`: §4.1 사전 등록값은 60_000 — 파라미터로 둔 이유는
-    /// 하네스 자체를 스모크 검증할 때 짧은 창으로 돌리기 위함이고, 실제
-    /// 판정 데이터는 60_000으로만 수집한다(축소 창으로 얻은 수치는 §9 판정에
-    /// 쓰지 않는다 — JSON에 `window_ms`가 그대로 실려 나가므로 사후에
-    /// 구별 가능).
-    /// `arm`: "B" | "F"(CSS 은닉 겸용) | "F-i" | "F-ii" | "F-iii".
-    /// `change_rate_pct`: §4.1의 "상류 Signal 변경률" 축 — 매 프레임 이 비율만큼의
-    /// 자식 Signal을 건드린다. **이 축이 없으면 F 변형 3개의 J-b가 사실상
-    /// 같아진다**(2026-07-28 f축 스모크런에서 실제로 그렇게 관측됨) — 게이팅
-    /// 비용은 "게이팅할 일이 있을 때"만 드러나기 때문이다.
-    #[wasm_bindgen(constructor)]
-    pub fn new(arm: &str, f_millihz: u32, size: usize, window_ms: f64, change_rate_pct: u32) -> TrackTCell {
+/// 트랙 T의 **arm 구성 단일 지점**. f-격자 셀(`TrackTCell`)과 catch-up 곡선
+/// 셀(`CatchUpCell`)이 같은 것을 쓴다 — arm 명세가 축마다 갈리면 두 축의
+/// 결과를 겹쳐 읽을 수 없기 때문이다(§2.4 "전 후보 동일 조건").
+fn build_cell(
+    arm: &str,
+    size: usize,
+    composition: &str,
+) -> (LoomApp, BrowserDom, bevy_ecs::entity::Entity, web_sys::Element) {
         use loom_runtime::{
             bump_version_system, cond_reconcile_b_system, cond_reconcile_f_i_system,
             cond_reconcile_f_ii_system, cond_reconcile_f_iii_system, cond_reconcile_f_system,
-            patch_text_f_i_system, patch_text_f_ii_system, patch_text_f_iii_system, CondBlock,
+            derive1_f_i_system, derive1_f_ii_system, derive1_f_iii_system, derive2_f_i_system,
+            derive2_f_ii_system, derive2_f_iii_system, derive3_f_i_system, derive3_f_ii_system,
+            derive3_f_iii_system, patch_chain_f_i_system, patch_chain_f_ii_system,
+            patch_chain_f_iii_system, patch_chain_plain_system, patch_text_f_i_system,
+            patch_text_f_ii_system, patch_text_f_iii_system, CondBlock,
         };
         use bevy_ecs::prelude::IntoScheduleConfigs;
         console_error_panic_hook::set_once();
@@ -1105,28 +1111,119 @@ impl TrackTCell {
         let anchor_node: web_sys::Node = anchor.into();
 
         let (mut dom, handle) = BrowserDom::new(document.clone(), anchor_node);
+        let chain3 = match composition {
+            "flat" => false,
+            "chain3" => true,
+            other => panic!("TrackTCell: unknown composition {other:?} (expected flat | chain3)"),
+        };
         let mut app = LoomApp::new();
         match arm {
             "B" => {
                 app.add_systems(cond_reconcile_b_system);
+                if chain3 {
+                    // B는 게이팅 기계장치가 없으므로 무게이팅 체인.
+                    app.add_systems(
+                        (
+                            derive1_f_ii_system,
+                            derive2_f_ii_system,
+                            derive3_f_ii_system,
+                            patch_chain_plain_system,
+                        )
+                            .chain(),
+                    );
+                }
             }
             "F" => {
                 app.add_systems(cond_reconcile_f_system);
+                if chain3 {
+                    app.add_systems(
+                        (
+                            derive1_f_ii_system,
+                            derive2_f_ii_system,
+                            derive3_f_ii_system,
+                            patch_chain_plain_system,
+                        )
+                            .chain(),
+                    );
+                }
             }
             "F-i" => {
-                app.add_systems((cond_reconcile_f_i_system, patch_text_f_i_system).chain());
+                if chain3 {
+                    app.add_systems(
+                        (
+                            cond_reconcile_f_i_system,
+                            derive1_f_i_system,
+                            derive2_f_i_system,
+                            derive3_f_i_system,
+                            patch_chain_f_i_system,
+                        )
+                            .chain(),
+                    );
+                } else {
+                    app.add_systems((cond_reconcile_f_i_system, patch_text_f_i_system).chain());
+                }
             }
             "F-ii" => {
-                app.add_systems((cond_reconcile_f_ii_system, patch_text_f_ii_system).chain());
+                if chain3 {
+                    app.add_systems(
+                        (
+                            cond_reconcile_f_ii_system,
+                            derive1_f_ii_system,
+                            derive2_f_ii_system,
+                            derive3_f_ii_system,
+                            patch_chain_f_ii_system,
+                        )
+                            .chain(),
+                    );
+                } else {
+                    app.add_systems((cond_reconcile_f_ii_system, patch_text_f_ii_system).chain());
+                }
             }
             "F-iii" => {
-                app.add_systems(
-                    (cond_reconcile_f_iii_system, bump_version_system, patch_text_f_iii_system)
-                        .chain(),
-                );
+                if chain3 {
+                    app.add_systems(
+                        (
+                            cond_reconcile_f_iii_system,
+                            bump_version_system,
+                            derive1_f_iii_system,
+                            derive2_f_iii_system,
+                            derive3_f_iii_system,
+                            patch_chain_f_iii_system,
+                        )
+                            .chain(),
+                    );
+                } else {
+                    app.add_systems(
+                        (cond_reconcile_f_iii_system, bump_version_system, patch_text_f_iii_system)
+                            .chain(),
+                    );
+                }
+            }
+            // §4 "구현 arm 6개"의 여섯 번째. §10 행: "SSR-false 시 entity
+            // 미탄생(경계 마커만) → 첫 true에 SpawnTable spawn(B-보강 명세,
+            // 스폰 번들 초기값 포함) → 이후 토글은 F-i 명세 **전액 상속**".
+            // 그래서 시스템은 F-i와 같은 것을 쓰고, 갈리는 지점은 아래
+            // `prematerialize`(= 창을 열기 전에 실체화하는가) 하나뿐이다.
+            "lazy" => {
+                // §10: "이후 토글은 F-i 명세 전액 상속" — 그래서 시스템 구성도
+                // F-i와 같다.
+                if chain3 {
+                    app.add_systems(
+                        (
+                            cond_reconcile_f_i_system,
+                            derive1_f_i_system,
+                            derive2_f_i_system,
+                            derive3_f_i_system,
+                            patch_chain_f_i_system,
+                        )
+                            .chain(),
+                    );
+                } else {
+                    app.add_systems((cond_reconcile_f_i_system, patch_text_f_i_system).chain());
+                }
             }
             other => panic!(
-                "TrackTCell: unknown arm {other:?} (expected B | F | F-i | F-ii | F-iii)"
+                "TrackTCell: unknown arm {other:?} (expected B | F | F-i | F-ii | F-iii | lazy)"
             ),
         }
         let entity = app
@@ -1136,6 +1233,63 @@ impl TrackTCell {
         // 초기 tick은 창 밖 — 셀은 "숨겨진 상태"에서 출발한다.
         app.tick(&mut dom);
 
+        // -------------------------------------------------------------------
+        // **실체화 (2026-08-02 신설)** — §4의 6 arm을 실제로 구별시키는 지점.
+        //
+        // 그동안 F 계열 전부가 `f_common_toggle`의 "첫 true — lazy spawn"
+        // 경로로 출발했다. 즉 F-i/F-ii/F-iii·CSS 은닉이 **전부 사실상
+        // lazy-spawn-then-hide**였고, §10이 별도 arm으로 사전 선언한 그것은
+        // 따로 존재하지 않았다(2026-08-02 발견).
+        //
+        // 자기 명세대로면 F 계열과 CSS 은닉은 서브트리가 **이미 실체화된**
+        // 상태에서 출발하고(SSR이 그렸거나 즉시 실체화), 첫 토글은 spawn이
+        // 아니라 detach다. 그래서 창을 열기 전에 true→false를 한 번 돌려
+        // 실체화만 시켜 둔다. `lazy`와 `B`는 그러지 않는다 — 아무것도 없는
+        // 상태에서 출발하는 것이 각자의 명세다.
+        //
+        // 정상 상태 수치에는 영향이 없다(첫 true 이후 lazy ≡ F-i, §10 문언).
+        // 바뀌는 것은 **첫 토글**의 의미와 §6 S2(a) 페이로드 비교뿐이며,
+        // 그 둘이 정확히 이 arm을 사전 선언한 이유다.
+        // -------------------------------------------------------------------
+        let prematerialize = matches!(arm, "F" | "F-i" | "F-ii" | "F-iii");
+        if prematerialize {
+            app.world.get_mut::<Signal<bool>>(entity).unwrap().0 = true;
+            app.tick(&mut dom);
+            app.world.get_mut::<Signal<bool>>(entity).unwrap().0 = false;
+            app.tick(&mut dom);
+        }
+    (app, dom, entity, container)
+}
+
+#[wasm_bindgen]
+impl TrackTCell {
+    /// `arm`: "B" | "F". `f_millihz`: 사전 등록 격자 {100, 1000, 10000,
+    /// 30000, 60000}. `size`: 서브트리 entity 수 {1, 10, 100, 1000}.
+    /// `window_ms`: §4.1 사전 등록값은 60_000 — 파라미터로 둔 이유는
+    /// 하네스 자체를 스모크 검증할 때 짧은 창으로 돌리기 위함이고, 실제
+    /// 판정 데이터는 60_000으로만 수집한다(축소 창으로 얻은 수치는 §9 판정에
+    /// 쓰지 않는다 — JSON에 `window_ms`가 그대로 실려 나가므로 사후에
+    /// 구별 가능).
+    /// `arm`: "B" | "F"(CSS 은닉 겸용) | "F-i" | "F-ii" | "F-iii".
+    /// `change_rate_pct`: §4.1의 "상류 Signal 변경률" 축 — 매 프레임 이 비율만큼의
+    /// 자식 Signal을 건드린다. **이 축이 없으면 F 변형 3개의 J-b가 사실상
+    /// 같아진다**(2026-07-28 f축 스모크런에서 실제로 그렇게 관측됨) — 게이팅
+    /// 비용은 "게이팅할 일이 있을 때"만 드러나기 때문이다.
+    #[wasm_bindgen(constructor)]
+    /// `composition`: §4.1의 **서브트리 구성 축** — `"flat"`(binding 1단) 또는
+    /// `"chain3"`(파생/계산 체인 깊이 3). 조항이 "s=100 행에서만 양쪽"으로
+    /// 고정했다. 2026-08-02까지 하네스에는 flat 쪽만 있었다.
+    pub fn new(
+        arm: &str,
+        f_millihz: u32,
+        size: usize,
+        window_ms: f64,
+        change_rate_pct: u32,
+        composition: &str,
+    ) -> TrackTCell {
+        let (app, dom, entity, container) = build_cell(arm, size, composition);
+
+
         // 창을 열기 *전에* 잰다 — 바쁜 대기가 창 안의 프레임 예산을 먹지
         // 않도록.
         let timer_resolution_ms = probe_timer_resolution_ms();
@@ -1144,6 +1298,7 @@ impl TrackTCell {
         let toggle_interval_ms = 1000.0 / (f_millihz as f64 / 1000.0);
         TrackTCell {
             change_rate_pct,
+            composition: composition.to_string(),
             timer_resolution_ms,
             app,
             dom,
@@ -1163,6 +1318,10 @@ impl TrackTCell {
             toggle_off_ms: Vec::new(),
             residency_total_ms: 0.0,
             residency_ticks: 0,
+            residency_hidden_ms: 0.0,
+            residency_hidden_ticks: 0,
+            residency_shown_ms: 0.0,
+            residency_shown_ticks: 0,
             total_script_ms: 0.0,
             frames: 0,
         }
@@ -1234,6 +1393,14 @@ impl TrackTCell {
         } else {
             self.residency_total_ms += elapsed;
             self.residency_ticks += 1;
+            // §4.1 F-1: 은닉/동결 구간과 표시 구간을 갈라 센다.
+            if self.cond_state {
+                self.residency_shown_ms += elapsed;
+                self.residency_shown_ticks += 1;
+            } else {
+                self.residency_hidden_ms += elapsed;
+                self.residency_hidden_ticks += 1;
+            }
         }
         true
     }
@@ -1261,9 +1428,11 @@ impl TrackTCell {
              \"first_toggle_ms\": {:.4}, \
              \"toggle_on_ms\": [{}], \"toggle_off_ms\": [{}], \
              \"residency_total_ms\": {:.4}, \"residency_ticks\": {}, \
+             \"residency_hidden_ms\": {:.4}, \"residency_hidden_ticks\": {}, \
+             \"residency_shown_ms\": {:.4}, \"residency_shown_ticks\": {}, \
              \"j_b_total_script_ms\": {:.4}, \
              \"timer_resolution_ms\": {:.6}, \"cross_origin_isolated\": {}, \
-             \"change_rate_pct\": {}}}",
+             \"change_rate_pct\": {}, \"composition\": \"{}\"}}",
             self.arm,
             self.f_millihz as f64 / 1000.0,
             self.size,
@@ -1276,10 +1445,203 @@ impl TrackTCell {
             off,
             self.residency_total_ms,
             self.residency_ticks,
+            self.residency_hidden_ms,
+            self.residency_hidden_ticks,
+            self.residency_shown_ms,
+            self.residency_shown_ticks,
             self.total_script_ms,
             self.timer_resolution_ms,
             cross_origin_isolated(),
             self.change_rate_pct,
+            self.composition,
+        )
+    }
+}
+
+// ============================================================================
+// §4.1 catch-up 곡선 축 (M6)
+// ============================================================================
+//
+// §4.1: "**catch-up 곡선 축**(M6): 동결 기간 {1s, 10s} × 동결 중 상류 Signal
+// 변경률 {0, 10, 100%} → **재부착 비용 곡선과 B 재스폰 비용의 교차점**."
+//
+// 이건 f-격자 셀과 **측정 모양이 다르다**. f-격자는 "60초 창에서 주기적으로
+// 토글하며 J-a/J-b를 모은다"이고, 여기는 "한 번 동결 → 정해진 기간 동안
+// 정해진 비율로 상류를 흔든다 → 재부착 1회의 비용을 잰다"이다. 재부착 비용은
+// **동결 기간 × 변경률**의 함수이고, 그 곡선이 B의 재스폰 비용선과 어디서
+// 만나는지가 이 축의 산출물이다.
+//
+// 그래서 `TrackTCell`을 재사용하지 않고 별도 타입으로 둔다 — f-격자에 억지로
+// 끼워 넣으면 "토글 간 상주"와 "동결 중 변경"이 섞여 곡선이 나오지 않는다.
+#[wasm_bindgen]
+pub struct CatchUpCell {
+    app: LoomApp,
+    dom: BrowserDom,
+    entity: bevy_ecs::entity::Entity,
+    container: web_sys::Element,
+    arm: String,
+    size: usize,
+    /// 동결 기간(ms) — 사전 등록값 {1000, 10000}.
+    freeze_ms: f64,
+    /// 동결 **중** 상류 Signal 변경률(%) — 사전 등록값 {0, 10, 100}.
+    change_rate_pct: u32,
+    composition: String,
+
+    started_at_ms: f64,
+    /// 동결 진입 tick 비용(detach 쪽). 재부착과 비대칭이라 따로 보고한다
+    /// (§4.1 "detach/attach 비대칭 분리").
+    detach_ms: f64,
+    /// 동결 중 누적 CPU — §4.1 F-1이 6 arm 전부 요구하는 값. F-ii·CSS는
+    /// 여기가 크고(계속 패치), B는 0에 가깝다(entity 자체가 없음).
+    frozen_cpu_ms: f64,
+    frozen_ticks: u32,
+    /// **이 축의 산출물**: 재부착 1회의 tick 비용.
+    reattach_ms: f64,
+    /// 재부착 직후 catch-up이 실제로 끝날 때까지 든 추가 tick들. F-i는
+    /// 전파 System 1회, F-iii는 버전 불일치분만 — 여기가 갈린다.
+    catchup_ms: f64,
+    catchup_ticks: u32,
+    timer_resolution_ms: f64,
+    done: bool,
+}
+
+#[wasm_bindgen]
+impl CatchUpCell {
+    /// `arm`: B | F | F-i | F-ii | F-iii | lazy.
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        arm: &str,
+        size: usize,
+        freeze_ms: f64,
+        change_rate_pct: u32,
+        composition: &str,
+    ) -> CatchUpCell {
+        // 셀 구성은 f-격자 셀과 **완전히 동일한 경로**(`build_cell`)를 쓴다 —
+        // arm 명세가 두 축에서 갈리면 곡선과 격자를 겹쳐 읽을 수 없다.
+        let (app, dom, entity, container) = build_cell(arm, size, composition);
+        let timer_resolution_ms = probe_timer_resolution_ms();
+
+        CatchUpCell {
+            app,
+            dom,
+            entity,
+            container,
+            arm: arm.to_string(),
+            size,
+            freeze_ms,
+            change_rate_pct,
+            composition: composition.to_string(),
+            started_at_ms: measure_now(),
+            detach_ms: f64::NAN,
+            frozen_cpu_ms: 0.0,
+            frozen_ticks: 0,
+            reattach_ms: f64::NAN,
+            catchup_ms: 0.0,
+            catchup_ticks: 0,
+            timer_resolution_ms,
+            done: false,
+        }
+    }
+
+    /// 창을 연다: 표시 → (측정) 동결 → 동결 기간 동안 상류 흔들기 → (측정)
+    /// 재부착 → catch-up이 잦아들 때까지 몇 tick 더.
+    ///
+    /// rAF 콜백마다 1회 호출. `false`를 반환하면 끝.
+    pub fn step(&mut self, now_ms: f64) -> bool {
+        if self.done {
+            return false;
+        }
+        let t = now_ms - self.started_at_ms;
+
+        // 0단계: 표시 상태로 올린다(측정 전 준비 — 창 밖으로 친다).
+        if self.detach_ms.is_nan() && t < 0.0 {
+            return true;
+        }
+        if self.detach_ms.is_nan() {
+            self.app.world.get_mut::<Signal<bool>>(self.entity).unwrap().0 = true;
+            self.app.tick(&mut self.dom);
+            // 이제 동결로 들어가며 detach 비용을 잰다.
+            self.app.world.get_mut::<Signal<bool>>(self.entity).unwrap().0 = false;
+            let s = measure_now();
+            self.app.tick(&mut self.dom);
+            self.detach_ms = measure_now() - s;
+            self.started_at_ms = measure_now();
+            return true;
+        }
+
+        // 1단계: 동결 기간 — 매 프레임 상류를 change_rate_pct%만큼 흔든다.
+        if t < self.freeze_ms {
+            self.touch_upstream();
+            let s = measure_now();
+            self.app.tick(&mut self.dom);
+            self.frozen_cpu_ms += measure_now() - s;
+            self.frozen_ticks += 1;
+            return true;
+        }
+
+        // 2단계: 재부착 1회 — 이 축의 산출물.
+        if self.reattach_ms.is_nan() {
+            self.app.world.get_mut::<Signal<bool>>(self.entity).unwrap().0 = true;
+            let s = measure_now();
+            self.app.tick(&mut self.dom);
+            self.reattach_ms = measure_now() - s;
+            return true;
+        }
+
+        // 3단계: catch-up 잔여. F-i는 전파 System이 세운 Changed가 다음 tick에
+        // 소모되고, F-iii는 버전 불일치분만 재패치된다 — 그 잔여를 8 tick 동안
+        // 모은다(그 이상 끄는 arm이 있으면 그것 자체가 데이터다).
+        if self.catchup_ticks < 8 {
+            let s = measure_now();
+            self.app.tick(&mut self.dom);
+            self.catchup_ms += measure_now() - s;
+            self.catchup_ticks += 1;
+            return true;
+        }
+
+        self.done = true;
+        false
+    }
+
+    fn touch_upstream(&mut self) {
+        if self.change_rate_pct == 0 {
+            return;
+        }
+        let children: Vec<bevy_ecs::entity::Entity> = self
+            .app
+            .world
+            .get::<loom_runtime::CondBlock>(self.entity)
+            .map(|b| b.children.clone())
+            .unwrap_or_default();
+        let touch = (children.len() * self.change_rate_pct as usize).div_ceil(100);
+        for &child in children.iter().take(touch) {
+            if let Some(mut sig) = self.app.world.get_mut::<Signal<i32>>(child) {
+                sig.0 = sig.0.wrapping_add(1);
+            }
+        }
+    }
+
+    pub fn finish(&mut self) -> String {
+        self.container.remove();
+        format!(
+            "{{\"track\": \"T\", \"axis\": \"catchup\", \"arm\": \"{}\", \"size\": {}, \
+             \"freeze_ms\": {:.1}, \"change_rate_pct\": {}, \"composition\": \"{}\", \
+             \"detach_ms\": {:.4}, \"frozen_cpu_ms\": {:.4}, \"frozen_ticks\": {}, \
+             \"reattach_ms\": {:.4}, \"catchup_ms\": {:.4}, \"catchup_ticks\": {}, \
+             \"timer_resolution_ms\": {:.6}, \"cross_origin_isolated\": {}}}",
+            self.arm,
+            self.size,
+            self.freeze_ms,
+            self.change_rate_pct,
+            self.composition,
+            if self.detach_ms.is_nan() { 0.0 } else { self.detach_ms },
+            self.frozen_cpu_ms,
+            self.frozen_ticks,
+            if self.reattach_ms.is_nan() { 0.0 } else { self.reattach_ms },
+            self.catchup_ms,
+            self.catchup_ticks,
+            self.timer_resolution_ms,
+            cross_origin_isolated(),
         )
     }
 }

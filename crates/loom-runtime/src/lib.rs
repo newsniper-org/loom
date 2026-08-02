@@ -50,6 +50,12 @@ pub use cond::{
     cond_reconcile_f_ii_system, cond_reconcile_f_iii_system, cond_reconcile_f_system,
     patch_text_f_i_system, patch_text_f_ii_system, patch_text_f_iii_system, BindingVersion,
     CondBlock, CondEffective, Frozen,
+    // §4.1 서브트리 구성 축 — 파생/계산 체인 깊이 3
+    derive1_f_i_system, derive1_f_ii_system, derive1_f_iii_system,
+    derive2_f_i_system, derive2_f_ii_system, derive2_f_iii_system,
+    derive3_f_i_system, derive3_f_ii_system, derive3_f_iii_system,
+    patch_chain_f_i_system, patch_chain_f_ii_system, patch_chain_f_iii_system,
+    patch_chain_plain_system, Derived1, Derived2, Derived3,
 };
 
 pub mod island;

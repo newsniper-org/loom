@@ -36,8 +36,15 @@ const windowMs = Number(opt("window-ms", "60000"));
 const trials = Number(opt("trials", "10"));
 const gridName = opt("grid", "normal-band");
 const throttleRate = Number(opt("throttle", "1"));
-const arms = opt("arms", "B,F").split(",");
+// §4 "구현 arm 6개". 기본값은 6개 전부 — 이전 기본값("B,F")은 §4가 요구하는
+// 것의 3분의 1이었다.
+const arms = opt("arms", "B,F,F-i,F-ii,F-iii,lazy").split(",");
 const changeRate = Number(opt("rate", "0")); // §4.1 상류 변경률 축(%)
+// §4.1 서브트리 구성 축 — "s=100 행에서만 양쪽"이므로 드라이버 인자로 둔다.
+const composition = opt("comp", "flat");
+// §4.1 catch-up 곡선 축(M6). --axis catchup 이면 f 대신 freeze 격자를 돈다.
+const axis = opt("axis", "frequency");
+const freezeList = opt("freeze", "1000,10000").split(",").map(Number);
 const outPath = opt("out", null);
 const baseUrl = opt("base-url", "http://localhost:8931");
 
@@ -55,9 +62,17 @@ const grid = GRIDS[gridName];
 if (!grid) throw new Error(`unknown --grid ${gridName} (expected ${Object.keys(GRIDS).join("|")})`);
 
 const cells = [];
-for (const s of grid.s) for (const f of grid.f) for (const arm of arms) cells.push({ arm, f, s });
+if (axis === "catchup") {
+  // §4.1: 동결 기간 {1s, 10s} × 동결 중 변경률 {0, 10, 100%}. 변경률은
+  // --rate로 한 번에 하나씩 돈다(격자 바깥에서 순회) — f-격자 쪽 관례와 동일.
+  for (const s of grid.s) for (const fz of freezeList) for (const arm of arms) cells.push({ arm, s, freeze: fz });
+} else {
+  for (const s of grid.s) for (const f of grid.f) for (const arm of arms) cells.push({ arm, f, s });
+}
 
-const totalSeconds = (cells.length * trials * windowMs) / 1000;
+// catch-up 셀은 창이 없고 동결 기간 + 소수 tick으로 끝난다.
+const perCellSeconds = axis === "catchup" ? Math.max(...freezeList) / 1000 + 2 : windowMs / 1000;
+const totalSeconds = cells.length * trials * perCellSeconds;
 console.log(
   `[track-t] browser=${browserName} grid=${gridName} cells=${cells.length} trials=${trials} ` +
     `window=${windowMs}ms throttle=${throttleRate}x arms=${arms.join("/")}`
@@ -86,14 +101,19 @@ for (const cell of cells) {
     }
 
     const url =
-      `${baseUrl}/demo/track_t_freq_bench.html` +
-      `?arm=${cell.arm}&f=${cell.f}&size=${cell.s}&window=${windowMs}&rate=${changeRate}`;
+      axis === "catchup"
+        ? `${baseUrl}/demo/track_t_freq_bench.html` +
+          `?axis=catchup&arm=${cell.arm}&size=${cell.s}&freeze=${cell.freeze}` +
+          `&rate=${changeRate}&comp=${composition}`
+        : `${baseUrl}/demo/track_t_freq_bench.html` +
+          `?arm=${cell.arm}&f=${cell.f}&size=${cell.s}&window=${windowMs}` +
+          `&rate=${changeRate}&comp=${composition}`;
     await page.goto(url);
     // 두 번째 위치 인자는 페이지 함수에 넘길 `arg`이고 옵션은 **세 번째**다 —
     // `undefined`를 빼먹으면 `{timeout}`이 arg로 먹히고 기본 30초 타임아웃이
     // 적용된다(창 60초 캠페인이 첫 셀에서 즉사하는 원인이었음).
     await page.waitForFunction(() => window.__loomTrackTDone === true, undefined, {
-      timeout: windowMs + 60_000,
+      timeout: (axis === "catchup" ? cell.freeze : windowMs) + 60_000,
     });
     const json = await page.locator("#cell-result").textContent();
     const parsed = JSON.parse(json);
@@ -106,8 +126,12 @@ for (const cell of cells) {
     await context.close();
     done++;
     if (trial === trials - 1) {
+      const what =
+        axis === "catchup"
+          ? `freeze=${cell.freeze}ms s=${cell.s}`
+          : `f=${cell.f}/s s=${cell.s}`;
       console.log(
-        `[track-t] ${done}/${cells.length * trials} — arm=${cell.arm} f=${cell.f}/s s=${cell.s} 완료 ` +
+        `[track-t] ${done}/${cells.length * trials} — arm=${cell.arm} ${what} comp=${composition} 완료 ` +
           `(res=${parsed.timer_resolution_ms}ms isolated=${parsed.cross_origin_isolated})`
       );
     }
@@ -141,10 +165,14 @@ const payload = {
   change_rate_pct: changeRate,
   is_preregistered_run: windowMs === 60000 && trials === 10 && gridName !== "pilot",
   unisolated_record_count: unisolated,
+  composition: composition,
+  measurement_axis: axis,
+  freeze_ms_list: axis === "catchup" ? freezeList : null,
   known_gaps: [
-    "2026-07-28 갱신: §4.1의 6 arm 중 5개 구현됨 — B, F(CSS 은닉 겸용), F-i(CondEffective 값 필터), F-ii(detached DOM 계속 패치), F-iii(Without<Frozen> marker). 미구현은 'lazy-spawn-then-hide'를 CSS 은닉과 분리한 별도 arm 하나.",
-    "§4.1 부속 축 중 '상류 Signal 변경률'은 --rate로 구현됨(0이면 F 변형들이 구별되지 않으므로 F 판정 수집 시 반드시 >0). 미구현: 서브트리 구성(flat vs 파생 체인 깊이3), catch-up 곡선(동결 기간 × 변경률).",
-    "F-iii의 BindingVersion은 하네스가 자식에 삽입해야 catch-up이 동작한다 — 현재 TrackTCell은 삽입하지 않으므로 F-iii의 catch-up 경로는 이 하네스에서 미가동(네이티브 테스트로만 검증됨).",
+    "2026-08-02: §4.1의 6 arm이 전부 구현됐다 — B, F(CSS 은닉), F-i, F-ii, F-iii, lazy(lazy-spawn-then-hide). 그 전까지 F 계열은 전부 f_common_toggle의 '첫 true — lazy spawn' 경로로 출발해 **사실상 lazy와 구별되지 않았다**; 이제 F 계열과 CSS는 창을 열기 전에 실체화하고(첫 토글 = detach), lazy와 B만 빈 상태에서 출발한다.",
+    "2026-08-02: §4.1 부속 축 전부 배선됨 — 상류 변경률(--rate), 서브트리 구성(--comp flat|chain3, 조항상 s=100 행에서만 양쪽), catch-up 곡선(--axis catchup --freeze 1000,10000). 상주 CPU는 은닉 구간/표시 구간으로 갈라 보고한다(§4.1 F-1).",
+    "2026-08-02: F-iii의 BindingVersion을 spawn 번들에 넣어 catch-up 경로를 되살렸다 — 그 전까지 bump_version_system의 쿼리가 아무것도 매치하지 않아 조용히 죽어 있었다.",
+    "M4(메모리)·M5(상주 메모리)는 이 드라이버가 수집하지 않는다 — §4.1 '수집 명시'가 요구하므로 미수집 상태임을 명기한다.",
   ],
   records,
 };

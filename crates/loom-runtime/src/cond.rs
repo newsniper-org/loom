@@ -69,7 +69,14 @@ pub fn cond_reconcile_b_system(
     for (cond, mut block, anchor) in &mut q {
         if cond.0 && block.children.is_empty() {
             for _ in 0..block.size {
-                let child = commands.spawn(Signal(0_i32)).id();
+                let child = commands
+                    .spawn((
+                        Signal(0_i32),
+                        Derived1::default(),
+                        Derived2::default(),
+                        Derived3::default(),
+                    ))
+                    .id();
                 pending.0.push(DomWrite::SpawnRow {
                     entity: child,
                     parent: anchor.0,
@@ -114,7 +121,14 @@ pub fn cond_reconcile_f_system(
         if block.children.is_empty() {
             if cond.0 {
                 for _ in 0..block.size {
-                    let child = commands.spawn(Signal(0_i32)).id();
+                    let child = commands
+                    .spawn((
+                        Signal(0_i32),
+                        Derived1::default(),
+                        Derived2::default(),
+                        Derived3::default(),
+                    ))
+                    .id();
                     pending.0.push(DomWrite::SpawnRow {
                         entity: child,
                         parent: anchor.0,
@@ -211,7 +225,25 @@ fn f_common_toggle(
         if cond {
             // 첫 true — lazy spawn. 이 시점의 페이로드는 B와 동일하다.
             for _ in 0..block.size {
-                let child = commands.spawn((Signal(0_i32), CondEffective(true))).id();
+                let child = commands
+                    .spawn((
+                        Signal(0_i32),
+                        CondEffective(true),
+                        // F-iii의 catch-up(버전 쌍)은 이 컴포넌트가 자식에
+                        // 붙어 있어야 동작한다. 붙이지 않으면
+                        // `bump_version_system`의 쿼리가 아무것도 매치하지
+                        // 못해 F-iii의 catch-up 경로가 **조용히 죽는다** —
+                        // 실제로 그동안 그 상태였고, 하네스의 known_gaps에도
+                        // 그렇게 적혀 있었다(2026-08-02 수리).
+                        BindingVersion::default(),
+                        // §4.1 서브트리 구성 축용. 체인 System을 등록하지
+                        // 않은 셀에서는 그냥 놀고 있는 POD 3개다 — 전 arm에
+                        // 동일하게 붙으므로 축 간 비교에 편향을 주지 않는다.
+                        Derived1::default(),
+                        Derived2::default(),
+                        Derived3::default(),
+                    ))
+                    .id();
                 pending.0.push(DomWrite::SpawnRow {
                     entity: child,
                     parent: anchor.0,
@@ -384,5 +416,160 @@ pub fn bump_version_system(
 ) {
     for mut v in &mut q {
         v.current = v.current.wrapping_add(1);
+    }
+}
+
+// ============================================================================
+// §4.1 서브트리 구성 축 — 파생/계산 체인 깊이 3
+// ============================================================================
+//
+// §4.1: "**서브트리 구성 축**: flat binding형 vs 파생/계산 체인 깊이 3
+// 포함형 — s=100 행에서만 양쪽." 2026-08-02까지 하네스에는 flat 쪽만 있었다.
+//
+// **왜 단계를 갈라 두는가**: 한 System 안에서 세 번 계산하면 "체인 깊이 3"의
+// 스케줄링 비용이 사라진다. 이 축이 재려는 것이 바로 그 비용이다 — F-i는
+// 값 필터를 **단계마다** 확인해야 하고(런타임 분기 ×3), F-iii는 archetype
+// 필터라 단계 수와 무관하게 공짜인 반면 marker가 세 단계의 쿼리에 전부
+// 걸려야 한다. 즉 깊이가 F 변형들의 게이팅 비용 구조를 갈라 보이게 하는
+// 축이고, 그러려면 단계가 실제로 별개 System이어야 한다.
+//
+// 컴포넌트는 전부 POD(i32)다 — CLAUDE.md 금지 4.
+
+/// 파생 체인 1단: `Signal<i32>` → 이것.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct Derived1(pub i32);
+/// 파생 체인 2단.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct Derived2(pub i32);
+/// 파생 체인 3단 — DOM 텍스트는 이 값에서 나온다.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct Derived3(pub i32);
+
+/// 각 단의 계산. 내용 자체는 중요하지 않고(상수 시간), 중요한 것은 단계가
+/// **실제로 별개 System**이라 `Changed` 전파가 세 번 일어난다는 점이다.
+#[inline]
+fn derive_step(x: i32) -> i32 {
+    x.wrapping_mul(3).wrapping_add(1)
+}
+
+// --- F-i: 값 필터(`CondEffective`)를 단계마다 확인 ---------------------------
+
+pub fn derive1_f_i_system(
+    mut q: Query<(&Signal<i32>, &mut Derived1, &CondEffective), Changed<Signal<i32>>>,
+) {
+    for (s, mut d, eff) in &mut q {
+        if eff.0 {
+            d.0 = derive_step(s.0);
+        }
+    }
+}
+
+pub fn derive2_f_i_system(
+    mut q: Query<(&Derived1, &mut Derived2, &CondEffective), Changed<Derived1>>,
+) {
+    for (a, mut b, eff) in &mut q {
+        if eff.0 {
+            b.0 = derive_step(a.0);
+        }
+    }
+}
+
+pub fn derive3_f_i_system(
+    mut q: Query<(&Derived2, &mut Derived3, &CondEffective), Changed<Derived2>>,
+) {
+    for (a, mut b, eff) in &mut q {
+        if eff.0 {
+            b.0 = derive_step(a.0);
+        }
+    }
+}
+
+/// 체인형에서의 F-i 패치 — 텍스트는 `Derived3`에서 나온다.
+pub fn patch_chain_f_i_system(
+    q: Query<(&Derived3, &DomTarget, &CondEffective), Changed<Derived3>>,
+    mut pending: ResMut<PendingDomWrites>,
+) {
+    for (d, target, eff) in &q {
+        if eff.0 {
+            pending.0.push(DomWrite::SetText { target: target.0, text: d.0.to_string() });
+        }
+    }
+}
+
+// --- F-ii: 게이팅 없음 -------------------------------------------------------
+
+pub fn derive1_f_ii_system(mut q: Query<(&Signal<i32>, &mut Derived1), Changed<Signal<i32>>>) {
+    for (s, mut d) in &mut q {
+        d.0 = derive_step(s.0);
+    }
+}
+
+pub fn derive2_f_ii_system(mut q: Query<(&Derived1, &mut Derived2), Changed<Derived1>>) {
+    for (a, mut b) in &mut q {
+        b.0 = derive_step(a.0);
+    }
+}
+
+pub fn derive3_f_ii_system(mut q: Query<(&Derived2, &mut Derived3), Changed<Derived2>>) {
+    for (a, mut b) in &mut q {
+        b.0 = derive_step(a.0);
+    }
+}
+
+pub fn patch_chain_f_ii_system(
+    q: Query<(&Derived3, &DomTarget), Changed<Derived3>>,
+    mut pending: ResMut<PendingDomWrites>,
+) {
+    for (d, target) in &q {
+        pending.0.push(DomWrite::SetText { target: target.0, text: d.0.to_string() });
+    }
+}
+
+// --- F-iii: `Without<Frozen>` archetype 필터 ---------------------------------
+
+pub fn derive1_f_iii_system(
+    mut q: Query<(&Signal<i32>, &mut Derived1), (Changed<Signal<i32>>, Without<Frozen>)>,
+) {
+    for (s, mut d) in &mut q {
+        d.0 = derive_step(s.0);
+    }
+}
+
+pub fn derive2_f_iii_system(
+    mut q: Query<(&Derived1, &mut Derived2), (Changed<Derived1>, Without<Frozen>)>,
+) {
+    for (a, mut b) in &mut q {
+        b.0 = derive_step(a.0);
+    }
+}
+
+pub fn derive3_f_iii_system(
+    mut q: Query<(&Derived2, &mut Derived3), (Changed<Derived2>, Without<Frozen>)>,
+) {
+    for (a, mut b) in &mut q {
+        b.0 = derive_step(a.0);
+    }
+}
+
+pub fn patch_chain_f_iii_system(
+    q: Query<(&Derived3, &DomTarget), (Changed<Derived3>, Without<Frozen>)>,
+    mut pending: ResMut<PendingDomWrites>,
+) {
+    for (d, target) in &q {
+        pending.0.push(DomWrite::SetText { target: target.0, text: d.0.to_string() });
+    }
+}
+
+// --- B / CSS 은닉: 게이팅 자체가 없는 arm들 ---------------------------------
+
+/// B와 CSS 은닉은 게이팅 기계장치가 없으므로 F-ii와 같은 무게이팅 체인을
+/// 쓴다. (B는 숨을 때 entity 자체가 사라지므로 체인도 함께 사라진다 —
+/// 그것이 B의 "기계장치 0"이 성립하는 이유이고, 이 축에서도 마찬가지다.)
+pub fn patch_chain_plain_system(
+    q: Query<(&Derived3, &DomTarget), Changed<Derived3>>,
+    mut pending: ResMut<PendingDomWrites>,
+) {
+    for (d, target) in &q {
+        pending.0.push(DomWrite::SetText { target: target.0, text: d.0.to_string() });
     }
 }
