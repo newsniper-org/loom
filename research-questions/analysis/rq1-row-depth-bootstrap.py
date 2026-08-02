@@ -90,5 +90,5 @@ def analyze(path, label):
 
 
 DATA = "/home/ybi/loom-research/research-questions/data"
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v14-chromium.json", "CHROMIUM")
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v14-firefox.json", "FIREFOX")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-chromium.json", "CHROMIUM")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-firefox.json", "FIREFOX")

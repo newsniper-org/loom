@@ -9,11 +9,14 @@ from collections import defaultdict
 # arms (valid because run_combination seeds the RNG per-rep-index identically
 # across all candidates — see crates/loom-bench/src/lib.rs run_combination).
 #
-# KNOWN DEVIATION FROM THE PROTOCOL (stated, not hidden): §8's "반복 프로토콜"
-# calls for 50 warmup + 200 measured reps per cell. The existing Track L data
-# has only 6-30 reps depending on n (see rq1-phase1-track-l-core-grid-v5-*.json).
-# The CIs below are therefore wider / less conclusive than a protocol-compliant
-# run would produce -- reported as-is, not smoothed over.
+# 이전 라운드의 미준수 사항(§8 "반복 프로토콜": 워밍업 50 + 측정 200)은
+# **2026-08-02 v15에서 해소됐다** — 그 전 데이터는 워밍업이 없고 n에 따라
+# 6~30회였다. 아래 CI는 이제 조항이 요구하는 표본 수에서 나온 것이다.
+#
+# **v15 이전 데이터를 이 스크립트에 다시 물리지 말 것**: §11 개정 #2(setText가
+# §7 M2 대응표대로 동작하지 않던 측정 방법 결함)에 따라 v14 이하는 무효
+# 표기됐다. §11-1(b)가 "결과 확인 후면 그 측정을 무효 표기하고 개정 후
+# 재실행"을 규정한다.
 
 N_RESAMPLES = 10_000
 random.seed(1234567890)  # not a protocol PRNG requirement (that's PCG64/SHA-256
@@ -82,9 +85,9 @@ def analyze(path, label, baseline="K"):
             print(f"  {name:6s} vs {baseline}: 99% CI=[{lo99:.3f}, {hi99:.3f}]  95% CI=[{lo95:.3f}, {hi95:.3f}]  판정={v}{flag}")
 
 DATA = "/home/ybi/loom-research/research-questions/data"
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v5-chromium.json", "CHROMIUM — Track L, baseline K")
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v5-firefox.json", "FIREFOX — Track L, baseline K")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-chromium.json", "CHROMIUM — Track L, baseline K")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-firefox.json", "FIREFOX — Track L, baseline K")
 
 # C의 채택 조건 (a): D 대비 동등 이상. 별도 baseline=D로 재계산.
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v5-chromium.json", "CHROMIUM — C vs D (RQ1 §9 C 채택조건 a)", baseline="D")
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v5-firefox.json", "FIREFOX — C vs D (RQ1 §9 C 채택조건 a)", baseline="D")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-chromium.json", "CHROMIUM — C vs D (RQ1 §9 C 채택조건 a)", baseline="D")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-firefox.json", "FIREFOX — C vs D (RQ1 §9 C 채택조건 a)", baseline="D")
