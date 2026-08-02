@@ -31,19 +31,90 @@ use loom_runtime::{
 };
 use wasm_bindgen::prelude::*;
 
-/// Deterministic xorshift64 — reproducible across candidates/reps without
-/// pulling in the `rand` crate for this bounded harness.
-struct Rng(u64);
-impl Rng {
+/// RQ1-benchmark-protocol.md §8의 프로토콜 버전 태그. 시드 유도에 들어가므로
+/// 이 문자열이 바뀌면 **모든 난수열이 바뀐다** — 즉 §2.5상 전면 재수집 사유다.
+/// 함부로 건드리지 말 것.
+const PROTOCOL_TAG: &str = "RQ1-benchmark-protocol/v1.1";
+
+/// §8: "PRNG = PCG64". PCG-XSL-RR 128/64 — 표준 변종을 그대로 옮긴 것이다
+/// (새 PRNG를 설계하지 말 것; 이건 이미 잘 풀린 문제다).
+///
+/// 이전에는 xorshift64였고, 더 나빴던 것은 **시드에 셀 ID가 없었다는 점**이다
+/// (`0x9E37... ^ (rep + 1)`). 서로 다른 셀이 같은 난수열을 썼고, §8이 요구하는
+/// "SHA-256(태그 ‖ 셀 ID ‖ 반복 번호)"와 무관했다. 2026-08-02 교체.
+struct Pcg64 {
+    state: u128,
+    inc: u128,
+}
+
+impl Pcg64 {
+    const MULT: u128 = 0x2360_ED05_1FC6_5DA4_4385_DF64_9FCC_F645;
+
+    fn from_seed(seed: u64) -> Self {
+        // 표준 초기화: inc는 홀수여야 한다(스트림 선택자).
+        let mut rng = Pcg64 { state: 0, inc: (0xDA3E_39CB_94B9_5BDB_u64 as u128) << 1 | 1 };
+        rng.step();
+        rng.state = rng.state.wrapping_add(seed as u128);
+        rng.step();
+        rng
+    }
+
+    fn step(&mut self) {
+        self.state = self.state.wrapping_mul(Self::MULT).wrapping_add(self.inc);
+    }
+
     fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
+        self.step();
+        // XSL RR: 상위/하위 64비트를 XOR한 뒤 상위 6비트로 회전.
+        let x = self.state;
+        let rot = (x >> 122) as u32;
+        let xsl = ((x >> 64) as u64) ^ (x as u64);
+        xsl.rotate_right(rot)
     }
+
+    /// `[0, n)` 균등. 모듈로 편향을 제거한다 — n이 2의 거듭제곱이 아닐 때
+    /// `% n`은 작은 값 쪽으로 치우치고, Fisher-Yates가 그 편향을 순열 분포에
+    /// 그대로 옮긴다.
     fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+        debug_assert!(n > 0);
+        let n = n as u64;
+        let zone = u64::MAX - (u64::MAX % n) - 1;
+        loop {
+            let v = self.next();
+            if v <= zone {
+                return (v % n) as usize;
+            }
+        }
     }
+}
+
+/// §8: "시드 = SHA-256(프로토콜 버전 태그 ‖ 셀 ID ‖ 반복 번호) **하위 64비트**".
+///
+/// "하위 64비트"는 다이제스트를 빅엔디언 정수로 볼 때의 하위 64비트, 즉
+/// 마지막 8바이트를 빅엔디언으로 읽은 값으로 확정한다(문언에 자릿수 규약이
+/// 없어 여기서 못박는다 — 제3자 재현을 위해).
+///
+/// `band`는 §8의 "워밍업은 별도 접두 태그의 분리 시드 대역"을 구현한다:
+/// `"measure"` / `"warmup"`.
+fn derive_seed(band: &str, cell_id: &str, rep: u32) -> u64 {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(PROTOCOL_TAG.as_bytes());
+    h.update(b"\x1f");
+    h.update(band.as_bytes());
+    h.update(b"\x1f");
+    h.update(cell_id.as_bytes());
+    h.update(b"\x1f");
+    h.update(rep.to_string().as_bytes());
+    let d = h.finalize();
+    u64::from_be_bytes(d[24..32].try_into().unwrap())
+}
+
+/// 셀 ID — §8이 "시드 열 전 후보 공유"를 요구하므로 **후보 이름은 들어가지
+/// 않는다**. 그래야 같은 반복에서 6후보가 동일한 target 순열을 본다(paired
+/// bootstrap의 전제).
+fn cell_id(type_name: &str, n: usize, row_bindings: usize, row_variants: bool, workload: &str) -> String {
+    format!("{type_name}|n={n}|R{row_bindings}|variants={row_variants}|{workload}")
 }
 
 /// A minimal POD item type (fixed-width `u32`) alongside `String` (heap),
@@ -70,16 +141,29 @@ enum Workload {
     HeadInsert,
     Append,
     RemoveMiddle,
+    /// **W7** (§3.1) — "값 갱신: 순서 불변, 10% 아이템 값만 변경(retain 경로
+    /// 표적)". 2026-08-02 신설. 이전까지 이 하네스에는 W7 셀이 **하나도**
+    /// 없었다 — §3.4가 "C, D, E (retain 경로)"로 기대하는 셀 전체가 미계측이었다.
+    ///
+    /// **Phase 1 구현과 §3.4 기대의 어긋남(숨기지 않음)**: D의 키는 Phase 1
+    /// 범위에서 아이템의 표시 텍스트 그 자체다(`RowKey(item.to_string())`,
+    /// 별도 key/value 채널 없음 — `list.rs`의 D 항목 주석). 따라서 **값 변경 =
+    /// 키 변경**이고, D는 W7에서 retain하지 못하고 remove+insert로 간다.
+    /// §3.4의 "D (retain 경로)" 기대는 별도 key 채널을 전제한 것이다. 여기서
+    /// 키 스킴을 바꾸면 §10에 없는 새 변형 축을 만드는 셈이므로 바꾸지 않고,
+    /// 실측된 대로 보고한다.
+    ValueUpdate,
 }
 
 impl Workload {
-    const ALL: [Workload; 6] = [
+    const ALL: [Workload; 7] = [
         Workload::Swap,
         Workload::Shuffle,
         Workload::Shuffle10,
         Workload::HeadInsert,
         Workload::Append,
         Workload::RemoveMiddle,
+        Workload::ValueUpdate,
     ];
 
     fn name(&self) -> &'static str {
@@ -90,13 +174,14 @@ impl Workload {
             Workload::HeadInsert => "head_insert",
             Workload::Append => "append",
             Workload::RemoveMiddle => "remove_middle",
+            Workload::ValueUpdate => "value_update",
         }
     }
 
     /// Fisher-Yates, using the shared per-rep `Rng` so every candidate in a
     /// rep sees the identical target permutation (same pairing discipline
     /// as `Shuffle10`).
-    fn fisher_yates<T>(v: &mut [T], rng: &mut Rng) {
+    fn fisher_yates<T>(v: &mut [T], rng: &mut Pcg64) {
         for i in (1..v.len()).rev() {
             let j = rng.below(i + 1);
             v.swap(i, j);
@@ -108,7 +193,7 @@ impl Workload {
     /// so every candidate sees the identical target sequence for a given
     /// rep. `fresh` mints a never-seen-before item for insert-shaped
     /// workloads.
-    fn apply<T: Clone>(&self, baseline: &[T], rng: &mut Rng, fresh: impl Fn(u64) -> T) -> Vec<T> {
+    fn apply<T: Clone>(&self, baseline: &[T], rng: &mut Pcg64, fresh: impl Fn(u64) -> T) -> Vec<T> {
         let mut v = baseline.to_vec();
         match self {
             Workload::Swap => {
@@ -136,6 +221,20 @@ impl Workload {
             Workload::RemoveMiddle => {
                 let mid = v.len() / 2;
                 v.remove(mid);
+            }
+            // W7 (§3.1) — "순서 불변, 10% 아이템 값만 변경(retain 경로 표적)".
+            // 인덱스는 **중복 없이** 뽑는다(부분 Fisher-Yates): 복원추출로
+            // 뽑으면 실제 변경 비율이 10%에 못 미쳐 조항 문언과 어긋난다.
+            Workload::ValueUpdate => {
+                let k = (v.len() / 10).max(1);
+                let mut idx: Vec<usize> = (0..v.len()).collect();
+                for i in 0..k {
+                    let j = i + rng.below(v.len() - i);
+                    idx.swap(i, j);
+                }
+                for &i in idx.iter().take(k) {
+                    v[i] = fresh(rng.next());
+                }
             }
         }
         v
@@ -167,7 +266,132 @@ fn measure_now() -> f64 {
     web_sys::window().unwrap().performance().unwrap().now()
 }
 
+/// §8 반복 프로토콜: "트랙 L: 셀당 워밍업 50회 후 측정 200회".
+/// 2026-08-02까지 이 하네스는 **워밍업이 아예 없었고** 측정도 n에 따라
+/// 30/15/6이었다 — 조항 미준수였고, 특히 n=10,000의 6회는 median/IQR/p95를
+/// 말하기에 표본이 너무 적었다.
+const WARMUP: u32 = 50;
+const MEASURE_REPS: u32 = 200;
+/// §8 배치 규칙의 묶음 크기 k.
+const BATCH_K: u32 = 10;
+
+/// §8: "셀별 유효 해상도를 실행 시점 기록". `performance.now()`가 실제로
+/// 구별해 내는 최소 간격 — 값을 계속 읽어 **0이 아닌 최소 증분**을 찾는다.
+/// COOP/COEP 격리 하에서는 5µs, 아니면 100µs 근처가 나온다.
+fn measure_timer_resolution() -> f64 {
+    let mut min_delta = f64::INFINITY;
+    for _ in 0..32 {
+        let a = measure_now();
+        let mut b = measure_now();
+        // 같은 눈금이면 바뀔 때까지 돈다.
+        let mut spins = 0u32;
+        while b == a && spins < 1_000_000 {
+            b = measure_now();
+            spins += 1;
+        }
+        let d = b - a;
+        if d > 0.0 && d < min_delta {
+            min_delta = d;
+        }
+    }
+    if min_delta.is_finite() { min_delta } else { 0.0 }
+}
+
+/// `requestAnimationFrame` 두 번을 기다린다.
+///
+/// 왜 **두 번**인가: 한 번은 "다음 프레임의 렌더 직전"까지만 보장한다. 두
+/// 번째 콜백이 불렸다는 것은 첫 프레임이 실제로 **완결**(style·layout·paint)
+/// 됐다는 뜻이다 — §7 M1(b)가 재려는 것이 그 시점이고, §8이 복원↔측정
+/// 경계로 요구하는 것도 "복원이 남긴 지연 작업까지 끝난 뒤"다.
+async fn double_raf() {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let window = web_sys::window().unwrap();
+        let w2 = window.clone();
+        let inner = Closure::once_into_js(move || {
+            let cb = Closure::once_into_js(move || {
+                resolve.call0(&JsValue::NULL).ok();
+            });
+            w2.request_animation_frame(cb.unchecked_ref()).ok();
+        });
+        window.request_animation_frame(inner.unchecked_ref()).ok();
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+/// §7 M2 교차 검증. `body`가 내는 DOM 변형을 MutationObserver로 관측해
+/// 채널별로 센다.
+///
+/// 설정은 §7 M2 (v1.1 정정 M-11)가 명시한 그대로 — childList +
+/// characterData + attributes + attributeOldValue + subtree. 대응표도 조항의
+/// 것이다: insert/remove/move 폴백/detach/attach → childList, setText →
+/// characterData, setAttr → attributes.
+///
+/// **네이티브 `moveBefore`는 관측상 remove+insert 쌍으로 보일 수 있다**(§7 M2
+/// 주석 요구). 따라서 childList의 added/removed 합이 우리 카운트보다 클 수
+/// 있고, 그건 불일치가 아니라 관측 채널의 성질이다 — 판정에 쓰지 말고
+/// 병기만 할 것.
+fn observe_mutations(target: &web_sys::Node, body: impl FnOnce()) -> String {
+    let noop = Closure::<dyn FnMut(js_sys::Array, web_sys::MutationObserver)>::new(
+        |_: js_sys::Array, _: web_sys::MutationObserver| {},
+    );
+    let Ok(observer) = web_sys::MutationObserver::new(noop.as_ref().unchecked_ref()) else {
+        body();
+        return String::from("null");
+    };
+    let init = web_sys::MutationObserverInit::new();
+    init.set_child_list(true);
+    init.set_character_data(true);
+    init.set_attributes(true);
+    init.set_attribute_old_value(true);
+    init.set_subtree(true);
+    if observer.observe_with_options(target, &init).is_err() {
+        body();
+        return String::from("null");
+    }
+
+    body();
+
+    let records = observer.take_records();
+    observer.disconnect();
+
+    let (mut child_list, mut character_data, mut attributes) = (0u32, 0u32, 0u32);
+    let (mut added, mut removed) = (0u32, 0u32);
+    for r in records.iter() {
+        let rec: web_sys::MutationRecord = r.unchecked_into();
+        match rec.type_().as_str() {
+            "childList" => {
+                child_list += 1;
+                added += rec.added_nodes().length();
+                removed += rec.removed_nodes().length();
+            }
+            "characterData" => character_data += 1,
+            "attributes" => attributes += 1,
+            _ => {}
+        }
+    }
+    format!(
+        "{{\"child_list\": {child_list}, \"added_nodes\": {added}, \"removed_nodes\": {removed}, \
+         \"character_data\": {character_data}, \"attributes\": {attributes}}}"
+    )
+}
+
+fn median_of(xs: &[f64]) -> f64 {
+    if xs.is_empty() {
+        return 0.0;
+    }
+    let mut v = xs.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let m = v.len() / 2;
+    if v.len() % 2 == 1 { v[m] } else { (v[m - 1] + v[m]) / 2.0 }
+}
+
 impl<T: Send + Sync + Clone + ToString + 'static> Candidate<T> {
+    /// 배치 측정(§8) 안에서 다음 target을 만들 기준. 묶음 안에서는 baseline으로
+    /// 되돌리지 않고 직전 상태에서 이어 간다.
+    fn current_items(&self) -> Vec<T> {
+        self.app.world.get::<Signal<Vec<T>>>(self.entity).unwrap().0.clone()
+    }
+
     fn set_and_tick(&mut self, items: Vec<T>) -> f64 {
         self.app.world.get_mut::<Signal<Vec<T>>>(self.entity).unwrap().0 = items;
         // §8 "각 반복 전 초기 상태 복원"과 같은 지점에서 카운터를 0으로 —
@@ -317,8 +541,14 @@ fn all_makers<T: Send + Sync + Clone + ToString + PartialEq + 'static>() -> [Mak
 /// size stays bounded to one combination at a time (at n=10000 that's still
 /// up to ~60,000 live `<li>`s across 6 candidates simultaneously, but never
 /// more than one (type, size) combination's worth).
+///
+/// **왜 `async`인가 (2026-08-02)**: §8이 "복원과 측정 사이 double-rAF 1회
+/// 경계(복원 비용 누출 차단)"를 요구한다. 이전 하네스는 복원 직후 곧바로
+/// 측정해 이 조항이 미이행이었다 — 복원이 남긴 style/layout/GC가 다음 측정
+/// 괄호 안으로 샐 수 있었다. rAF를 기다리려면 async여야 하고, 같은 구조에
+/// M1(b)(double-rAF 프레임 완결 시간)도 얹힌다.
 #[allow(clippy::too_many_arguments)]
-fn run_combination<T, F>(
+async fn run_combination<T, F>(
     document: &web_sys::Document,
     scratch_parent: &web_sys::Node,
     type_name: &str,
@@ -352,17 +582,93 @@ fn run_combination<T, F>(
         })
         .collect();
 
+    // §8: "셀별 유효 해상도를 실행 시점 기록". 배치 규칙의 임계값이 여기서
+    // 나오므로 조합마다 새로 잰다(스로틀·격리 상태가 바뀌면 값이 달라진다).
+    let resolution_ms = measure_timer_resolution();
+    let batch_threshold_ms = resolution_ms * 50.0;
+
     for workload in &Workload::ALL {
+        let cid = cell_id(type_name, n, row_bindings, row_variants, workload.name());
         for candidate in &mut candidates {
+            // §8 워밍업: "셀당 워밍업 50회". 시드는 **분리 대역**("warmup")에서
+            // 뽑는다 — 측정 반복이 워밍업이 이미 데운 바로 그 난수열을 다시
+            // 보면 캐시 워밍 편향이 생긴다.
+            let mut warm_samples = Vec::with_capacity(WARMUP as usize);
+            for w in 0..WARMUP {
+                candidate.set_and_tick(initial.clone());
+                double_raf().await; // §8 복원↔측정 경계
+                let mut rng = Pcg64::from_seed(derive_seed("warmup", &cid, w));
+                let target = workload.apply(&initial, &mut rng, &fresh);
+                warm_samples.push(candidate.set_and_tick(target));
+            }
+
+            // §8 배치 규칙: "median 추정치 < 해상도 × 50이면 반복 내 배치
+            // 측정 전환 — k=10회 묶음 총 시간/k = 1측정치". median 추정치로는
+            // 방금 끝난 워밍업 표본을 쓴다(측정 표본을 들여다보고 규칙을
+            // 고르면 §11-3의 사후 선택이 된다).
+            let warm_median = median_of(&warm_samples);
+            let batched = warm_median < batch_threshold_ms;
+
             let mut samples = Vec::with_capacity(reps as usize);
             for rep in 0..reps {
                 // Reset to the identical baseline (untimed) before each
                 // timed rep, so every rep starts from the same condition.
                 candidate.set_and_tick(initial.clone());
-                let mut rng = Rng(0x9E3779B97F4A7C15 ^ (rep as u64 + 1));
-                let target = workload.apply(&initial, &mut rng, &fresh);
-                samples.push(candidate.set_and_tick(target));
+                double_raf().await; // §8 복원↔측정 경계
+                if batched {
+                    // 묶음 안에서는 되돌리지 않고 연속 적용한다 — 되돌림을
+                    // 시간 괄호 안에 넣을 수 없기 때문이다. 길이가 변하는
+                    // 워크로드(W5/W3)는 묶음당 최대 10만큼 n이 드리프트하며,
+                    // 그건 이 규칙을 쓰는 대가로 기록해 둔다(§8 M-3 주석).
+                    let mut total = 0.0;
+                    for j in 0..BATCH_K {
+                        let mut rng =
+                            Pcg64::from_seed(derive_seed("measure", &cid, rep * BATCH_K + j));
+                        let target = workload.apply(&candidate.current_items(), &mut rng, &fresh);
+                        total += candidate.set_and_tick(target);
+                    }
+                    samples.push(total / BATCH_K as f64);
+                } else {
+                    let mut rng = Pcg64::from_seed(derive_seed("measure", &cid, rep));
+                    let target = workload.apply(&initial, &mut rng, &fresh);
+                    samples.push(candidate.set_and_tick(target));
+                }
             }
+            // ---------------------------------------------------------------
+            // §7 M1(b): "프레임 완결 시간 = double-rAF 콜백 − t0". 판정에는
+            // 쓰지 않는다(§7 M1 — vsync 양자화로 판정 부적합, 프로파일 전용).
+            // 그래서 **셀당 1회**만 잰다 — 200회 전부에 rAF 왕복을 붙이면
+            // 수집 시간이 판정에 쓰이지도 않는 지표 때문에 배로 늘어난다.
+            // 이 표집 선택 자체를 레코드에 남긴다(`m1b_reps`).
+            // ---------------------------------------------------------------
+            candidate.set_and_tick(initial.clone());
+            double_raf().await;
+            let m1b_ms = {
+                let mut rng = Pcg64::from_seed(derive_seed("m1b", &cid, 0));
+                let target = workload.apply(&initial, &mut rng, &fresh);
+                let t0 = measure_now();
+                candidate.set_and_tick(target);
+                double_raf().await;
+                measure_now() - t0
+            };
+
+            // ---------------------------------------------------------------
+            // §7 M2 교차 검증: "셀당 1회는 MutationObserver(childList +
+            // characterData + attributes(+attributeOldValue), subtree)로".
+            // `takeRecords()`가 동기이므로 tick 직후 그대로 꺼낼 수 있다.
+            // 관찰 대상은 조합 컨테이너 전체지만, 지금 이 순간 변형을 내는
+            // 후보는 이 하나뿐이라 귀속이 섞이지 않는다.
+            // ---------------------------------------------------------------
+            candidate.set_and_tick(initial.clone());
+            double_raf().await;
+            let mutation_json = {
+                let mut rng = Pcg64::from_seed(derive_seed("mo", &cid, 0));
+                let target = workload.apply(&initial, &mut rng, &fresh);
+                observe_mutations(&combo_node, || {
+                    candidate.set_and_tick(target);
+                })
+            };
+
             if !*first_entry {
                 out.push_str(",\n");
             }
@@ -375,8 +681,12 @@ fn run_combination<T, F>(
             // §7 M2: 마지막 반복의 op 종류별 카운트를 병기한다. §9 E 기각 (i)이
             // "결정적 보조 지표로 병기"를 명시 요구하는 값 — 시드 고정 하에
             // 결정적이므로(§7 M2) 반복마다 같아야 하고, 따라서 마지막 1회로 충분하다.
+            let (native, fallback) = loom_runtime::DomOps::reposition_split(&candidate.dom);
             out.push_str(&format!(
-                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}, \"row_variants\": {}, \
+                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"warmup\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}, \"row_variants\": {}, \
+                 \"timer_resolution_ms\": {:.6}, \"batched\": {}, \"batch_k\": {}, \
+                 \"reposition_native\": {}, \"reposition_fallback\": {}, \
+                 \"m1b_frame_ms\": {:.4}, \"mutation_records\": {}, \
                  \"stage_ms\": {{\"systems\": {:.4}, \"sync_point\": {:.4}, \
                  \"dom_apply\": {:.4}, \"total\": {:.4}}}}}",
                 candidate.name,
@@ -385,9 +695,17 @@ fn run_combination<T, F>(
                 n,
                 row_bindings,
                 reps,
+                WARMUP,
                 samples_json,
                 candidate.last_counts.to_json(),
                 row_variants,
+                resolution_ms,
+                batched,
+                if batched { BATCH_K } else { 1 },
+                native,
+                fallback,
+                m1b_ms,
+                mutation_json,
                 candidate.last_stages.systems_ms,
                 candidate.last_stages.sync_point_ms,
                 candidate.last_stages.dom_apply_ms,
@@ -403,6 +721,18 @@ fn run_combination<T, F>(
 #[wasm_bindgen(start)]
 pub fn start() -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
+    // 하네스가 async가 됐으므로(§8 복원↔측정 double-rAF 경계) 시작 함수는
+    // 즉시 반환하고 본체는 마이크로태스크로 넘긴다. `#results`가 채워지는
+    // 시점이 늦어질 뿐, 그걸 폴링하는 e2e 드라이버 쪽은 무변경으로 동작한다.
+    wasm_bindgen_futures::spawn_local(async {
+        if let Err(e) = run_all().await {
+            web_sys::console::error_1(&e);
+        }
+    });
+    Ok(())
+}
+
+async fn run_all() -> Result<(), JsValue> {
     let window = web_sys::window().unwrap();
     let document = window.document().unwrap();
     // 2026-07-28: `demo/track_t_freq_bench.html`(f축 셀 드라이버)은 같은 wasm
@@ -418,12 +748,15 @@ pub fn start() -> Result<(), JsValue> {
     let mut first_entry = true;
 
     // String (heap) axis: full N-scaling, row depth R1 (default, 1 binding
-    // per row — RQ1-benchmark-protocol.md §3.2). REPS shrinks as n grows so
-    // total wall time stays bounded — small n needs more reps to see
-    // through measurement noise, large n's signal dominates noise on fewer
-    // reps. Now also covers W2 (full shuffle) alongside the original 5
-    // workloads — RQ1 §9's D-rejection gate (iii) needs `{W1,W2,W3,W4}`.
-    for &(n, reps) in &[(100usize, 30u32), (1000, 15), (10000, 6)] {
+    // per row — RQ1-benchmark-protocol.md §3.2). 워크로드는 W1~W5 +
+    // remove_middle + W7(값 갱신).
+    //
+    // **반복 수(2026-08-02)**: n에 따라 30/15/6으로 줄이던 것을 §8 문언대로
+    // 전 셀 워밍업 50 + 측정 200으로 통일했다. 이전 규칙은 "큰 n은 신호가
+    // 노이즈를 압도하니 적게"라는 하네스 자체 판단이었는데, §8은 그런 재량을
+    // 주지 않고 n=10,000의 6회는 median/IQR/p95를 말하기에 표본이 모자랐다.
+    for &n in &[100usize, 1000, 10000] {
+        let reps = MEASURE_REPS;
         let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
         run_combination(
             &document,
@@ -437,7 +770,7 @@ pub fn start() -> Result<(), JsValue> {
             false, // R3 축 꺼짐
             &mut report,
             &mut first_entry,
-        );
+        ).await;
     }
 
     // POD (u32 newtype) axis: one representative size (n=1000), not the
@@ -451,14 +784,14 @@ pub fn start() -> Result<(), JsValue> {
             &container_node,
             "ItemId(POD u32)",
             n,
-            15,
+            MEASURE_REPS,
             initial,
             |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
             1, // R1
             false, // R3 축 꺼짐
             &mut report,
             &mut first_entry,
-        );
+        ).await;
     }
 
     // Row-depth axis: R2 ("binding 8개", RQ1-benchmark-protocol.md §3.2) at
@@ -476,14 +809,14 @@ pub fn start() -> Result<(), JsValue> {
             &container_node,
             "String(heap)",
             n,
-            15,
+            MEASURE_REPS,
             initial,
             |seed| format!("new-{seed}"),
             8, // R2
             false, // R3 축 꺼짐
             &mut report,
             &mut first_entry,
-        );
+        ).await;
     }
 
     // R3 축(§3.3): W2 × R3 × n=1,000. 판정 대상은 {C, D}이고 E·K는 참고
@@ -497,14 +830,14 @@ pub fn start() -> Result<(), JsValue> {
             &container_node,
             "String(heap)",
             n,
-            15,
+            MEASURE_REPS,
             initial,
             |seed| format!("new-{seed}"),
             1, // R3는 row 깊이와 독립 축이므로 binding은 R1로 둔다
             true, // R3 축 켬
             &mut report,
             &mut first_entry,
-        );
+        ).await;
     }
 
     report.push_str("\n]");

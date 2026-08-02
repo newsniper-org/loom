@@ -108,13 +108,17 @@ impl DomOpCounts {
 /// `LoomApp`도 이 타입의 존재를 모른다 — 하네스가 `BrowserDom` 대신 이걸
 /// 넘기기만 하면 된다.
 ///
-/// **알려진 한계(숨기지 않음)**: §7 M2는 `moveBefore` **네이티브**와
-/// `insertBefore` **폴백**을 구분해 세라고 요구하는데(그리고 "moveBefore
-/// 네이티브가 관측상 remove+insert 쌍으로 보일 수 있음 주석"까지 요구),
-/// 그 분기는 `web::BrowserDom::reposition` **안에서** 일어나므로 바깥
-/// 데코레이터에서는 보이지 않는다. 여기서는 `reposition` 총 호출 수만 세고,
-/// 네이티브/폴백 분해는 `BrowserDom` 자체에 훅을 다는 별도 작업으로 남긴다
-/// (E의 채택 시 조건부 제약 보고에 필요 — §9 E "채택 시 조건부 제약").
+/// **네이티브/폴백 분해 (2026-08-02 해소)**: §7 M2가 요구하는 `moveBefore`
+/// 네이티브 vs `insertBefore` 폴백 구분은 `web::BrowserDom::reposition`
+/// **안에서** 일어나 바깥 데코레이터에서는 보이지 않는다. 그래서 `DomOps`
+/// 트레잇에 `reposition_split()`을 얹고 `BrowserDom`이 직접 세도록 했다 —
+/// 여기서는 그것을 그대로 위임한다. (§9 E의 "채택 시 조건부 제약" 보고에
+/// 필요: E의 이점이 네이티브 경로에만 있는지 폴백에도 남는지.)
+///
+/// §7 M2의 주석 요구사항 하나는 여전히 유효하다: **네이티브 `moveBefore`가
+/// MutationObserver에는 remove+insert 쌍으로 보일 수 있다**. 따라서 아래
+/// 교차 검증에서 childList 레코드 수가 이쪽 카운트보다 클 수 있고, 그건
+/// 불일치가 아니라 관측 채널의 성질이다.
 pub struct CountingDom<D: DomOps> {
     inner: D,
     counts: DomOpCounts,
@@ -179,6 +183,10 @@ impl<D: DomOps> DomOps for CountingDom<D> {
     fn reposition(&mut self, parent: NodeHandle, node: NodeHandle, before: Option<NodeHandle>) {
         self.counts.reposition += 1;
         self.inner.reposition(parent, node, before);
+    }
+
+    fn reposition_split(&self) -> (u64, u64) {
+        self.inner.reposition_split()
     }
 
     fn set_visible(&mut self, node: NodeHandle, visible: bool) {

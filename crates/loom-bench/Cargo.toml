@@ -12,8 +12,14 @@ console_error_panic_hook = "0.1.7"
 getrandom = { workspace = true, features = ["wasm_js"] }
 js-sys = "0.3.103"
 loom-runtime = { path = "../loom-runtime", features = ["browser"] }
+# §8 "시드 = SHA-256(프로토콜 버전 태그 ‖ 셀 ID ‖ 반복 번호) 하위 64비트".
+# 순수 Rust 구현이라 wasm32에서 그대로 돈다.
+sha2 = { version = "0.10", default-features = false }
+# §8 "복원과 측정 사이 double-rAF 1회 경계" + §7 M1(b) 프레임 완결 시간.
+# 둘 다 rAF를 기다려야 하므로 하네스가 async가 됐다.
+wasm-bindgen-futures = "0.4"
 wasm-bindgen = "0.2.126"
-web-sys = { version = "0.3.103", features = ["Document", "Element", "Window", "Node", "Performance", "console"] }
+web-sys = { version = "0.3.103", features = ["Document", "Element", "Window", "Node", "Performance", "console", "MutationObserver", "MutationObserverInit", "MutationRecord", "NodeList"] }
 
 [profile.release]
 panic = "unwind"

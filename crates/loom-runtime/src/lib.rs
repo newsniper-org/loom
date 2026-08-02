@@ -181,6 +181,18 @@ pub trait DomOps {
     /// otherwise (RQ1 candidate E's documented Safari fallback) — that
     /// choice is a DOM-backend detail, not part of D/E's own algorithm.
     fn reposition(&mut self, parent: NodeHandle, node: NodeHandle, before: Option<NodeHandle>);
+    /// §7 M2가 요구하는 `moveBefore` **네이티브** vs `insertBefore` **폴백**
+    /// 분해 — `(네이티브, 폴백)` 누적 호출 수.
+    ///
+    /// 이 분기는 백엔드 **안에서** 일어나므로 바깥 데코레이터(`CountingDom`)
+    /// 에서는 보이지 않는다. 그래서 트레잇 자체에 얹는다. 기본값 `(0, 0)`은
+    /// "이 백엔드에는 그런 분기가 없다"는 뜻이다(SSR `StringDom` 4종이 그렇다).
+    ///
+    /// §9 E의 "채택 시 조건부 제약" 보고에 필요하다 — E의 이점이 네이티브
+    /// 경로에만 있는지, 폴백에서도 남는지를 이 수치 없이는 말할 수 없다.
+    fn reposition_split(&self) -> (u64, u64) {
+        (0, 0)
+    }
     /// RQ1 Track T candidate F (CSS-hide preserve variant): toggles an
     /// element's visibility without touching its existence, children, or
     /// any internal state — the DOM/backend counterpart of "don't despawn,

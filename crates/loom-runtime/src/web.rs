@@ -150,6 +150,11 @@ pub struct BrowserDom {
     /// DocumentFragment들. Component에는 `FragmentHandle`(정수)만 들어간다
     /// (RQ1 "F 공통 코어", CLAUDE.md 금지 4).
     fragments: Vec<web_sys::DocumentFragment>,
+    /// §7 M2: `reposition`이 네이티브 `moveBefore`로 갔는지 `insertBefore`
+    /// 폴백으로 갔는지 누적. 엔진별로 갈리므로(§8 "E 3중 측정") 셀마다 실제로
+    /// 어느 경로였는지를 기록해야 한다.
+    reposition_native: u64,
+    reposition_fallback: u64,
 }
 
 impl BrowserDom {
@@ -158,6 +163,8 @@ impl BrowserDom {
             document,
             nodes: vec![mount],
             fragments: Vec::new(),
+            reposition_native: 0,
+            reposition_fallback: 0,
         };
         (dom, NodeHandle(0))
     }
@@ -166,7 +173,13 @@ impl BrowserDom {
     /// never spawns new top-level structure — every node it needs already
     /// exists in the SSR'd document and is found via `adopt`).
     pub fn new_for_resume(document: web_sys::Document) -> Self {
-        BrowserDom { document, nodes: Vec::new(), fragments: Vec::new() }
+        BrowserDom {
+            document,
+            nodes: Vec::new(),
+            fragments: Vec::new(),
+            reposition_native: 0,
+            reposition_fallback: 0,
+        }
     }
 
     /// Registers an *already-existing* DOM node (found via `data-loom-id`,
@@ -230,7 +243,30 @@ impl DomOps for BrowserDom {
     }
 
     fn set_text_content(&mut self, target: NodeHandle, text: &str) {
-        self.node(target).set_text_content(Some(text));
+        let node = self.node(target).clone();
+        // 자식이 텍스트 노드 **하나뿐**이면 그 자리에서 `data`만 바꾼다.
+        //
+        // 왜 이게 필요한가 (2026-08-02, §11-1(b) 측정 방법 결함):
+        // `Node.textContent = x`는 **자식을 전부 지우고 새 텍스트 노드를
+        // 만든다**. MutationObserver 교차 검증(§7 M2)에서 드러났다 — C의
+        // setText 999회가 `characterData` 0건, `childList` 999건(+999/-999)
+        // 으로 관측됐다. §7 M2의 대응표는 "setText → characterData"라고
+        // 명시하므로, 조항이 전제한 것은 **제자리 변경**이다. 즉 이전 구현은
+        // 조항이 재려던 것과 다른 일을 하고 있었다(그리고 매 패치마다 텍스트
+        // 노드를 파괴·재생성하고 있었다).
+        //
+        // 영향이 후보별로 다르다는 점을 숨기지 않는다: 이 경로를 가장 많이
+        // 쓰는 것은 retained 슬롯에 값을 다시 쓰는 C이고, K처럼 매번 새
+        // 엘리먼트를 만드는 쪽은 첫 자식이 없어 여기 걸리지 않는다. 따라서
+        // 이 수리는 **C에 유리한 방향**이며, §9 판정을 새 데이터로 다시
+        // 유도해야 한다(§2.5 전면 재수집 사유).
+        if let Some(first) = node.first_child() {
+            if first.node_type() == web_sys::Node::TEXT_NODE && first.next_sibling().is_none() {
+                first.unchecked_ref::<web_sys::CharacterData>().set_data(text);
+                return;
+            }
+        }
+        node.set_text_content(Some(text));
     }
 
     fn clear_children(&mut self, parent: NodeHandle) {
@@ -316,8 +352,10 @@ impl DomOps for BrowserDom {
 
         let parent_el: web_sys::Element = parent_node.clone().unchecked_into();
         if move_before(&parent_el, &node_ref, before_ref.as_ref()).is_ok() {
+            self.reposition_native += 1; // §7 M2 분해
             return; // state-preserving native move succeeded.
         }
+        self.reposition_fallback += 1;
         // Fell through: engine has no `moveBefore`, or the call threw.
         // Fallback (RQ1 candidate E's documented Safari path): plain
         // `insertBefore` still relocates an *existing* node without
@@ -326,5 +364,9 @@ impl DomOps for BrowserDom {
         parent_node
             .insert_before(&node_ref, before_ref.as_ref())
             .expect("insert_before fallback failed");
+    }
+
+    fn reposition_split(&self) -> (u64, u64) {
+        (self.reposition_native, self.reposition_fallback)
     }
 }
