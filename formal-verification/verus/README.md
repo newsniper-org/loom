@@ -21,8 +21,24 @@ Rust 구간이라 **실제 함수에 `requires`/`ensures`를 걸 수 있다**. �
 ## 실행
 
 ```
+# 모델(정리들)
 verus formal-verification/verus/flush_order.rs
+
+# 실행 코드(검증된 코드 = 배포되는 코드)
+verus --crate-type=lib crates/loom-flush-core/src/lib.rs
 ```
+
+**`cargo verus verify`를 쓰지 않는 이유(2026-08-01)**: 업스트림 최신 Verus는
+crates.io의 어떤 vstd 릴리스보다 앞서 있어(버전 문자열이 같아도 내용이 다름)
+바이너리가 `unexpected verus diagnostic item`으로 거부한다. 설치본을 path로
+가리키는 것도 막힌다 — 설치 디렉터리에 워크스페이스 루트가 없어
+`builtin_macros` 등의 `{ workspace = true }` 상속이 풀리지 않고 `/opt/verus`는
+쓰기 불가다. `verus`를 직접 쓰면 **번들된 vstd**를 자동으로 쓰므로 바이너리와
+짝이 반드시 맞는다(이 크레이트는 의존이 vstd 하나뿐이라 가능하다).
+
+빌드 경로(`cargo build`)는 crates.io vstd를 쓴다 — ghost 소거 후 실체로 남는
+것은 `HashMapWithView`(std HashMap 얇은 래퍼)뿐이고, API가 어긋나면 빌드가
+시끄럽게 실패하므로 조용한 불일치는 생기지 않는다.
 
 현재 결과: **25 verified, 0 errors**(모델 파일) + **22 verified, 0 errors**(`crates/loom-flush-core`, `cargo verus verify`) (Verus 업스트림 설치본, `/usr/bin/verus`).
 

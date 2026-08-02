@@ -856,6 +856,9 @@ pub open spec fn unlink_tail(next: Map<int, usize>, prev: Map<int, usize>, tail:
 
 /// **Chain ↔ adjacent 대응 (변이 방향, unlink)**: 표기 `s`인 chain에서
 /// `e`를 unlink하면 표기가 `s.remove_value(e)`가 된다.
+// 2026-08-01 Verus 업스트림 업데이트 후 rlimit 회계가 달라져 기본 예산을
+// 넘게 됐다(증명 내용은 무변경). 예산만 명시한다.
+#[verifier::rlimit(4000)]
 pub proof fn chain_unlink_denotes_remove(
     next: Map<int, usize>,
     prev: Map<int, usize>,
@@ -1167,6 +1170,9 @@ pub proof fn chain_insert_before_denotes_insert(
 /// 이로써 정리 (2)/스킵 안전성이 `place_before` 위에서 증명한 모든 것이
 /// **원본의 `Chain` 조작에 그대로 적용**된다 — 앞선 라운드에서 "코드를 읽어
 /// 확인했을 뿐 정리로 잇지 않았다"고 남겨 둔 간극이 여기서 닫힌다.
+// 2026-08-01 Verus 업스트림 업데이트 후 rlimit 회계가 달라져 기본 예산을
+// 넘게 됐다(증명 내용은 무변경). 예산만 명시한다.
+#[verifier::rlimit(4000)]
 pub proof fn chain_ops_match_place_before(
     next: Map<int, usize>,
     prev: Map<int, usize>,

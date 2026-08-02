@@ -13,7 +13,24 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-vstd = "=0.0.0-2026-06-14-0213"
+# **검증과 빌드가 서로 다른 vstd를 쓴다(2026-08-01, 의도된 분리)**:
+#
+#  - **검증**: `verus --crate-type=lib crates/loom-flush-core/src/lib.rs`
+#    (Makefile 대신 README에 명령을 적어 둠). Verus 바이너리에 **번들된** vstd를
+#    자동으로 쓰므로 바이너리와 짝이 반드시 맞는다.
+#  - **빌드**: 아래 crates.io 의존. ghost가 소거된 뒤 실체로 남는 것은
+#    `HashMapWithView`(std HashMap 얇은 래퍼)뿐이다.
+#
+# `cargo verus verify`를 쓰지 않는 이유: 업스트림 최신 Verus는 crates.io의 어떤
+# vstd 릴리스보다 앞서 있어(버전 문자열이 같아도 내용이 다름) 바이너리가
+# `unexpected verus diagnostic item`으로 거부한다. 설치본을 path로 가리키는 것도
+# 막힌다 — 설치 디렉터리에 워크스페이스 루트가 없어 `builtin_macros` 등의
+# `{ workspace = true }` 상속이 풀리지 않고, `/opt/verus`는 쓰기 불가다.
+#
+# 이 분리가 안는 가정 하나(명시): 두 vstd의 `HashMapWithView` 런타임 동작이
+# 같다는 것. 둘 다 `std::collections::HashMap`을 감싼 얇은 래퍼이고, API가
+# 어긋나면 빌드가 **시끄럽게** 실패하므로 조용한 불일치는 생기지 않는다.
+vstd = "=0.0.0-2026-07-12-0122"
 
 [package.metadata.verus]
 verify = true
