@@ -61,8 +61,19 @@ class IsolatedHandler(http.server.SimpleHTTPRequestHandler):
         body = self.rfile.read(length)
         out_dir = os.path.join(REPO_ROOT, "bench", "collected")
         os.makedirs(out_dir, exist_ok=True)
-        with open(os.path.join(out_dir, name), "wb") as fh:
-            fh.write(body)
+        # `.progress`로 끝나는 이름은 **append**한다 — 조합마다 오는 진행
+        # 보고라 마지막 것만 남으면 어디서 느려졌는지 알 수 없다.
+        if name.endswith(".part.json"):
+            # 그룹 모드 조각 — 한 줄씩 append하고, 마지막 그룹이 오면
+            # 호출부(collect-stock.sh)가 합친다.
+            with open(os.path.join(out_dir, name), "ab") as fh:
+                fh.write(body + b"\n")
+        elif name.endswith(".progress.json"):
+            with open(os.path.join(out_dir, name), "ab") as fh:
+                fh.write(body + b"\n")
+        else:
+            with open(os.path.join(out_dir, name), "wb") as fh:
+                fh.write(body)
         self.send_response(204)
         self.end_headers()
         print(f"[collect] {name} ← {len(body)} bytes", file=sys.stderr, flush=True)

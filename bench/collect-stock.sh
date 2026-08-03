@@ -25,8 +25,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/bench/collected/$NAME.json"
 PROFILE="$(mktemp -d)"
 
-rm -f "$OUT"
-URL="http://localhost:$PORT/demo/list_bench.html?collect=$NAME"
+PARTS="$ROOT/bench/collected/$NAME.part.json"
+rm -f "$OUT" "$ROOT/bench/collected/$NAME.progress.json" "$PARTS"
+# §8 "셀마다 fresh page load": 그룹 모드로 시작하면 페이지가 (조합 × 워크로드)
+# 하나씩 돌고 스스로 다음 그룹으로 이동한다. 전 그룹(6 조합 × 7 워크로드 = 42)이
+# 오면 합친다.
+# `GROUPS`는 bash 내장 특수 변수(사용자 그룹 ID 배열)라 대입이 먹지 않는다.
+TOTAL_GROUPS=42
+URL="http://localhost:$PORT/demo/list_bench.html?collect=$NAME&group=0"
 
 case "$BIN" in
   *firefox*)
@@ -54,7 +60,8 @@ trap cleanup EXIT
 
 echo "[collect-stock] $NAME 시작 (pid=$PID, 상한 ${TIMEOUT}초)"
 START=$(date +%s)
-while [ ! -f "$OUT" ]; do
+count_parts() { grep -c '"group":' "$PARTS" 2>/dev/null || echo 0; }
+while [ "$(count_parts)" -lt "$TOTAL_GROUPS" ]; do
   if ! kill -0 $PID 2>/dev/null; then
     echo "[collect-stock] **브라우저가 죽었다** — 결과 없음" >&2
     exit 1
@@ -65,9 +72,33 @@ while [ ! -f "$OUT" ]; do
     exit 1
   fi
   if [ $((EL % 60)) -eq 0 ] && [ "$EL" -gt 0 ]; then
-    echo "[collect-stock] $((EL/60))분 경과"
+    DONE="$(count_parts)"
+    PROG="$(tail -1 "$ROOT/bench/collected/$NAME.progress.json" 2>/dev/null || echo '')"
+    echo "[collect-stock] $((EL/60))분 경과 — 그룹 $DONE/$TOTAL_GROUPS  $PROG"
   fi
   sleep 5
 done
+# 조각을 하나로 합친다.
+python3 - "$PARTS" "$OUT" <<'PYEOF'
+import json, sys
+# 조각은 여러 줄에 걸친 JSON이 이어 붙은 스트림이다 — 줄 단위로 못 읽는다.
+dec = json.JSONDecoder()
+raw = open(sys.argv[1]).read()
+parts, i = [], 0
+while i < len(raw):
+    while i < len(raw) and raw[i].isspace():
+        i += 1
+    if i >= len(raw):
+        break
+    obj, i = dec.raw_decode(raw, i)
+    parts.append(obj)
+parts.sort(key=lambda p: p["group"])
+track_l, track_t = [], []
+for p in parts:
+    track_l.extend(p["track_l"])
+    track_t.extend(p["track_t"])
+json.dump({"track_l": track_l, "track_t": track_t}, open(sys.argv[2], "w"), indent=1)
+print(f"  합침: 그룹 {len(parts)}개 → 트랙 L {len(track_l)} 레코드, 트랙 T {len(track_t)} 레코드")
+PYEOF
 echo "[collect-stock] $NAME 완료 ($((($(date +%s)-START)/60))분) → $OUT"
 exit 0

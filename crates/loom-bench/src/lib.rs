@@ -600,6 +600,9 @@ async fn run_combination<T, F>(
     // RQ1 §3.2의 R3 축(이질 브랜치 row). §3.3이 "R3: W2 × R3 × n=1,000 ×
     // {C, D}(E·K는 참고 측정)"으로 셀을 고정했다.
     row_variants: bool,
+    // §8 "셀마다 fresh page load"를 위한 워크로드 선택. `Some(i)`이면
+    // 셔플된 워크로드 순서의 i번째 하나만 돌린다(그 페이지의 몫).
+    only_workload: Option<usize>,
     out: &mut String,
     first_entry: &mut bool,
 ) where
@@ -634,7 +637,10 @@ async fn run_combination<T, F>(
     let combo_id = format!("{type_name}|n={n}|R{row_bindings}|variants={row_variants}");
     let workload_order = shuffled_indices(Workload::ALL.len(), &combo_id, "workload-order");
 
-    for &wi in &workload_order {
+    for (wpos, &wi) in workload_order.iter().enumerate() {
+        if only_workload.is_some_and(|w| w != wpos) {
+            continue;
+        }
         let workload = &Workload::ALL[wi];
         let cid = cell_id(type_name, n, row_bindings, row_variants, workload.name());
         let cand_order = shuffled_indices(candidates.len(), &cid, "candidate-order");
@@ -814,6 +820,22 @@ async fn run_combination<T, F>(
             let cell_ms = measure_now() - cell_started_ms;
             let live_nodes = loom_runtime::DomOps::live_node_count(&candidate.dom).unwrap_or(0);
 
+            // **셀 단위 진행 보고 (2026-08-04)**. 조합 단위로는 "느린 것"과
+            // "멈춘 것"을 구별할 수 없다 — stock Firefox 수집이 n=10,000
+            // 조합에서 228분간 진행 없이 상한에 걸렸는데, 42개 셀 중 어디서
+            // 그러는지 알 방법이 없었다. 셀이 끝날 때마다 한 줄 보낸다
+            // (측정 구간 밖).
+            report_progress(&format!(
+                "{{\"kind\": \"cell\", \"combination\": \"{type_name} n={n} R{row_bindings} variants={row_variants}\", \
+                  \"workload\": \"{}\", \"candidate\": \"{}\", \"cell_ms\": {:.0}, \
+                  \"over_cap\": {}, \"elapsed_ms\": {:.0}}}",
+                workload.name(),
+                candidate.name,
+                cell_ms,
+                over_cap,
+                measure_now(),
+            ));
+
             if !*first_entry {
                 out.push_str(",\n");
             }
@@ -870,16 +892,20 @@ async fn run_combination<T, F>(
     // 한 번에 기록되므로(그게 원자적 결과 규약이다), 드라이버가 "살아 있는지"를
     // 판단할 근거가 없었다 — 2026-08-03의 6시간 무음 매달림 때 정확히 이게
     // 없어서 죽었는지 도는지 구별할 수 없었다.
+    let progress = format!(
+        "{{\"combination\": \"{type_name} n={n} R{row_bindings} variants={row_variants}\", \
+          \"records\": {}, \"elapsed_ms\": {:.0}}}",
+        out.matches("\"candidate\"").count(),
+        measure_now(),
+    );
     if let Some(win) = web_sys::window() {
         let _ = js_sys::Reflect::set(
             &win,
             &JsValue::from_str("__loomProgress"),
-            &JsValue::from_str(&format!(
-                "{{\"combination\": \"{type_name} n={n} R{row_bindings} variants={row_variants}\", \"records\": {}}}",
-                out.matches("\"candidate\"").count()
-            )),
+            &JsValue::from_str(&progress),
         );
     }
+    report_progress(&progress);
 }
 
 #[wasm_bindgen(start)]
@@ -919,7 +945,51 @@ async fn run_all() -> Result<(), JsValue> {
     // 전 셀 워밍업 50 + 측정 200으로 통일했다. 이전 규칙은 "큰 n은 신호가
     // 노이즈를 압도하니 적게"라는 하네스 자체 판단이었는데, §8은 그런 재량을
     // 주지 않고 n=10,000의 6회는 median/IQR/p95를 말하기에 표본이 모자랐다.
+    // -----------------------------------------------------------------------
+    // §8 격리 조항: "새 프로필, 확장 없음, **셀마다 fresh page load**".
+    //
+    // 하네스는 2026-08-04까지 252개 셀 전부를 **한 페이지 로드**에서 돌렸고
+    // (모듈 doc이 "same page load so results share hardware/JIT-warmup
+    // conditions"라고 이점으로 서술했지만 조항과 반대 방향이라는 사실은
+    // 어디에도 없었다), 그 대가가 실측으로 드러났다 — stock Firefox에서
+    // n=10,000 조합이 **한 페이지에 누적된 상태에서는 228분 넘게 안 끝나는데**,
+    // 같은 조합을 새 페이지에서 단독으로 돌리면 셀당 소요가 3.7배(Chromium
+    // 대비)로 정상 범위였다. 즉 오래 산 페이지에서 측정치가 열화한다.
+    //
+    // `?group=<i>`는 (조합 × 워크로드) 하나만 돌리고, 끝나면 `i+1`로 **스스로
+    // 이동**한다. 브라우저 프로세스는 하나지만 페이지는 매번 새로 뜨므로
+    // 조항에 맞고 누적 열화도 끊긴다.
+    //
+    // 왜 (조합 × 워크로드)이지 (조합 × 워크로드 × 후보)가 아닌가: §8의 배치
+    // 규칙 판정과 시드 열 공유가 **한 셀의 6후보를 함께** 보도록 요구하기
+    // 때문이다. 후보별로 페이지를 쪼개면 그 전제가 깨진다.
+    // -----------------------------------------------------------------------
+    let group: Option<usize> = query_param("group").and_then(|v| v.parse().ok());
+    // 조합 개수: String n∈{100,1000,10000} + POD n=1000 + R2 + R3 = 6.
+    const COMBINATIONS: usize = 6;
+    let combos = COMBINATIONS;
+    let (only_n, only_workload, next_group) = match group {
+        Some(g) if g < combos * Workload::ALL.len() => {
+            (Some(g / Workload::ALL.len()), Some(g % Workload::ALL.len()), Some(g + 1))
+        }
+        Some(_) => (Some(usize::MAX), Some(usize::MAX), None), // 범위 밖 = 끝
+        None => (None, None, None),
+    };
+
+    // `?only=<n>` — **진단 전용** 조합 선택(레거시). 판정 데이터는 항상 전
+    // 조합을 돌린 것이어야 한다.
+    let only_n: Option<usize> = match only_n {
+        Some(_) => None, // group 모드에서는 아래 조합 인덱스로 거른다
+        None => query_param("only").and_then(|v| v.parse().ok()),
+    };
+    let combo_index: Option<usize> = group.map(|g| g / Workload::ALL.len());
+    let mut ci_counter: usize = 0;
     for &n in &[100usize, 1000, 10000] {
+        let this = ci_counter;
+        ci_counter += 1;
+        if only_n.is_some_and(|o| o != n) || combo_index.is_some_and(|c| c != this) {
+            continue;
+        }
         let reps = MEASURE_REPS;
         let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
         run_combination(
@@ -932,15 +1002,26 @@ async fn run_all() -> Result<(), JsValue> {
             |seed| format!("new-{seed}"),
             1, // R1
             false, // R3 축 꺼짐
+            only_workload,
             &mut report,
             &mut first_entry,
         ).await;
     }
 
+    // `?only=`이 지정되면 아래 세 조합(POD·R2·R3)은 건너뛴다 — 진단 전용.
+    let skip_extra = only_n.is_some();
+    macro_rules! combo_gate {
+        () => {{
+            let this = ci_counter;
+            ci_counter += 1;
+            skip_extra || combo_index.is_some_and(|c| c != this)
+        }};
+    }
+
     // POD (u32 newtype) axis: one representative size (n=1000), not the
     // full N-scaling sweep — a partial, not full, cross-check of RQ1's
     // heap-vs-POD item axis (stated plainly, not silently narrowed).
-    {
+    if !combo_gate!() {
         let n = 1000;
         let initial: Vec<ItemId> = (0..n as u32).map(ItemId).collect();
         run_combination(
@@ -953,6 +1034,7 @@ async fn run_all() -> Result<(), JsValue> {
             |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
             1, // R1
             false, // R3 축 꺼짐
+            only_workload,
             &mut report,
             &mut first_entry,
         ).await;
@@ -965,7 +1047,7 @@ async fn run_all() -> Result<(), JsValue> {
     // partial-coverage precedent) — the D-vs-K decision this axis exists to
     // inform doesn't need one (see research-questions/
     // RQ1-dynamic-control-flow-scheduling.md's row-depth write-up).
-    {
+    if !combo_gate!() {
         let n = 1000;
         let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
         run_combination(
@@ -978,6 +1060,7 @@ async fn run_all() -> Result<(), JsValue> {
             |seed| format!("new-{seed}"),
             8, // R2
             false, // R3 축 꺼짐
+            only_workload,
             &mut report,
             &mut first_entry,
         ).await;
@@ -986,7 +1069,7 @@ async fn run_all() -> Result<(), JsValue> {
     // R3 축(§3.3): W2 × R3 × n=1,000. 판정 대상은 {C, D}이고 E·K는 참고
     // 측정이지만, 하네스는 6후보를 한 조합에서 함께 돌리므로 전부 수집된다
     // (§2.4 동일 조건 유지에도 유리).
-    {
+    if !combo_gate!() {
         let n = 1000;
         let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
         run_combination(
@@ -999,6 +1082,7 @@ async fn run_all() -> Result<(), JsValue> {
             |seed| format!("new-{seed}"),
             1, // R3는 row 깊이와 독립 축이므로 binding은 R1로 둔다
             true, // R3 축 켬
+            only_workload,
             &mut report,
             &mut first_entry,
         ).await;
@@ -1011,7 +1095,16 @@ async fn run_all() -> Result<(), JsValue> {
         .expect("no #results element — see demo/list_bench.html");
     results_el.set_text_content(Some(&report));
 
-    run_track_t(&document, &container_node);
+    // 그룹 모드에서는 페이지가 42번 뜨므로 트랙 T를 매번 돌리면 같은 셀을
+    // 42번 재는 셈이다(실측 확인: 16 → 672 레코드). 트랙 T는 자기 드라이버
+    // (`bench/e2e/run-track-t-frequency.mjs`)가 §4.1 격자로 따로 수집하므로
+    // 여기서는 그룹 모드가 아닐 때만 돌린다.
+    if group.is_none() {
+        run_track_t(&document, &container_node);
+    } else if let Some(el) = document.get_element_by_id("results-cond") {
+        // Playwright 경로의 완료 신호를 그룹 모드에서도 유지한다.
+        el.set_text_content(Some("[]"));
+    }
 
     // -----------------------------------------------------------------------
     // **stock 브라우저 수집 경로 (2026-08-03 신설)**
@@ -1033,14 +1126,57 @@ async fn run_all() -> Result<(), JsValue> {
             .get_element_by_id("results-cond")
             .and_then(|e| e.text_content())
             .unwrap_or_default();
-        let payload = format!("{{\"track_l\": {report}, \"track_t\": {cond}}}");
-        let opts = web_sys::RequestInit::new();
-        opts.set_method("POST");
-        opts.set_body(&JsValue::from_str(&payload));
-        let _ = window.fetch_with_str_and_init(&format!("/__collect?name={name}"), &opts);
+        match next_group {
+            // 그룹 모드: 이 페이지 몫의 레코드만 조각으로 보내고 다음 그룹으로
+            // **스스로 이동**한다. 페이지가 매번 새로 뜨므로 §8의 "셀마다
+            // fresh page load"에 맞고 누적 열화도 끊긴다.
+            Some(g) => {
+                let payload =
+                    format!("{{\"group\": {}, \"track_l\": {report}, \"track_t\": {cond}}}", g - 1);
+                let opts = web_sys::RequestInit::new();
+                opts.set_method("POST");
+                opts.set_body(&JsValue::from_str(&payload));
+                let req = window.fetch_with_str_and_init(&format!("/__collect?name={name}.part"), &opts);
+                // POST가 서버에 닿은 뒤에 이동해야 조각이 유실되지 않는다.
+                let href = format!("?collect={name}&group={g}");
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = wasm_bindgen_futures::JsFuture::from(req).await;
+                    if let Some(w) = web_sys::window() {
+                        let _ = w.location().set_search(&href);
+                    }
+                });
+            }
+            None => {
+                // 그룹 모드의 **마지막 페이지**(범위 밖 인덱스)는 아무 조합도
+                // 돌지 않았으므로 빈 결과다 — 출력 파일을 덮어쓰지 않도록
+                // 별도 이름으로 보낸다. 그룹 모드가 아닐 때(전 조합 1페이지)는
+                // 종전대로 출력 파일에 보낸다.
+                let suffix = if group.is_some() { ".done" } else { "" };
+                let payload = format!("{{\"track_l\": {report}, \"track_t\": {cond}}}");
+                let opts = web_sys::RequestInit::new();
+                opts.set_method("POST");
+                opts.set_body(&JsValue::from_str(&payload));
+                let _ =
+                    window.fetch_with_str_and_init(&format!("/__collect?name={name}{suffix}"), &opts);
+            }
+        }
     }
 
     Ok(())
+}
+
+/// 진행 상황 한 줄을 서버로 보낸다(`?collect=<이름>`일 때만).
+///
+/// stock 브라우저 경로에는 드라이버가 없어 밖에서 `window`를 들여다볼 수
+/// 없다 — 이게 없으면 수집이 느린 것인지 멈춘 것인지 구별이 안 된다.
+/// 측정 구간 **밖**(셀/조합 경계)에서만 호출한다.
+fn report_progress(line: &str) {
+    let Some(name) = query_param("collect") else { return };
+    let Some(win) = web_sys::window() else { return };
+    let opts = web_sys::RequestInit::new();
+    opts.set_method("POST");
+    opts.set_body(&JsValue::from_str(line));
+    let _ = win.fetch_with_str_and_init(&format!("/__collect?name={name}.progress"), &opts);
 }
 
 /// 현재 페이지 URL의 쿼리 파라미터 하나를 읽는다.
