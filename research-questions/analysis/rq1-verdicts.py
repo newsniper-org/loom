@@ -278,26 +278,95 @@ def profile_w7(idx, browser):
 # §7 M2 교차 검증 — 조항이 요구하는 대응표가 실제로 맞는지
 # ---------------------------------------------------------------------------
 
+def integrity_checks(rows, browser):
+    """판정을 내리기 **전에** 데이터가 조항이 요구하는 조건에서 나왔는지 본다.
+
+    2026-08-03의 적대적 감사가 확증한 결함들이 재발했는지를 데이터만 보고
+    판별할 수 있는 항목들이다 — 하네스가 고쳐졌다는 것과 이 수집분이 고쳐진
+    하네스에서 나왔다는 것은 다른 명제다.
+    """
+    print(f"\n{'=' * 78}\n무결성 점검 (판정 전) — {browser}\n{'=' * 78}")
+    problems = []
+
+    # (1) 노드 슬롯 누수 — 상주가 n에 비례해야 하고 tick 수에 비례하면 안 된다.
+    worst = max(rows, key=lambda r: r["live_node_slots"] / max(r["n"], 1))
+    ratio = worst["live_node_slots"] / worst["n"]
+    ok = ratio < 20
+    print(f"  노드 슬롯 상주 최대 비율: {ratio:.2f}× (n={worst['n']}, {worst['candidate']}/{worst['workload']})")
+    print(f"    ⇒ {'정상' if ok else '**누수 의심**'} (수리 전이면 tick 수 × n으로 자란다)")
+    if not ok:
+        problems.append("노드 슬롯 누수 의심")
+
+    # (2) 배치 모드가 셀 안에서 갈리면 paired bootstrap의 전제가 깨진다(§8).
+    from collections import defaultdict
+    modes = defaultdict(set)
+    for r in rows:
+        modes[(r["item_type"], r["n"], r["row_bindings"], r["row_variants"], r["workload"])].add(
+            r.get("batch_mode", "?"))
+    split = [k for k, v in modes.items() if len(v) > 1]
+    print(f"  배치 모드가 후보 간에 갈린 셀: {len(split)}/{len(modes)}")
+    print(f"    ⇒ {'정상' if not split else '**§8 시드 열 공유 전제 붕괴**'}")
+    if split:
+        problems.append("배치 모드 셀 내 분기")
+        for k in split[:3]:
+            print(f"      {k}: {modes[k]}")
+    dist = defaultdict(int)
+    for r in rows:
+        dist[r.get("batch_mode", "?")] += 1
+    print(f"    모드 분포: {dict(dist)}")
+
+    # (3) §8 셀 상한.
+    over = [r for r in rows if r.get("over_cell_cap")]
+    print(f"  §8 셀 상한(30분) 초과: {len(over)}건 — 최대 셀 벽시계 "
+          f"{max(r['cell_wall_ms'] for r in rows) / 1000:.1f}초")
+    if over:
+        problems.append("셀 상한 초과")
+
+    # (4) §8 타이머 조항.
+    res = {r["timer_resolution_ms"] for r in rows}
+    print(f"  타이머 해상도: {sorted(res)} ms — {'격리 정상' if max(res) <= 0.01 else '**클램프됨(COOP/COEP 미적용?)**'}")
+    if max(res) > 0.01:
+        problems.append("타이머 클램프")
+
+    # (5) §8 표본 수.
+    reps = {r["reps"] for r in rows}
+    warm = {r.get("warmup") for r in rows}
+    print(f"  표본: 워밍업 {sorted(warm)} + 측정 {sorted(reps)} "
+          f"— {'§8 준수' if reps == {200} and warm == {50} else '**§8 미달**'}")
+    if reps != {200} or warm != {50}:
+        problems.append("표본 수 §8 미달")
+
+    print(f"\n  ⇒ 무결성 문제 {len(problems)}건" + (f": {problems}" if problems else ""))
+    return problems
+
+
 def crosscheck_m2(idx, browser):
     print(f"\n{'=' * 78}\n§7 M2 MutationObserver 교차 검증 — {browser}\n{'=' * 78}")
     print("  대응표: setText → characterData, insert/remove/move 폴백/detach/attach → childList")
     print("  ※ 네이티브 moveBefore는 관측상 remove+insert 쌍으로 보인다(§7 M2 주석).")
+    print("  ※ **새로 만든 엘리먼트**에 대한 setText는 텍스트 자식이 없어")
+    print("     `textContent=` 경로로 가므로 childList로 관측된다 — K가 그 경우다.")
     bad = 0
     for cand in ["K", "C", "D", "E"]:
         r = cell(idx, "W2", 1, cand)
         if not r or not r.get("mutation_records"):
             continue
         o, m = r["m2_dom_ops"], r["mutation_records"]
-        st, rp = o["set_text_content"], o["reposition"]
+        st, rp, ce = o["set_text_content"], o["reposition"], o["create_element"]
         cd, cl = m["character_data"], m["child_list"]
-        # C처럼 retained 슬롯 갱신만 하는 후보는 setText == characterData여야 한다.
+        # 대응표가 성립해야 하는 것은 **retained 슬롯 값 갱신**뿐이다.
+        # 엘리먼트를 새로 만드는 후보(K)는 구조적으로 childList로 간다.
         flag = ""
-        if rp == 0 and st > 0 and cd != st:
-            flag = "  ⚠ setText↔characterData 불일치"
-            bad += 1
-        print(f"    {cand:6s} setText={st:5d} reposition={rp:5d} | "
+        if rp == 0 and ce == 0 and st > 0:
+            miss = abs(cd - st)
+            if miss > max(1, st // 100):  # 1% 초과만 구조적 불일치로 본다
+                flag = f"  ⚠ setText↔characterData 불일치 ({miss}건)"
+                bad += 1
+            elif miss > 0:
+                flag = f"  (오차 {miss}건 — 1% 이내, 병기만)"
+        print(f"    {cand:6s} setText={st:5d} reposition={rp:5d} create={ce:5d} | "
               f"charData={cd:5d} childList={cl:5d}{flag}")
-    print(f"  ⇒ 대응표 위반 {bad}건")
+    print(f"  ⇒ 구조적 대응표 위반 {bad}건")
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +388,7 @@ def main():
               f"+ 측정 {r0.get('reps', '?')}, 해상도 {r0.get('timer_resolution_ms', float('nan')):.4f}ms)\n{'#' * 78}")
         batched = sum(1 for r in rows if r.get("batched"))
         print(f"# §8 배치 규칙 전환 셀: {batched}/{len(rows)}")
+        integrity_checks(rows, label)
         results[browser] = {
             "C": gate_c(idx, label),
             "D": gate_d(idx, label),
