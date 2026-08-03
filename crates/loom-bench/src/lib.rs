@@ -704,6 +704,9 @@ async fn run_combination<T, F>(
 
             let mut samples = Vec::with_capacity(reps as usize);
             let mut over_cap = false;
+            // 교대 묶음에서 정방향 전이의 M2/단계 귀속을 따로 붙잡아 둔다.
+            let mut fwd_counts = loom_runtime::DomOpCounts::default();
+            let mut fwd_stages = loom_runtime::StageTimings::default();
             for rep in 0..reps {
                 // Reset to the identical baseline (untimed) before each
                 // timed rep, so every rep starts from the same condition.
@@ -732,6 +735,15 @@ async fn run_combination<T, F>(
                         for j in 0..BATCH_K {
                             let items = if j % 2 == 0 { target.clone() } else { initial.clone() };
                             total += candidate.set_and_tick(items);
+                            // `m2_dom_ops`/`stage_ms`는 **정방향 전이**의 값이어야
+                            // 한다. 교대 묶음의 마지막(j=K-1, 홀수)은 되돌림이므로
+                            // 그대로 두면 §9 C 기각 (ii)/E 기각 (i)이 역방향 op를
+                            // 읽는다. swap은 정/역이 대칭이라 v15 판정에는 영향이
+                            // 없었지만(remove_middle은 비대칭), 구조적으로 틀렸다.
+                            if j % 2 == 0 {
+                                fwd_counts = candidate.last_counts;
+                                fwd_stages = candidate.last_stages;
+                            }
                         }
                         samples.push(total / BATCH_K as f64);
                     }
@@ -761,8 +773,11 @@ async fn run_combination<T, F>(
             // 값이다. 스케일이 다르므로 이름에 그 사실을 넣었다 — 감사가
             // "두 필드의 시간 스케일이 다르다는 점을 레코드만 봐서는 알 수
             // 없다"고 지적한 지점.
-            let measured_counts = candidate.last_counts;
-            let measured_stages = candidate.last_stages;
+            let (measured_counts, measured_stages) = if batch_mode == "alternate" {
+                (fwd_counts, fwd_stages)
+            } else {
+                (candidate.last_counts, candidate.last_stages)
+            };
             let (nat1, fb1) = loom_runtime::DomOps::reposition_split(&candidate.dom);
             let (native, fallback) = (nat1 - nat0, fb1 - fb0);
 

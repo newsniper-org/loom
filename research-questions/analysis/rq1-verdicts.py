@@ -323,9 +323,20 @@ def integrity_checks(rows, browser):
         problems.append("셀 상한 초과")
 
     # (4) §8 타이머 조항.
+    #
+    # **엔진마다 격리 상태의 하한이 다르다**(2026-08-03 실측으로 확인):
+    #   Chromium 149: crossOriginIsolated=true → 0.005ms (5µs)
+    #   Firefox 151:  crossOriginIsolated=true → 0.020ms (20µs)
+    # 처음엔 임계를 0.01ms로 두었다가 Firefox를 "클램프됨"으로 **오탐**했다.
+    # 격리가 안 걸리면 Chromium은 0.1ms, Firefox는 1ms 수준으로 훨씬 커지므로
+    # 임계는 0.05ms면 충분히 갈린다. (근본 수리는 `cross_origin_isolated`를
+    # 트랙 L 레코드에도 싣는 것 — 트랙 T는 이미 싣고 있다. 그건 하네스 변경이라
+    # §2.5상 재수집을 부르므로 다음 라운드로 미룬다.)
     res = {r["timer_resolution_ms"] for r in rows}
-    print(f"  타이머 해상도: {sorted(res)} ms — {'격리 정상' if max(res) <= 0.01 else '**클램프됨(COOP/COEP 미적용?)**'}")
-    if max(res) > 0.01:
+    clamped = max(res) > 0.05
+    print(f"  타이머 해상도: {sorted(res)} ms — "
+          f"{'격리 정상(엔진별 하한: Chromium 0.005 / Firefox 0.020)' if not clamped else '**클램프됨(COOP/COEP 미적용?)**'}")
+    if clamped:
         problems.append("타이머 클램프")
 
     # (5) §8 표본 수.
@@ -390,6 +401,7 @@ def main():
         print(f"# §8 배치 규칙 전환 셀: {batched}/{len(rows)}")
         integrity_checks(rows, label)
         results[browser] = {
+            "_idx": idx,
             "C": gate_c(idx, label),
             "D": gate_d(idx, label),
             "E": gate_e(idx, label),
@@ -412,7 +424,45 @@ def main():
     if f:
         for cand in ("C", "D", "E"):
             if f[cand] != c[cand]:
-                print(f"  ⚠️ Firefox가 {cand}에서 다른 결과 — §11-1(b) 검토 대상 등재 사유")
+                print(f"  ⚠️ Firefox가 {cand}에서 다른 게이트 결론 — §11-1(b) 검토 대상 등재 사유")
+        cross_browser_direction_check(results)
+
+
+def cross_browser_direction_check(results):
+    """§8: "Firefox 교차 확인이 우세 방향을 뒤집으면 자동 판정 변경이 아니라
+    §11-1(b) 검토 대상 등재."
+
+    **게이트 결론이 같아도 셀 단위 방향은 뒤집힐 수 있다.** 게이트 dict만
+    비교하면 그걸 놓친다 — v15에서 실제로 게이트 셋은 전부 일치하는데 비교쌍
+    40건 중 9건이 정반대로 뒤집혔다(2026-08-03). 그래서 셀 단위로 따로 센다.
+    """
+    print(f"\n{'-' * 78}\n브라우저 간 우세 방향 대조 (§8 — 뒤집히면 §11-1(b) 등재 사유)\n{'-' * 78}")
+    ci, fi = results["chromium"]["_idx"], results["firefox"]["_idx"]
+    pairs = [("C", "D", "C 채택(a)"), ("C", "K", "C 채택(b)"),
+             ("K", "D", "D 기각(iii)앞항"), ("D", "K", "D 양성"), ("E", "K", "E 기각(i)")]
+    total = mismatch = opposite = 0
+    for w in JUDGE_WORKLOADS:
+        for bindings in (1, 8):
+            for a, b, tag in pairs:
+                ka, kb = cell(ci, w, bindings, a), cell(ci, w, bindings, b)
+                fa, fb = cell(fi, w, bindings, a), cell(fi, w, bindings, b)
+                if not (ka and kb and fa and fb):
+                    continue
+                total += 1
+                vc = verdict(*paired_ratio_ci(ka["samples_ms"], kb["samples_ms"]))
+                vf = verdict(*paired_ratio_ci(fa["samples_ms"], fb["samples_ms"]))
+                if vc == vf:
+                    continue
+                mismatch += 1
+                hard = {vc, vf} == {"우세", "열세"}
+                opposite += hard
+                mark = "⚠️ 정반대" if hard else "  (한쪽 비결정)"
+                print(f"  {mark}  {w}×R{1 if bindings == 1 else 2:1d} {a}/{b:2s}  "
+                      f"Chromium={vc:4s} → Firefox={vf:4s}   [{tag}]")
+    print(f"\n  비교쌍 {total}건: 어휘 불일치 {mismatch}건, 그중 **정반대** {opposite}건")
+    if opposite:
+        print("  ⇒ §11-1(b) **검토 대상 등재 사유 발생**. 판정은 §8대로 Chromium 단독으로")
+        print("     유지하되(브라우저 간 풀링·평균 금지), 이 목록을 RQ1에 병기할 것.")
 
 
 if __name__ == "__main__":
