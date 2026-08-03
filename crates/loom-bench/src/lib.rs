@@ -1013,7 +1013,41 @@ async fn run_all() -> Result<(), JsValue> {
 
     run_track_t(&document, &container_node);
 
+    // -----------------------------------------------------------------------
+    // **stock 브라우저 수집 경로 (2026-08-03 신설)**
+    //
+    // 지금까지 결과 추출은 Playwright가 `#results`를 읽는 방식뿐이었고, 그래서
+    // **Playwright가 번들한 브라우저 빌드**로만 측정할 수 있었다. 조사 결과
+    // Playwright의 Firefox 빌드가 stock Firefox와 크게 다르다는 것이 확인됐다 —
+    // 같은 wasm 바이너리로 stock Firefox 150.0.1은 Chromium과 동률(0.91×)인데
+    // Playwright 빌드는 8.1~8.4배 느리다(그 바이너리를 Playwright 없이 직접
+    // 띄워도 동일하므로 드라이버가 아니라 빌드의 성질). 즉 그동안의 Firefox
+    // 교차 확인은 비대표 빌드에서 나온 것이었다.
+    //
+    // `?collect=<이름>` 쿼리가 있으면 결과를 서버로 POST한다. **모든 측정이
+    // 끝난 뒤 한 번** 호출되므로 측정 구간에는 영향이 없다 — Playwright 경로의
+    // 동작도 그대로다(`#results`는 여전히 채워진다).
+    // -----------------------------------------------------------------------
+    if let Some(name) = query_param("collect") {
+        let cond = document
+            .get_element_by_id("results-cond")
+            .and_then(|e| e.text_content())
+            .unwrap_or_default();
+        let payload = format!("{{\"track_l\": {report}, \"track_t\": {cond}}}");
+        let opts = web_sys::RequestInit::new();
+        opts.set_method("POST");
+        opts.set_body(&JsValue::from_str(&payload));
+        let _ = window.fetch_with_str_and_init(&format!("/__collect?name={name}"), &opts);
+    }
+
     Ok(())
+}
+
+/// 현재 페이지 URL의 쿼리 파라미터 하나를 읽는다.
+fn query_param(key: &str) -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get(key)
 }
 
 /// RQ1 Track T (conditional rendering, candidates B/F) — see cond.rs's

@@ -34,6 +34,39 @@ class IsolatedHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    def do_POST(self):
+        """`/__collect?name=<파일명>`로 수집 결과를 받아 저장한다.
+
+        **왜 필요한가 (2026-08-03)**: 지금까지 결과 추출은 Playwright가
+        `#results`를 읽는 방식이었고, 그래서 **Playwright가 번들한 브라우저
+        빌드**로만 측정할 수 있었다. 그런데 조사 결과 Playwright의 Firefox
+        빌드가 stock Firefox와 크게 다르다는 것이 밝혀졌다 — 같은 wasm
+        바이너리로 stock Firefox 150.0.1은 Chromium과 동률(0.91×)인데
+        Playwright 빌드는 8.1~8.4배 느리다(그 바이너리를 Playwright 없이
+        직접 띄워도 동일하므로 드라이버가 아니라 빌드의 성질).
+
+        이 엔드포인트가 있으면 **아무 브라우저나** `--headless`로 띄워서
+        측정할 수 있다. 측정이 전부 끝난 뒤 한 번 호출되므로 측정 구간에는
+        영향이 없다.
+        """
+        from urllib.parse import urlparse, parse_qs
+
+        q = parse_qs(urlparse(self.path).query)
+        name = (q.get("name") or ["collect.json"])[0]
+        # 경로 탈출 차단 — 파일명만 받는다.
+        name = os.path.basename(name)
+        if not name.endswith(".json"):
+            name += ".json"
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length)
+        out_dir = os.path.join(REPO_ROOT, "bench", "collected")
+        os.makedirs(out_dir, exist_ok=True)
+        with open(os.path.join(out_dir, name), "wb") as fh:
+            fh.write(body)
+        self.send_response(204)
+        self.end_headers()
+        print(f"[collect] {name} ← {len(body)} bytes", file=sys.stderr, flush=True)
+
     def log_message(self, fmt, *args):
         pass  # 측정 중 콘솔 소음 제거
 
