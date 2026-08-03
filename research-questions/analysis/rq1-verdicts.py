@@ -30,7 +30,7 @@ CI = 0.99
 random.seed(20260802)
 
 DATA = "/home/ybi/loom-research/research-questions/data"
-VERSION = "v15"
+VERSION = "v16"
 
 # §3.1 워크로드 이름 ↔ 하네스 이름.
 W = {"W1": "swap", "W2": "shuffle", "W3": "shuffle10", "W4": "head_insert",
@@ -83,7 +83,11 @@ def verdict(lo, hi):
 
 def load(browser):
     path = f"{DATA}/rq1-phase1-track-l-core-grid-{VERSION}-{browser}.json"
-    rows = json.load(open(path))
+    payload = json.load(open(path))
+    # v16부터 stock 브라우저 수집 경로가 `{track_l, track_t}`로 감싸 보낸다
+    # (§11 개정 #4 — Playwright 번들 Firefox가 대표 빌드가 아니어서 신설한 경로).
+    # v15 이하는 트랙 L 배열 그대로다.
+    rows = payload["track_l"] if isinstance(payload, dict) else payload
     idx = {}
     for r in rows:
         key = (r["item_type"], r["n"], r["row_bindings"], r["row_variants"],

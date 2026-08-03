@@ -13,8 +13,15 @@ N_RESAMPLES = 10_000
 random.seed(20260724)
 
 
+def _load_records(path):
+    """v16부터 stock 브라우저 수집 경로가 결과를 `{track_l, track_t}`로 감싸
+    보낸다(§11 개정 #4 — Playwright 번들 Firefox가 대표 빌드가 아니어서 신설).
+    v15 이하는 트랙 L 배열 그대로이므로 둘 다 받는다."""
+    p = json.load(open(path))
+    return p["track_l"] if isinstance(p, dict) else p
+
 def load(path):
-    return json.load(open(path))
+    return _load_records(path)
 
 
 def pct(sorted_samples, p):
@@ -90,5 +97,5 @@ def analyze(path, label):
 
 
 DATA = "/home/ybi/loom-research/research-questions/data"
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-chromium.json", "CHROMIUM")
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-firefox.json", "FIREFOX")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v16-chromium.json", "CHROMIUM")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v16-firefox.json", "FIREFOX")

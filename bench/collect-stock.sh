@@ -40,7 +40,17 @@ case "$BIN" in
     ;;
 esac
 PID=$!
-trap 'kill $PID 2>/dev/null || true; rm -rf "$PROFILE"' EXIT
+# 정리는 **절대 스크립트를 죽이면 안 된다**. 2026-08-03에 Chrome이 프로필
+# 디렉터리에 아직 쓰는 중이라 `rm -rf`가 실패했고, `set -e` + trap 조합에서
+# 그 실패가 스크립트 종료 코드가 되어 뒤이은 Firefox 수집이 통째로 건너뛰어졌다.
+cleanup() {
+  local rc=$?
+  kill "$PID" 2>/dev/null || true
+  sleep 1
+  rm -rf "$PROFILE" 2>/dev/null || true
+  return $rc
+}
+trap cleanup EXIT
 
 echo "[collect-stock] $NAME 시작 (pid=$PID, 상한 ${TIMEOUT}초)"
 START=$(date +%s)
@@ -60,3 +70,4 @@ while [ ! -f "$OUT" ]; do
   sleep 5
 done
 echo "[collect-stock] $NAME 완료 ($((($(date +%s)-START)/60))분) → $OUT"
+exit 0

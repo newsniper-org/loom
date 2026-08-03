@@ -32,6 +32,13 @@ paired bootstrap(같은 rep 인덱스로 리샘플 — `loom-bench`가 후보마
 """
 
 import json
+
+
+def _load_records(path):
+    """v16부터 stock 수집 경로가 `{track_l, track_t}`로 감싸 보낸다(§11 개정 #4)."""
+    p = _load_records(path)
+    return p["track_l"] if isinstance(p, dict) else p
+
 import random
 import statistics
 
@@ -73,7 +80,7 @@ def paired_bootstrap_ratio_ci(a, b, ci_level=0.99):
 
 
 def analyze(path, label):
-    data = json.load(open(path))
+    data = _load_records(path)
     by_key = {}
     for row in data:
         if row["n"] != 1000 or row["item_type"] != "String(heap)":
@@ -102,8 +109,8 @@ def analyze(path, label):
 
 results = []
 for browser, path in [
-    ("CHROMIUM (1차 판정)", f"{DATA}/rq1-phase1-track-l-core-grid-v15-chromium.json"),
-    ("FIREFOX (교차 확인)", f"{DATA}/rq1-phase1-track-l-core-grid-v15-firefox.json"),
+    ("CHROMIUM (1차 판정)", f"{DATA}/rq1-phase1-track-l-core-grid-v16-chromium.json"),
+    ("FIREFOX (교차 확인)", f"{DATA}/rq1-phase1-track-l-core-grid-v16-firefox.json"),
 ]:
     r = analyze(path, browser)
     if r:

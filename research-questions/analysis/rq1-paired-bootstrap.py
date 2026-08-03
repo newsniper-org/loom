@@ -23,8 +23,15 @@ random.seed(1234567890)  # not a protocol PRNG requirement (that's PCG64/SHA-256
                           # per §8) -- this script's own resampling seed only,
                           # for reproducibility of this analysis pass.
 
+def _load_records(path):
+    """v16부터 stock 브라우저 수집 경로가 결과를 `{track_l, track_t}`로 감싸
+    보낸다(§11 개정 #4 — Playwright 번들 Firefox가 대표 빌드가 아니어서 신설).
+    v15 이하는 트랙 L 배열 그대로이므로 둘 다 받는다."""
+    p = json.load(open(path))
+    return p["track_l"] if isinstance(p, dict) else p
+
 def load(path):
-    return json.load(open(path))
+    return _load_records(path)
 
 def paired_bootstrap_ratio_ci(a_samples, b_samples, ci_level):
     n = len(a_samples)
@@ -85,9 +92,9 @@ def analyze(path, label, baseline="K"):
             print(f"  {name:6s} vs {baseline}: 99% CI=[{lo99:.3f}, {hi99:.3f}]  95% CI=[{lo95:.3f}, {hi95:.3f}]  판정={v}{flag}")
 
 DATA = "/home/ybi/loom-research/research-questions/data"
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-chromium.json", "CHROMIUM — Track L, baseline K")
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-firefox.json", "FIREFOX — Track L, baseline K")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v16-chromium.json", "CHROMIUM — Track L, baseline K")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v16-firefox.json", "FIREFOX — Track L, baseline K")
 
 # C의 채택 조건 (a): D 대비 동등 이상. 별도 baseline=D로 재계산.
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-chromium.json", "CHROMIUM — C vs D (RQ1 §9 C 채택조건 a)", baseline="D")
-analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v15-firefox.json", "FIREFOX — C vs D (RQ1 §9 C 채택조건 a)", baseline="D")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v16-chromium.json", "CHROMIUM — C vs D (RQ1 §9 C 채택조건 a)", baseline="D")
+analyze(f"{DATA}/rq1-phase1-track-l-core-grid-v16-firefox.json", "FIREFOX — C vs D (RQ1 §9 C 채택조건 a)", baseline="D")
