@@ -462,3 +462,45 @@ mod f_variants {
                 v.applied, v.current);
     }
 }
+
+// ============================================================================
+// CountingDom 위임 완전성 — 2026-08-03 회귀 테스트
+// ============================================================================
+//
+// `DomOps`의 `detach_to_fragment`/`attach_from_fragment`는 SSR `StringDom`용
+// "지원 안 함" 패닉을 **기본 구현**으로 갖는다. 데코레이터가 그 둘을 위임하지
+// 않으면 감싸는 순간 F 계열 토글이 전부 트랩하는데, 컴파일은 통과한다 —
+// 기본 구현이 있으니 빠뜨려도 타입 오류가 안 난다.
+//
+// 2026-08-03에 트랙 T를 M2 수집(§4.1)을 위해 `CountingDom`으로 감싸자마자
+// F-i 첫 셀에서 그렇게 죽었다. 데코레이터를 통과하는 토글을 여기서 한 번
+// 돌려 그 종류의 누락을 잡는다.
+#[test]
+fn counting_dom_forwards_fragment_ops() {
+    use loom_runtime::{cond_reconcile_f_i_system, patch_text_f_i_system, CountingDom, DomOps};
+    use bevy_ecs::prelude::IntoScheduleConfigs;
+
+    let (raw, root) = MockDom::new_root();
+    let mut dom = CountingDom::new(raw);
+    let mut app = LoomApp::new();
+    app.add_systems((cond_reconcile_f_i_system, patch_text_f_i_system).chain());
+    let entity = app
+        .world
+        .spawn((Signal(false), CondBlock::with_size(4), DomTarget(root)))
+        .id();
+    app.tick(&mut dom);
+
+    // 실체화 → 분리 → 재부착. 위임이 빠져 있으면 여기서 패닉한다.
+    for state in [true, false, true] {
+        app.world.get_mut::<Signal<bool>>(entity).unwrap().0 = state;
+        app.tick(&mut dom);
+    }
+
+    let c = dom.counts();
+    assert!(c.detach_to_fragment >= 1, "detach가 세어지지 않았다 — 위임 누락");
+    assert!(c.attach_from_fragment >= 1, "attach가 세어지지 않았다 — 위임 누락");
+    assert!(
+        DomOps::live_node_count(&dom).is_some(),
+        "live_node_count 위임 누락 — 누수 회귀 검사가 무력화된다"
+    );
+}

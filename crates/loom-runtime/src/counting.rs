@@ -40,6 +40,9 @@ pub struct DomOpCounts {
     pub set_visible: u32,
     pub set_attribute: u32,
     pub set_input_value: u32,
+    /// §7 M2의 op 종류 목록에 `detach`/`attach`가 명시돼 있다(트랙 T F 계열).
+    pub detach_to_fragment: u32,
+    pub attach_from_fragment: u32,
     // --- 읽기 전용(변이 아님) — 총계에 넣지 않는다 ---
     pub adopt_children: u32,
     pub get_input_value: u32,
@@ -60,6 +63,8 @@ impl DomOpCounts {
             + self.set_visible
             + self.set_attribute
             + self.set_input_value
+            + self.detach_to_fragment
+            + self.attach_from_fragment
     }
 
     /// §7 M2의 "대응표"(insert/remove/move 폴백/detach/attach → childList,
@@ -88,7 +93,8 @@ impl DomOpCounts {
             "{{\"create_element\": {}, \"append_static_text\": {}, \"append_static_html\": {}, \
              \"set_text_content\": {}, \"clear_children\": {}, \"remove_node\": {}, \
              \"reposition\": {}, \"set_visible\": {}, \"set_attribute\": {}, \
-             \"set_input_value\": {}, \"total_mutations\": {}}}",
+             \"set_input_value\": {}, \"detach_to_fragment\": {}, \
+             \"attach_from_fragment\": {}, \"total_mutations\": {}}}",
             self.create_element,
             self.append_static_text,
             self.append_static_html,
@@ -99,6 +105,8 @@ impl DomOpCounts {
             self.set_visible,
             self.set_attribute,
             self.set_input_value,
+            self.detach_to_fragment,
+            self.attach_from_fragment,
             self.total_mutations(),
         )
     }
@@ -195,6 +203,21 @@ impl<D: DomOps> DomOps for CountingDom<D> {
 
     fn live_node_count(&self) -> Option<usize> {
         self.inner.live_node_count()
+    }
+
+    /// **기본 구현으로 떨어지면 안 된다.** `DomOps`의 `detach_to_fragment`/
+    /// `attach_from_fragment`는 SSR `StringDom`용으로 "지원 안 함" 패닉을
+    /// 기본값으로 갖는다. 데코레이터가 이 둘을 위임하지 않으면 감싸는 순간
+    /// F 계열 토글이 전부 트랩한다 — 2026-08-03에 트랙 T를 M2 수집을 위해
+    /// `CountingDom`으로 감싸자마자 F-i 첫 셀에서 그렇게 죽었다.
+    fn detach_to_fragment(&mut self, node: NodeHandle) -> crate::FragmentHandle {
+        self.counts.detach_to_fragment += 1;
+        self.inner.detach_to_fragment(node)
+    }
+
+    fn attach_from_fragment(&mut self, parent: NodeHandle, fragment: crate::FragmentHandle) {
+        self.counts.attach_from_fragment += 1;
+        self.inner.attach_from_fragment(parent, fragment)
     }
 
     fn set_visible(&mut self, node: NodeHandle, visible: bool) {

@@ -212,8 +212,8 @@ def gate_e(idx, browser):
     print(f"\n{'=' * 78}\n§9 E (OrderKey) — {browser}\n{'=' * 78}")
     print("  ※ 기각 (i)/(ii)는 **네이티브 경로**에서만 판정(§9 E-1).")
     r = cell(idx, "W2", 8, "E")
-    if r and "reposition_native" in r:
-        nat, fb = r["reposition_native"], r["reposition_fallback"]
+    if r and "reposition_native_cell_total" in r:
+        nat, fb = r["reposition_native_cell_total"], r["reposition_fallback_cell_total"]
         print(f"    reposition 경로: 네이티브 {nat} / 폴백 {fb}"
               f" → {'네이티브 경로 확인' if fb == 0 else '**폴백 혼입 — 판정 데이터 부적격**'}")
 

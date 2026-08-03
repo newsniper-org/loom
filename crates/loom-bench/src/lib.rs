@@ -756,6 +756,11 @@ async fn run_combination<T, F>(
             // 덮어쓰인 뒤라 관측자가 붙어 있는 tick의 값이 나갔고, 관측자
             // 오버헤드는 op 수에 비례해 **후보별로 비대칭**이라 그 두 조항이
             // 오염된 값을 읽고 있었다.
+            // 주의: `reposition_*_cell_total`은 이 셀 전체(파일럿+워밍업+측정+
+            // M1(b)+MO)의 누계이고 `m2_dom_ops`는 **마지막 측정 tick 1회**의
+            // 값이다. 스케일이 다르므로 이름에 그 사실을 넣었다 — 감사가
+            // "두 필드의 시간 스케일이 다르다는 점을 레코드만 봐서는 알 수
+            // 없다"고 지적한 지점.
             let measured_counts = candidate.last_counts;
             let measured_stages = candidate.last_stages;
             let (nat1, fb1) = loom_runtime::DomOps::reposition_split(&candidate.dom);
@@ -809,7 +814,7 @@ async fn run_combination<T, F>(
             out.push_str(&format!(
                 "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"warmup\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}, \"row_variants\": {}, \
                  \"timer_resolution_ms\": {:.6}, \"batched\": {}, \"batch_mode\": \"{}\", \"batch_k\": {}, \
-                 \"reposition_native\": {}, \"reposition_fallback\": {}, \
+                 \"reposition_native_cell_total\": {}, \"reposition_fallback_cell_total\": {}, \
                  \"m1b_frame_ms\": {:.4}, \"m1b_reps\": 1, \"mutation_records\": {}, \
                  \"cell_wall_ms\": {:.1}, \"over_cell_cap\": {}, \"live_node_slots\": {}, \
                  \"stage_ms\": {{\"systems\": {:.4}, \"sync_point\": {:.4}, \
