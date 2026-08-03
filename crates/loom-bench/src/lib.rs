@@ -194,6 +194,15 @@ impl Workload {
     /// rep. `fresh` mints a never-seen-before item for insert-shaped
     /// workloads.
     fn apply<T: Clone>(&self, baseline: &[T], rng: &mut Pcg64, fresh: impl Fn(u64) -> T) -> Vec<T> {
+        // 방어 가드: 아래 분기 여럿이 `v`가 비어 있지 않다고 가정한다
+        // (`v.len() - 1`, `v.remove(mid)`, `rng.below(v.len())`). 빈 입력이
+        // 오면 wasm에서는 조용한 트랩(`unreachable`)이 되어 원인 추적이
+        // 어려우므로 여기서 명시적으로 막는다 — 2026-08-03에 배치 측정이
+        // 리스트를 비워 실제로 그 트랩이 났다.
+        assert!(
+            !baseline.is_empty(),
+            "Workload::apply에 빈 baseline이 들어왔다 — 호출부가 리스트를 소진시켰다"
+        );
         let mut v = baseline.to_vec();
         match self {
             Workload::Swap => {
@@ -386,12 +395,6 @@ fn median_of(xs: &[f64]) -> f64 {
 }
 
 impl<T: Send + Sync + Clone + ToString + 'static> Candidate<T> {
-    /// 배치 측정(§8) 안에서 다음 target을 만들 기준. 묶음 안에서는 baseline으로
-    /// 되돌리지 않고 직전 상태에서 이어 간다.
-    fn current_items(&self) -> Vec<T> {
-        self.app.world.get::<Signal<Vec<T>>>(self.entity).unwrap().0.clone()
-    }
-
     fn set_and_tick(&mut self, items: Vec<T>) -> f64 {
         self.app.world.get_mut::<Signal<Vec<T>>>(self.entity).unwrap().0 = items;
         // §8 "각 반복 전 초기 상태 복원"과 같은 지점에서 카운터를 0으로 —
@@ -616,15 +619,31 @@ async fn run_combination<T, F>(
                 candidate.set_and_tick(initial.clone());
                 double_raf().await; // §8 복원↔측정 경계
                 if batched {
-                    // 묶음 안에서는 되돌리지 않고 연속 적용한다 — 되돌림을
-                    // 시간 괄호 안에 넣을 수 없기 때문이다. 길이가 변하는
-                    // 워크로드(W5/W3)는 묶음당 최대 10만큼 n이 드리프트하며,
-                    // 그건 이 규칙을 쓰는 대가로 기록해 둔다(§8 M-3 주석).
+                    // 묶음 안에서는 되돌리지 않는다 — 되돌림을 시간 괄호 안에
+                    // 넣을 수 없기 때문이다. 대신 **매 target을 baseline에서
+                    // 새로 유도**한다(직전 상태에서 이어 붙이지 않는다).
+                    //
+                    // 왜 그래야 하는가 (2026-08-03, 실패 후 수리): 직전 상태에서
+                    // 이어 붙이면 길이가 변하는 워크로드가 **누적**된다.
+                    // `remove_middle`은 묶음마다 10개를 지우므로 200묶음이면
+                    // 2,000개 — n=100 리스트가 비워지고 `Vec::remove`가 wasm
+                    // 트랩(`unreachable`)을 낸다. 축소 스모크(3묶음=30개)에서는
+                    // 살아남아 드러나지 않았고, 전면 수집이 시작 직후 죽었다.
+                    //
+                    // baseline에서 유도하면 길이가 n±1로 묶이고, 전이의 모양도
+                    // 워크로드다: t_{j-1}→t_j는 length-preserving 워크로드
+                    // (W1/W2/W3/W7)에서는 그대로 같은 크기의 재정렬이고,
+                    // 길이 변동형(W4/W5/remove_middle)에서는 "끼워 넣은 1개를
+                    // 다른 1개로 교체"가 된다. 첫 전이(initial→t_1)만 문언
+                    // 그대로이고 나머지 9개는 그와 같은 크기의 이웃 전이라는
+                    // 점을 기록해 둔다 — 배치 규칙을 쓰는 셀은 애초에 단발
+                    // 측정이 해상도 아래인 셀이므로 이 근사가 판정에 미치는
+                    // 영향은 그 셀의 존재 이유와 같은 크기다.
                     let mut total = 0.0;
                     for j in 0..BATCH_K {
                         let mut rng =
                             Pcg64::from_seed(derive_seed("measure", &cid, rep * BATCH_K + j));
-                        let target = workload.apply(&candidate.current_items(), &mut rng, &fresh);
+                        let target = workload.apply(&initial, &mut rng, &fresh);
                         total += candidate.set_and_tick(target);
                     }
                     samples.push(total / BATCH_K as f64);

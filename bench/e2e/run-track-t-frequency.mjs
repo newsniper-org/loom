@@ -93,6 +93,13 @@ for (const cell of cells) {
     // §8 격리: 시행마다 fresh context + fresh page load.
     const context = await browser.newContext();
     const page = await context.newPage();
+    // 즉시 실패 — wasm 패닉이면 셀이 영원히 안 끝난다(2026-08-03 트랙 L에서
+    // 실제로 6시간 매달렸다).
+    let pageErr = null;
+    page.on("pageerror", (e) => {
+      pageErr = e;
+      console.error("[pageerror]", e.message);
+    });
 
     let cdp = null;
     if (throttleRate !== 1) {
@@ -115,6 +122,10 @@ for (const cell of cells) {
     await page.waitForFunction(() => window.__loomTrackTDone === true, undefined, {
       timeout: (axis === "catchup" ? cell.freeze : windowMs) + 60_000,
     });
+    if (pageErr) {
+      await browser.close();
+      throw new Error(`셀이 wasm 패닉/트랩으로 죽었다: ${pageErr.message}`);
+    }
     const json = await page.locator("#cell-result").textContent();
     const parsed = JSON.parse(json);
     parsed.trial = trial;
