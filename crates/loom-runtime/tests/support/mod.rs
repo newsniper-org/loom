@@ -8,6 +8,9 @@ use loom_runtime::{DomOps, NodeHandle};
 
 #[derive(Default)]
 pub struct MockDom {
+    /// 아직 살아 있는 핸들 — 실제 백엔드의 "슬롯이 노드를 붙들고 있는가"에
+    /// 대응한다. `create_element`가 넣고 `remove_node`/`clear_children`이 뺀다.
+    pub live: std::collections::HashSet<u32>,
     /// RQ1 트랙 T F 계열: 분리 보관 중인 노드들. 실제 DocumentFragment 대신
     /// "어느 노드가 문서 밖으로 나갔는가"만 기록한다 — 테스트가 확인해야 할
     /// 것은 그 사실뿐이다.
@@ -70,7 +73,22 @@ impl MockDom {
         let id = self.next_id;
         self.next_id += 1;
         self.children.insert(id, Vec::new());
+        self.live.insert(id);
         NodeHandle(id)
+    }
+
+    /// `h`와 그 아래를 전부 놓아 준다.
+    fn release_subtree(&mut self, h: u32) {
+        let mut stack = vec![h];
+        while let Some(cur) = stack.pop() {
+            if let Some(kids) = self.children.get_mut(&cur) {
+                let kids: Vec<u32> = kids.drain(..).collect();
+                stack.extend_from_slice(&kids);
+            }
+            self.live.remove(&cur);
+            self.children.remove(&cur);
+            self.text.remove(&cur);
+        }
     }
 
     pub fn child_texts(&self, parent: NodeHandle) -> Vec<String> {
@@ -118,7 +136,14 @@ impl DomOps for MockDom {
     }
 
     fn clear_children(&mut self, parent: NodeHandle) {
-        self.children.get_mut(&parent.0).unwrap().clear();
+        // 실제 백엔드(`web::BrowserDom`)와 **같은 계약**을 모형화한다: 문서에서
+        // 떼는 것만으로는 부족하고 슬롯도 놓아 줘야 한다. 2026-08-03에
+        // `BrowserDom`이 정확히 이 절반만 하고 있어서 n=10,000 조합에서 3,500만
+        // 노드를 살려 뒀다 — 그 계약을 여기서도 검사할 수 있게 만든다.
+        let kids: Vec<u32> = self.children.get_mut(&parent.0).unwrap().drain(..).collect();
+        for k in kids {
+            self.release_subtree(k);
+        }
     }
 
     fn remove_node(&mut self, node: NodeHandle) {
@@ -126,6 +151,11 @@ impl DomOps for MockDom {
             siblings.retain(|&id| id != node.0);
         }
         self.removed.push(node);
+        self.release_subtree(node.0);
+    }
+
+    fn live_node_count(&self) -> Option<usize> {
+        Some(self.live.len())
     }
 
     fn reposition(&mut self, parent: NodeHandle, node: NodeHandle, before: Option<NodeHandle>) {

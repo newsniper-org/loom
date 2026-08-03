@@ -145,7 +145,31 @@ pub fn find_own(host: &web_sys::Element, name: &str) -> web_sys::Element {
 /// this side table, never inside an ECS Component (CLAUDE.md 금지 4).
 pub struct BrowserDom {
     document: web_sys::Document,
-    nodes: Vec<web_sys::Node>,
+    /// `None` = **해제된 슬롯**.
+    ///
+    /// 2026-08-03 이전에는 `Vec<web_sys::Node>`였고 **어떤 경로로도 줄지
+    /// 않았다**. `clear_children`/`remove_node`가 노드를 문서에서 떼어내도
+    /// 여기 `web_sys::Node`(= wasm-bindgen heap 슬롯)가 살아 있어 GC 대상이
+    /// 되지 않았다. K는 매 tick 전량 재스폰하므로 n=10,000 조합에서 셀당
+    /// 504 tick × 7 워크로드 = 3,528 tick × 10,000 = **3,528만 개**의 분리된
+    /// `<li>`가 상주했다(노드당 실측 ~300B → 약 10 GB). 워밍업 50 + 측정
+    /// 200 도입 전에는 tick 수가 48배 적어 드러나지 않았고, 축소 스모크에서는
+    /// 원리적으로 드러날 수 없다.
+    nodes: Vec<Option<web_sys::Node>>,
+    /// 각 핸들이 `create_element`로 만든 **자식 핸들들**. 해제를 재귀적으로
+    /// 하려면 필요하다 — `clear_children(parent)`는 자식 핸들을 인자로 받지
+    /// 않으므로 이 표가 없으면 무엇을 해제할지 알 수 없다.
+    children: Vec<Vec<u32>>,
+    /// 부모 핸들(`u32::MAX` = 없음). `remove_node` 시 부모의 자식 목록에서
+    /// 빼기 위해 필요하다.
+    parent_of: Vec<u32>,
+    /// 재사용 가능한 슬롯. 핸들을 재사용하지 않으면 슬롯 자체가 수천만 개로
+    /// 자라 부기(簿記)만으로 GB급이 된다.
+    free: Vec<u32>,
+    /// **한 배치 안에서는 재사용하지 않는다**. 배치 도중 해제된 핸들이 같은
+    /// 배치의 뒤쪽 write에 anchor로 등장하면 엉뚱한 노드를 가리키게 되기
+    /// 때문이다. `begin_batch()`에서만 `free`로 옮긴다.
+    pending_free: Vec<u32>,
     /// RQ1 Track T F 계열의 **비직렬화 사이드테이블**: 분리 보관 중인
     /// DocumentFragment들. Component에는 `FragmentHandle`(정수)만 들어간다
     /// (RQ1 "F 공통 코어", CLAUDE.md 금지 4).
@@ -161,7 +185,11 @@ impl BrowserDom {
     pub fn new(document: web_sys::Document, mount: web_sys::Node) -> (Self, NodeHandle) {
         let dom = BrowserDom {
             document,
-            nodes: vec![mount],
+            nodes: vec![Some(mount)],
+            children: vec![Vec::new()],
+            parent_of: vec![u32::MAX],
+            free: Vec::new(),
+            pending_free: Vec::new(),
             fragments: Vec::new(),
             reposition_native: 0,
             reposition_fallback: 0,
@@ -176,6 +204,10 @@ impl BrowserDom {
         BrowserDom {
             document,
             nodes: Vec::new(),
+            children: Vec::new(),
+            parent_of: Vec::new(),
+            free: Vec::new(),
+            pending_free: Vec::new(),
             fragments: Vec::new(),
             reposition_native: 0,
             reposition_fallback: 0,
@@ -191,14 +223,58 @@ impl BrowserDom {
     }
 
     fn node(&self, handle: NodeHandle) -> &web_sys::Node {
-        &self.nodes[handle.0 as usize]
+        self.nodes[handle.0 as usize]
+            .as_ref()
+            .unwrap_or_else(|| panic!("해제된 NodeHandle({})을 다시 썼다", handle.0))
     }
 
     fn alloc(&mut self, node: web_sys::Node) -> NodeHandle {
-        let handle = NodeHandle(self.nodes.len() as u32);
-        self.nodes.push(node);
-        handle
+        self.alloc_under(node, None)
     }
+
+    fn alloc_under(&mut self, node: web_sys::Node, parent: Option<NodeHandle>) -> NodeHandle {
+        let idx = match self.free.pop() {
+            Some(i) => {
+                self.nodes[i as usize] = Some(node);
+                self.children[i as usize].clear();
+                i
+            }
+            None => {
+                self.nodes.push(Some(node));
+                self.children.push(Vec::new());
+                self.parent_of.push(u32::MAX);
+                (self.nodes.len() - 1) as u32
+            }
+        };
+        self.parent_of[idx as usize] = parent.map_or(u32::MAX, |p| p.0);
+        if let Some(p) = parent {
+            self.children[p.0 as usize].push(idx);
+        }
+        NodeHandle(idx)
+    }
+
+    /// `h`와 그 아래 전부를 슬롯에서 놓아 준다 — DOM 노드가 GC 대상이 된다.
+    /// 문서 트리에서 떼는 것은 호출부가 이미 했다고 가정한다.
+    fn release_subtree(&mut self, h: u32) {
+        // 재귀 대신 명시 스택 — 깊은 트리에서 wasm 스택을 넘기지 않도록.
+        let mut stack = vec![h];
+        while let Some(cur) = stack.pop() {
+            let kids = std::mem::take(&mut self.children[cur as usize]);
+            stack.extend_from_slice(&kids);
+            self.nodes[cur as usize] = None;
+            self.parent_of[cur as usize] = u32::MAX;
+            self.pending_free.push(cur);
+        }
+    }
+
+    fn detach_from_parent_table(&mut self, h: u32) {
+        let p = self.parent_of[h as usize];
+        if p != u32::MAX {
+            self.children[p as usize].retain(|&c| c != h);
+        }
+    }
+
+
 
     /// The real `web_sys::Element` for a handle produced by `create_element`
     /// — used only by event-wiring code, which lives outside the `DomOps`
@@ -220,7 +296,7 @@ impl DomOps for BrowserDom {
         self.node(parent)
             .append_child(&el)
             .expect("append_child failed");
-        self.alloc(el.unchecked_into())
+        self.alloc_under(el.unchecked_into(), Some(parent))
     }
 
     fn append_static_text(&mut self, parent: NodeHandle, text: &str) {
@@ -273,6 +349,12 @@ impl DomOps for BrowserDom {
         // `textContent = null` removes every child in one native call — the
         // browser-DOM realization of RQ1's "clear_children fast path".
         self.node(parent).set_text_content(None);
+        // 문서에서 뗀 것만으로는 부족하다 — 슬롯이 `web_sys::Node`를 붙들고
+        // 있으면 GC가 못 가져간다(위 `nodes` 주석 참고).
+        let kids = std::mem::take(&mut self.children[parent.0 as usize]);
+        for k in kids {
+            self.release_subtree(k);
+        }
     }
 
     fn remove_node(&mut self, node: NodeHandle) {
@@ -280,6 +362,14 @@ impl DomOps for BrowserDom {
         if let Some(parent) = n.parent_node() {
             parent.remove_child(&n).expect("remove_child failed");
         }
+        self.detach_from_parent_table(node.0);
+        self.release_subtree(node.0);
+    }
+
+    fn begin_batch(&mut self) {
+        // 한 배치 안에서 해제된 핸들은 그 배치가 끝난 뒤에야 재사용 가능해진다
+        // (같은 배치의 뒤쪽 write가 anchor로 참조할 수 있으므로).
+        self.free.append(&mut self.pending_free);
     }
 
     fn set_visible(&mut self, node: NodeHandle, visible: bool) {
@@ -339,7 +429,7 @@ impl DomOps for BrowserDom {
         for i in 0..children.length() {
             let Some(child) = children.item(i) else { continue };
             let text = child.text_content().unwrap_or_default();
-            let handle = self.alloc(child);
+            let handle = self.alloc_under(child, Some(parent));
             out.push((handle, text));
         }
         out
@@ -368,5 +458,9 @@ impl DomOps for BrowserDom {
 
     fn reposition_split(&self) -> (u64, u64) {
         (self.reposition_native, self.reposition_fallback)
+    }
+
+    fn live_node_count(&self) -> Option<usize> {
+        Some(self.nodes.iter().filter(|n| n.is_some()).count())
     }
 }

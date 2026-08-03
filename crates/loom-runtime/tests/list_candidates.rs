@@ -801,3 +801,69 @@ mod r3_heterogeneous_branch {
         assert!(app.world.get::<RowVariantB>(row).is_none());
     }
 }
+
+// ============================================================================
+// 노드 슬롯 수명 — 2026-08-03 회귀 테스트
+// ============================================================================
+//
+// **왜 이 테스트가 있는가**: `web::BrowserDom`이 `create_element`로 만든
+// `web_sys::Node`를 `nodes` Vec에 넣기만 하고 **어떤 경로로도 놓아 주지
+// 않았다**. `clear_children`/`remove_node`는 문서 트리에서만 뗐고 슬롯이
+// JsValue를 붙들고 있어 GC 대상이 되지 못했다. K는 매 tick 전량 재스폰하므로
+// n=10,000 조합에서 3,528 tick × 10,000 = **3,500만 개**의 분리된 `<li>`가
+// 상주했다(실측 노드당 ~300B → 약 10 GB).
+//
+// 이 결함은 **규모에서만** 드러난다 — 축소 스모크(약 10 tick)에서는 70만
+// 노드라 아무 일도 없었고, 워밍업 50 + 측정 200 도입이 tick 수를 48배로
+// 올린 뒤 전면 수집 첫 조합에서 죽었다. 그래서 "많이 돌려도 상주가 안 늘어난다"를
+// 계약으로 못박고 여기서 검사한다.
+//
+// `MockDom`은 실제 백엔드와 **같은 계약**을 구현한다(support/mod.rs 참고).
+#[test]
+fn repeated_reconcile_does_not_accumulate_node_slots() {
+    use loom_runtime::{list_reconcile_k_system, DomOps};
+
+    const N: usize = 50;
+    const TICKS: usize = 200;
+
+    let arms: [(&str, fn(&mut LoomApp)); 4] = [
+        ("K", |app| { app.add_systems(list_reconcile_k_system::<String>); }),
+        ("C", |app| { app.add_systems(list_reconcile_c_system::<String>); }),
+        ("D", |app| { app.add_systems(list_reconcile_d_system::<String>); }),
+        ("E", |app| { app.add_systems(list_reconcile_e_system::<String>); }),
+    ];
+    for (label, add) in arms {
+        let (mut dom, root) = MockDom::new_root();
+        let mut app = LoomApp::new();
+        add(&mut app);
+        let initial: Vec<String> = (0..N).map(|i| format!("item-{i}")).collect();
+        let entity = app
+            .world
+            .spawn((
+                Signal(initial.clone()),
+                ListRows::default(),
+                OrderKeyMembers::default(),
+                DomTarget(root),
+            ))
+            .id();
+        app.tick(&mut dom);
+        let after_first = dom.live_node_count().unwrap();
+
+        // 매 tick 순서를 바꾼다(회전) — K는 전량 재스폰, C/D/E는 retain 경로.
+        for t in 0..TICKS {
+            let mut v = initial.clone();
+            v.rotate_left(t % N);
+            app.world.get_mut::<Signal<Vec<String>>>(entity).unwrap().0 = v;
+            app.tick(&mut dom);
+        }
+        let after_many = dom.live_node_count().unwrap();
+
+        // 상주 슬롯이 **첫 tick 대비 자라지 않아야** 한다. 여유를 조금 두되
+        // (row 구조상 정확히 같지 않을 수 있다) 배수로 자라면 실패다.
+        assert!(
+            after_many <= after_first * 2,
+            "{label}: {TICKS}회 재조정 후 상주 슬롯이 {after_first} → {after_many}로 자랐다 \
+             — 노드 슬롯이 해제되지 않고 있다(2026-08-03 BrowserDom 누수와 같은 결함)"
+        );
+    }
+}

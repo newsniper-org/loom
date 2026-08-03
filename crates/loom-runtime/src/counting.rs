@@ -189,6 +189,14 @@ impl<D: DomOps> DomOps for CountingDom<D> {
         self.inner.reposition_split()
     }
 
+    fn begin_batch(&mut self) {
+        self.inner.begin_batch();
+    }
+
+    fn live_node_count(&self) -> Option<usize> {
+        self.inner.live_node_count()
+    }
+
     fn set_visible(&mut self, node: NodeHandle, visible: bool) {
         self.counts.set_visible += 1;
         self.inner.set_visible(node, visible);

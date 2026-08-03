@@ -178,6 +178,17 @@ impl Workload {
         }
     }
 
+    /// 이 워크로드가 `rng`를 전혀 쓰지 않는가 — 같은 baseline이면 시드와
+    /// 무관하게 **같은 target**을 낸다.
+    ///
+    /// §8 배치 규칙에서 결정적이다: 이 부류를 "baseline에서 매번 새로 유도"
+    /// 방식으로 묶으면 10회 중 9회가 **무변화**가 되고, retain 계열(C/D/E)은
+    /// DOM write를 0개 내는 반면 K는 값과 무관하게 전량 재스폰하므로 후보별
+    /// 비대칭 감쇠가 생긴다. 그래서 이쪽만 baseline↔target 교대로 묶는다.
+    fn is_deterministic(&self) -> bool {
+        matches!(self, Workload::Swap | Workload::RemoveMiddle)
+    }
+
     /// Fisher-Yates, using the shared per-rep `Rng` so every candidate in a
     /// rep sees the identical target permutation (same pairing discipline
     /// as `Shuffle10`).
@@ -205,9 +216,18 @@ impl Workload {
         );
         let mut v = baseline.to_vec();
         match self {
+            // §3.1 W1: "원거리 2행 교환(i=1, j=n−2; prefix/suffix 절단이
+            // 소거 못 하는 위치 **고정**)". 2026-08-03까지 (0, n−1)이었다 —
+            // 조항이 굳이 안쪽 한 칸을 지정한 이유가 정확히 prefix/suffix
+            // 절단에 먹히지 않게 하려는 것이므로 문언대로 고친다.
             Workload::Swap => {
-                let last = v.len() - 1;
-                v.swap(0, last);
+                if v.len() >= 4 {
+                    let last = v.len() - 2;
+                    v.swap(1, last);
+                } else {
+                    let last = v.len() - 1;
+                    v.swap(0, last);
+                }
             }
             Workload::Shuffle => {
                 Self::fisher_yates(&mut v, rng);
@@ -283,6 +303,23 @@ const WARMUP: u32 = 50;
 const MEASURE_REPS: u32 = 200;
 /// §8 배치 규칙의 묶음 크기 k.
 const BATCH_K: u32 = 10;
+/// 배치 전환 여부를 **셀 단위로** 정하기 위한 짧은 파일럿 반복 수.
+/// 본 워밍업을 전 후보에 대해 먼저 돌리고 나서 측정하면 워밍 상태가 날아가므로
+/// 판정만 따로 뽑는다.
+const PILOT: u32 = 5;
+/// §8 셀 상한: "셀당 벽시계 상한 30분(전 트랙)".
+const CELL_CAP_MS: f64 = 30.0 * 60.0 * 1000.0;
+
+/// §8 "(후보 × 셀) 시드 셔플 무작위화". 시드 유도가 결정적이므로 순서도
+/// 재현 가능하다.
+fn shuffled_indices(len: usize, scope: &str, band: &str) -> Vec<usize> {
+    let mut v: Vec<usize> = (0..len).collect();
+    let mut rng = Pcg64::from_seed(derive_seed(band, scope, 0));
+    for i in (1..v.len()).rev() {
+        v.swap(i, rng.below(i + 1));
+    }
+    v
+}
 
 /// §8: "셀별 유효 해상도를 실행 시점 기록". `performance.now()`가 실제로
 /// 구별해 내는 최소 간격 — 값을 계속 읽어 **0이 아닌 최소 증분**을 찾는다.
@@ -590,75 +627,144 @@ async fn run_combination<T, F>(
     let resolution_ms = measure_timer_resolution();
     let batch_threshold_ms = resolution_ms * 50.0;
 
-    for workload in &Workload::ALL {
+    // §8: "셀 실행 순서는 (후보 × 셀) 시드 셔플 무작위화 — thermal drift 교락
+    // 방지". 2026-08-03까지 미이행이었다(워크로드도 후보도 고정 순서였고,
+    // 후보 간 시간 간격이 수 분이라 드리프트가 후보에 계통적으로 실렸다).
+    // 시드는 조합 단위로 유도해 재현 가능하게 둔다.
+    let combo_id = format!("{type_name}|n={n}|R{row_bindings}|variants={row_variants}");
+    let workload_order = shuffled_indices(Workload::ALL.len(), &combo_id, "workload-order");
+
+    for &wi in &workload_order {
+        let workload = &Workload::ALL[wi];
         let cid = cell_id(type_name, n, row_bindings, row_variants, workload.name());
-        for candidate in &mut candidates {
+        let cand_order = shuffled_indices(candidates.len(), &cid, "candidate-order");
+
+        // -------------------------------------------------------------------
+        // §8 배치 규칙의 판정을 **셀 단위로 한 번** 내린다.
+        //
+        // 2026-08-03까지는 후보마다 따로 정했는데, 그러면 같은 셀에서 어떤
+        // 후보는 `derive_seed(.., rep*K+j)`를, 어떤 후보는 `derive_seed(.., rep)`를
+        // 쓰게 되어 §8이 paired 분석의 전제로 못박은 "시드 열 전 후보 공유"가
+        // 깨진다. 실측 median으로 실제로 갈렸다(n=1,000 R1 swap: C만 배치,
+        // 나머지 5후보 비배치 — 그것도 §9 C 채택 조건이 걸린 판정 셀이다).
+        //
+        // 판정 기준은 **최소** median: 한 후보라도 해상도 아래면 그 후보의
+        // 표본이 못 쓰게 되므로 셀 전체를 배치로 올린다. 느린 후보는 10배 일을
+        // 하고 10으로 나누는 것뿐이라 잃는 게 없다.
+        //
+        // 추정치는 짧은 파일럿에서 얻는다 — 본 워밍업을 전 후보에 대해 먼저
+        // 돌리고 나서 측정하면 워밍업과 측정 사이에 다른 후보들이 끼어들어
+        // 워밍 상태가 날아간다.
+        // -------------------------------------------------------------------
+        let mut pilot_min = f64::INFINITY;
+        for &ci in &cand_order {
+            let mut ps = Vec::with_capacity(PILOT as usize);
+            for w in 0..PILOT {
+                candidates[ci].set_and_tick(initial.clone());
+                double_raf().await;
+                let mut rng = Pcg64::from_seed(derive_seed("pilot", &cid, w));
+                let target = workload.apply(&initial, &mut rng, &fresh);
+                ps.push(candidates[ci].set_and_tick(target));
+            }
+            pilot_min = pilot_min.min(median_of(&ps));
+        }
+        let batched = pilot_min < batch_threshold_ms;
+        // rng를 쓰지 않는 워크로드(W1 swap, remove_middle)는 시드가 달라도
+        // 같은 target을 낸다 → 묶음 안에서 j=1..9가 **무변화**가 되고, retain
+        // 계열은 DOM write를 0개 내는 반면 K는 매번 전량 재스폰하므로 후보별로
+        // 비대칭 감쇠가 생긴다. 그래서 이쪽은 baseline↔target을 **번갈아**
+        // 적용한다 — 10회 전부 실제 상태 전이다(되돌림은 정방향의 거울상:
+        // swap의 역은 swap, remove의 역은 insert).
+        let batch_mode = if !batched {
+            "none"
+        } else if workload.is_deterministic() {
+            "alternate"
+        } else {
+            "chain"
+        };
+
+        for &ci in &cand_order {
+            let cell_started_ms = measure_now();
+            let candidate = &mut candidates[ci];
+            // §7 M2 네이티브/폴백 분해는 백엔드에 누적되므로 셀 시작 시점
+            // 값을 빼서 **델타**로 보고한다(2026-08-03 수리 — 그 전에는 조합
+            // 전체 누계가 셀별 필드로 나가고 있었다).
+            let (nat0, fb0) = loom_runtime::DomOps::reposition_split(&candidate.dom);
+
             // §8 워밍업: "셀당 워밍업 50회". 시드는 **분리 대역**("warmup")에서
             // 뽑는다 — 측정 반복이 워밍업이 이미 데운 바로 그 난수열을 다시
             // 보면 캐시 워밍 편향이 생긴다.
-            let mut warm_samples = Vec::with_capacity(WARMUP as usize);
             for w in 0..WARMUP {
                 candidate.set_and_tick(initial.clone());
                 double_raf().await; // §8 복원↔측정 경계
                 let mut rng = Pcg64::from_seed(derive_seed("warmup", &cid, w));
                 let target = workload.apply(&initial, &mut rng, &fresh);
-                warm_samples.push(candidate.set_and_tick(target));
+                candidate.set_and_tick(target);
             }
 
-            // §8 배치 규칙: "median 추정치 < 해상도 × 50이면 반복 내 배치
-            // 측정 전환 — k=10회 묶음 총 시간/k = 1측정치". median 추정치로는
-            // 방금 끝난 워밍업 표본을 쓴다(측정 표본을 들여다보고 규칙을
-            // 고르면 §11-3의 사후 선택이 된다).
-            let warm_median = median_of(&warm_samples);
-            let batched = warm_median < batch_threshold_ms;
-
             let mut samples = Vec::with_capacity(reps as usize);
+            let mut over_cap = false;
             for rep in 0..reps {
                 // Reset to the identical baseline (untimed) before each
                 // timed rep, so every rep starts from the same condition.
                 candidate.set_and_tick(initial.clone());
                 double_raf().await; // §8 복원↔측정 경계
-                if batched {
+                match batch_mode {
                     // 묶음 안에서는 되돌리지 않는다 — 되돌림을 시간 괄호 안에
-                    // 넣을 수 없기 때문이다. 대신 **매 target을 baseline에서
-                    // 새로 유도**한다(직전 상태에서 이어 붙이지 않는다).
-                    //
-                    // 왜 그래야 하는가 (2026-08-03, 실패 후 수리): 직전 상태에서
-                    // 이어 붙이면 길이가 변하는 워크로드가 **누적**된다.
-                    // `remove_middle`은 묶음마다 10개를 지우므로 200묶음이면
-                    // 2,000개 — n=100 리스트가 비워지고 `Vec::remove`가 wasm
-                    // 트랩(`unreachable`)을 낸다. 축소 스모크(3묶음=30개)에서는
-                    // 살아남아 드러나지 않았고, 전면 수집이 시작 직후 죽었다.
-                    //
-                    // baseline에서 유도하면 길이가 n±1로 묶이고, 전이의 모양도
-                    // 워크로드다: t_{j-1}→t_j는 length-preserving 워크로드
-                    // (W1/W2/W3/W7)에서는 그대로 같은 크기의 재정렬이고,
-                    // 길이 변동형(W4/W5/remove_middle)에서는 "끼워 넣은 1개를
-                    // 다른 1개로 교체"가 된다. 첫 전이(initial→t_1)만 문언
-                    // 그대로이고 나머지 9개는 그와 같은 크기의 이웃 전이라는
-                    // 점을 기록해 둔다 — 배치 규칙을 쓰는 셀은 애초에 단발
-                    // 측정이 해상도 아래인 셀이므로 이 근사가 판정에 미치는
-                    // 영향은 그 셀의 존재 이유와 같은 크기다.
-                    let mut total = 0.0;
-                    for j in 0..BATCH_K {
-                        let mut rng =
-                            Pcg64::from_seed(derive_seed("measure", &cid, rep * BATCH_K + j));
-                        let target = workload.apply(&initial, &mut rng, &fresh);
-                        total += candidate.set_and_tick(target);
+                    // 넣을 수 없기 때문이다. 대신 매 target을 **baseline에서
+                    // 새로 유도**한다. 직전 상태에서 이어 붙이면 길이가 변하는
+                    // 워크로드가 누적되어 리스트가 비고 wasm이 트랩한다
+                    // (2026-08-03에 전면 수집이 실제로 그렇게 죽었다).
+                    "chain" => {
+                        let mut total = 0.0;
+                        for j in 0..BATCH_K {
+                            let mut rng =
+                                Pcg64::from_seed(derive_seed("measure", &cid, rep * BATCH_K + j));
+                            let target = workload.apply(&initial, &mut rng, &fresh);
+                            total += candidate.set_and_tick(target);
+                        }
+                        samples.push(total / BATCH_K as f64);
                     }
-                    samples.push(total / BATCH_K as f64);
-                } else {
-                    let mut rng = Pcg64::from_seed(derive_seed("measure", &cid, rep));
-                    let target = workload.apply(&initial, &mut rng, &fresh);
-                    samples.push(candidate.set_and_tick(target));
+                    "alternate" => {
+                        let mut rng = Pcg64::from_seed(derive_seed("measure", &cid, rep));
+                        let target = workload.apply(&initial, &mut rng, &fresh);
+                        let mut total = 0.0;
+                        for j in 0..BATCH_K {
+                            let items = if j % 2 == 0 { target.clone() } else { initial.clone() };
+                            total += candidate.set_and_tick(items);
+                        }
+                        samples.push(total / BATCH_K as f64);
+                    }
+                    _ => {
+                        let mut rng = Pcg64::from_seed(derive_seed("measure", &cid, rep));
+                        let target = workload.apply(&initial, &mut rng, &fresh);
+                        samples.push(candidate.set_and_tick(target));
+                    }
+                }
+                // §8 셀 상한: "셀당 벽시계 상한 30분(전 트랙). 초과 시 임기응변
+                // 중단이 아니라 '측정 불가(상한 초과)' 프로파일 등재 — 그 자체가
+                // 유효한 결과 데이터."
+                if measure_now() - cell_started_ms > CELL_CAP_MS {
+                    over_cap = true;
+                    break;
                 }
             }
+
+            // §9 C 기각 (ii)/E 기각 (ii)가 읽는 `m2_dom_ops`·`stage_ms`는
+            // **마지막 측정 반복**의 값이어야 한다. 아래 M1(b)/MutationObserver
+            // tick이 이것들을 덮어쓰므로 여기서 붙잡아 둔다 — 2026-08-03까지는
+            // 덮어쓰인 뒤라 관측자가 붙어 있는 tick의 값이 나갔고, 관측자
+            // 오버헤드는 op 수에 비례해 **후보별로 비대칭**이라 그 두 조항이
+            // 오염된 값을 읽고 있었다.
+            let measured_counts = candidate.last_counts;
+            let measured_stages = candidate.last_stages;
+            let (nat1, fb1) = loom_runtime::DomOps::reposition_split(&candidate.dom);
+            let (native, fallback) = (nat1 - nat0, fb1 - fb0);
+
             // ---------------------------------------------------------------
             // §7 M1(b): "프레임 완결 시간 = double-rAF 콜백 − t0". 판정에는
             // 쓰지 않는다(§7 M1 — vsync 양자화로 판정 부적합, 프로파일 전용).
-            // 그래서 **셀당 1회**만 잰다 — 200회 전부에 rAF 왕복을 붙이면
-            // 수집 시간이 판정에 쓰이지도 않는 지표 때문에 배로 늘어난다.
-            // 이 표집 선택 자체를 레코드에 남긴다(`m1b_reps`).
+            // 그래서 **셀당 1회**만 잰다.
             // ---------------------------------------------------------------
             candidate.set_and_tick(initial.clone());
             double_raf().await;
@@ -675,8 +781,6 @@ async fn run_combination<T, F>(
             // §7 M2 교차 검증: "셀당 1회는 MutationObserver(childList +
             // characterData + attributes(+attributeOldValue), subtree)로".
             // `takeRecords()`가 동기이므로 tick 직후 그대로 꺼낼 수 있다.
-            // 관찰 대상은 조합 컨테이너 전체지만, 지금 이 순간 변형을 내는
-            // 후보는 이 하나뿐이라 귀속이 섞이지 않는다.
             // ---------------------------------------------------------------
             candidate.set_and_tick(initial.clone());
             double_raf().await;
@@ -687,6 +791,8 @@ async fn run_combination<T, F>(
                     candidate.set_and_tick(target);
                 })
             };
+            let cell_ms = measure_now() - cell_started_ms;
+            let live_nodes = loom_runtime::DomOps::live_node_count(&candidate.dom).unwrap_or(0);
 
             if !*first_entry {
                 out.push_str(",\n");
@@ -700,12 +806,12 @@ async fn run_combination<T, F>(
             // §7 M2: 마지막 반복의 op 종류별 카운트를 병기한다. §9 E 기각 (i)이
             // "결정적 보조 지표로 병기"를 명시 요구하는 값 — 시드 고정 하에
             // 결정적이므로(§7 M2) 반복마다 같아야 하고, 따라서 마지막 1회로 충분하다.
-            let (native, fallback) = loom_runtime::DomOps::reposition_split(&candidate.dom);
             out.push_str(&format!(
                 "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"warmup\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}, \"row_variants\": {}, \
-                 \"timer_resolution_ms\": {:.6}, \"batched\": {}, \"batch_k\": {}, \
+                 \"timer_resolution_ms\": {:.6}, \"batched\": {}, \"batch_mode\": \"{}\", \"batch_k\": {}, \
                  \"reposition_native\": {}, \"reposition_fallback\": {}, \
-                 \"m1b_frame_ms\": {:.4}, \"mutation_records\": {}, \
+                 \"m1b_frame_ms\": {:.4}, \"m1b_reps\": 1, \"mutation_records\": {}, \
+                 \"cell_wall_ms\": {:.1}, \"over_cell_cap\": {}, \"live_node_slots\": {}, \
                  \"stage_ms\": {{\"systems\": {:.4}, \"sync_point\": {:.4}, \
                  \"dom_apply\": {:.4}, \"total\": {:.4}}}}}",
                 candidate.name,
@@ -716,25 +822,44 @@ async fn run_combination<T, F>(
                 reps,
                 WARMUP,
                 samples_json,
-                candidate.last_counts.to_json(),
+                measured_counts.to_json(),
                 row_variants,
                 resolution_ms,
                 batched,
+                batch_mode,
                 if batched { BATCH_K } else { 1 },
                 native,
                 fallback,
                 m1b_ms,
                 mutation_json,
-                candidate.last_stages.systems_ms,
-                candidate.last_stages.sync_point_ms,
-                candidate.last_stages.dom_apply_ms,
-                candidate.last_stages.total_ms,
+                cell_ms,
+                over_cap,
+                live_nodes,
+                measured_stages.systems_ms,
+                measured_stages.sync_point_ms,
+                measured_stages.dom_apply_ms,
+                measured_stages.total_ms,
             ));
         }
     }
 
     // Tear down this combination's DOM before the next one mounts.
     scratch_parent.remove_child(&combo_container).ok();
+
+    // 진행 상황을 밖에서 볼 수 있게 남긴다. `#results`는 전 조합이 끝난 뒤에야
+    // 한 번에 기록되므로(그게 원자적 결과 규약이다), 드라이버가 "살아 있는지"를
+    // 판단할 근거가 없었다 — 2026-08-03의 6시간 무음 매달림 때 정확히 이게
+    // 없어서 죽었는지 도는지 구별할 수 없었다.
+    if let Some(win) = web_sys::window() {
+        let _ = js_sys::Reflect::set(
+            &win,
+            &JsValue::from_str("__loomProgress"),
+            &JsValue::from_str(&format!(
+                "{{\"combination\": \"{type_name} n={n} R{row_bindings} variants={row_variants}\", \"records\": {}}}",
+                out.matches("\"candidate\"").count()
+            )),
+        );
+    }
 }
 
 #[wasm_bindgen(start)]
@@ -1008,7 +1133,7 @@ fn run_track_t(document: &web_sys::Document, scratch_parent: &web_sys::Node) {
 #[wasm_bindgen]
 pub struct TrackTCell {
     app: LoomApp,
-    dom: BrowserDom,
+    dom: loom_runtime::CountingDom<BrowserDom>,
     entity: bevy_ecs::entity::Entity,
     container: web_sys::Element,
     arm: String,
@@ -1106,7 +1231,7 @@ fn build_cell(
     arm: &str,
     size: usize,
     composition: &str,
-) -> (LoomApp, BrowserDom, bevy_ecs::entity::Entity, web_sys::Element) {
+) -> (LoomApp, loom_runtime::CountingDom<BrowserDom>, bevy_ecs::entity::Entity, web_sys::Element) {
         use loom_runtime::{
             bump_version_system, cond_reconcile_b_system, cond_reconcile_f_i_system,
             cond_reconcile_f_ii_system, cond_reconcile_f_iii_system, cond_reconcile_f_system,
@@ -1129,7 +1254,11 @@ fn build_cell(
         container.append_child(&anchor).unwrap();
         let anchor_node: web_sys::Node = anchor.into();
 
-        let (mut dom, handle) = BrowserDom::new(document.clone(), anchor_node);
+        let (raw_dom, handle) = BrowserDom::new(document.clone(), anchor_node);
+        // §4.1 "수집 명시(v1.1)": "트랙 T 전 셀에서 M1, **M2**, M4, M5, M6 수집·보고".
+        // 2026-08-03까지 트랙 T는 `BrowserDom`을 날것으로 써서 M2가 전면 미계측이었다
+        // (트랙 L은 이미 `CountingDom`을 쓰고 있었으므로 도구가 없어서가 아니다).
+        let mut dom = loom_runtime::CountingDom::new(raw_dom);
         let chain3 = match composition {
             "flat" => false,
             "chain3" => true,
@@ -1137,10 +1266,19 @@ fn build_cell(
         };
         let mut app = LoomApp::new();
         match arm {
+            // B와 CSS 은닉(F)은 **게이팅 기계장치가 없다**. 그건 patch
+            // 파이프라인이 없다는 뜻이 **아니다** — 2026-08-03까지 flat 구성에서
+            // 두 arm에 patch System이 하나도 등록되지 않아, §4.1 상류 변경률
+            // 축이 건드린 Signal을 아무도 소비하지 않았고 두 arm의 상주/은닉
+            // CPU가 구조적으로 0이었다. §10의 CSS 은닉 행은 "은닉 중 패치
+            // 파이프라인은 게이팅 없이 계속 동작 — catch-up 기계장치 없음이 이
+            // arm의 정의적 특성(게이팅을 붙이면 허수아비화)"이라고 명시한다.
+            // §4.1의 "B=0(부재 자체가 데이터)"는 *게이팅*이 0이라는 뜻이지
+            // *패치*가 0이라는 뜻이 아니다(B는 숨을 때 entity 자체가 사라져서
+            // 은닉 중 0이 되는 것이고, 그게 기준선의 의미다).
             "B" => {
                 app.add_systems(cond_reconcile_b_system);
                 if chain3 {
-                    // B는 게이팅 기계장치가 없으므로 무게이팅 체인.
                     app.add_systems(
                         (
                             derive1_f_ii_system,
@@ -1150,6 +1288,8 @@ fn build_cell(
                         )
                             .chain(),
                     );
+                } else {
+                    app.add_systems(patch_text_f_ii_system);
                 }
             }
             "F" => {
@@ -1164,6 +1304,8 @@ fn build_cell(
                         )
                             .chain(),
                     );
+                } else {
+                    app.add_systems(patch_text_f_ii_system);
                 }
             }
             "F-i" => {
@@ -1451,7 +1593,8 @@ impl TrackTCell {
              \"residency_shown_ms\": {:.4}, \"residency_shown_ticks\": {}, \
              \"j_b_total_script_ms\": {:.4}, \
              \"timer_resolution_ms\": {:.6}, \"cross_origin_isolated\": {}, \
-             \"change_rate_pct\": {}, \"composition\": \"{}\"}}",
+             \"change_rate_pct\": {}, \"composition\": \"{}\", \
+             \"m2_dom_ops\": {}, \"live_node_slots\": {}}}",
             self.arm,
             self.f_millihz as f64 / 1000.0,
             self.size,
@@ -1473,6 +1616,8 @@ impl TrackTCell {
             cross_origin_isolated(),
             self.change_rate_pct,
             self.composition,
+            self.dom.counts().to_json(),
+            loom_runtime::DomOps::live_node_count(&self.dom).unwrap_or(0),
         )
     }
 }
@@ -1495,7 +1640,7 @@ impl TrackTCell {
 #[wasm_bindgen]
 pub struct CatchUpCell {
     app: LoomApp,
-    dom: BrowserDom,
+    dom: loom_runtime::CountingDom<BrowserDom>,
     entity: bevy_ecs::entity::Entity,
     container: web_sys::Element,
     arm: String,
@@ -1607,10 +1752,21 @@ impl CatchUpCell {
             return true;
         }
 
-        // 3단계: catch-up 잔여. F-i는 전파 System이 세운 Changed가 다음 tick에
-        // 소모되고, F-iii는 버전 불일치분만 재패치된다 — 그 잔여를 8 tick 동안
-        // 모은다(그 이상 끄는 arm이 있으면 그것 자체가 데이터다).
-        if self.catchup_ticks < 8 {
+        // 3단계: 재부착 **이후** 잔여.
+        //
+        // **주의(2026-08-03 실측 확인)**: catch-up은 재부착과 **같은 tick 안에서
+        // 끝난다** — `cond_reconcile_f_*_system`의 `set_changed()`와
+        // `patch_text_f_*_system`이 같은 Schedule에 `.chain()`으로 이어져 있고
+        // 뒤 System의 `last_run`이 직전 tick이라 같은 run에서 `Changed`가 보인다.
+        // 프로브로 확인: F-i는 재부착 tick에 set_text 2→4(전량 재패치), F-iii는
+        // 2→3(불일치분 1개만), 이후 tick은 둘 다 변화 없음.
+        //
+        // 따라서 §4.1 M6의 "재부착 완료 시간"은 `reattach_ms`가 맞고, 아래
+        // `catchup_ms`는 **구조적으로 0에 가깝다**. 분석 쪽이 "catch-up 비용 =
+        // catchup_ms"로 읽으면 곡선이 평평한 직선으로 결론나므로, 필드 이름이
+        // 아니라 이 사실을 레코드에 명시한다(`catchup_is_intra_tick`).
+        // tick 수는 잔여가 정말 없는지 확인할 만큼만(2회) 둔다.
+        if self.catchup_ticks < 2 {
             let s = measure_now();
             self.app.tick(&mut self.dom);
             self.catchup_ms += measure_now() - s;
@@ -1647,7 +1803,9 @@ impl CatchUpCell {
              \"freeze_ms\": {:.1}, \"change_rate_pct\": {}, \"composition\": \"{}\", \
              \"detach_ms\": {:.4}, \"frozen_cpu_ms\": {:.4}, \"frozen_ticks\": {}, \
              \"reattach_ms\": {:.4}, \"catchup_ms\": {:.4}, \"catchup_ticks\": {}, \
-             \"timer_resolution_ms\": {:.6}, \"cross_origin_isolated\": {}}}",
+             \"catchup_is_intra_tick\": true, \
+             \"timer_resolution_ms\": {:.6}, \"cross_origin_isolated\": {}, \
+             \"m2_dom_ops\": {}, \"live_node_slots\": {}}}",
             self.arm,
             self.size,
             self.freeze_ms,
@@ -1661,6 +1819,8 @@ impl CatchUpCell {
             self.catchup_ticks,
             self.timer_resolution_ms,
             cross_origin_isolated(),
+            self.dom.counts().to_json(),
+            loom_runtime::DomOps::live_node_count(&self.dom).unwrap_or(0),
         )
     }
 }

@@ -95,10 +95,14 @@ for (const cell of cells) {
     const page = await context.newPage();
     // 즉시 실패 — wasm 패닉이면 셀이 영원히 안 끝난다(2026-08-03 트랙 L에서
     // 실제로 6시간 매달렸다).
-    let pageErr = null;
+    let fatal = null;
     page.on("pageerror", (e) => {
-      pageErr = e;
+      fatal = `wasm 패닉/트랩: ${e.message}`;
       console.error("[pageerror]", e.message);
+    });
+    page.on("crash", () => {
+      fatal = "렌더러 프로세스 크래시(OOM 가능성)";
+      console.error("[crash] 렌더러 프로세스가 죽었다");
     });
 
     let cdp = null;
@@ -119,12 +123,34 @@ for (const cell of cells) {
     // 두 번째 위치 인자는 페이지 함수에 넘길 `arg`이고 옵션은 **세 번째**다 —
     // `undefined`를 빼먹으면 `{timeout}`이 arg로 먹히고 기본 30초 타임아웃이
     // 적용된다(창 60초 캠페인이 첫 셀에서 즉사하는 원인이었음).
-    await page.waitForFunction(() => window.__loomTrackTDone === true, undefined, {
-      timeout: (axis === "catchup" ? cell.freeze : windowMs) + 60_000,
-    });
-    if (pageErr) {
-      await browser.close();
-      throw new Error(`셀이 wasm 패닉/트랩으로 죽었다: ${pageErr.message}`);
+    // **폴링으로 기다린다.** `waitForFunction`을 먼저 await하면 wasm이 트랩해도
+    // `__loomTrackTDone`이 영영 안 서므로 전체 타임아웃을 다 채우고 TimeoutError가
+    // 먼저 던져진다 — 그러면 아래 `fatal` 검사에 **도달하지 못하고**, 진짜 원인은
+    // 로그에 파묻히며 `browser.close()`도 건너뛴다(2026-08-03 감사 지적).
+    {
+      const deadline =
+        Date.now() + (axis === "catchup" ? cell.freeze : windowMs) + 60_000;
+      for (;;) {
+        if (fatal) {
+          await browser.close();
+          throw new Error(`셀이 죽었다: ${fatal}`);
+        }
+        let done;
+        try {
+          done = await page.evaluate(() => window.__loomTrackTDone === true);
+        } catch (e) {
+          await browser.close();
+          throw new Error(`페이지 평가가 거부됐다(크래시 가능성): ${e.message}`);
+        }
+        if (done) break;
+        if (Date.now() > deadline) {
+          await browser.close();
+          throw new Error(
+            `셀 타임아웃 — arm=${cell.arm} s=${cell.s} ${axis === "catchup" ? `freeze=${cell.freeze}` : `f=${cell.f}`}`
+          );
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
     }
     const json = await page.locator("#cell-result").textContent();
     const parsed = JSON.parse(json);

@@ -199,6 +199,18 @@ pub trait DomOps {
     fn reposition_split(&self) -> (u64, u64) {
         (0, 0)
     }
+    /// `LoomApp::tick`이 DOM write 배치를 적용하기 **직전**에 부른다.
+    ///
+    /// 왜 필요한가: 백엔드가 노드 핸들 슬롯을 재사용하려면 "언제부터 재사용해도
+    /// 안전한가"를 알아야 한다. 한 배치 안에서 해제된 핸들을 같은 배치의 뒤쪽
+    /// write가 anchor로 참조할 수 있으므로, 재사용은 배치 경계에서만 열어야
+    /// 한다. 기본 구현은 아무것도 하지 않는다(핸들을 재사용하지 않는 백엔드).
+    fn begin_batch(&mut self) {}
+    /// 이 백엔드가 현재 붙들고 있는 노드 슬롯 수 — 누수 회귀 확인용.
+    /// `None` = 이 백엔드는 그런 개념이 없다.
+    fn live_node_count(&self) -> Option<usize> {
+        None
+    }
     /// RQ1 Track T candidate F (CSS-hide preserve variant): toggles an
     /// element's visibility without touching its existence, children, or
     /// any internal state — the DOM/backend counterpart of "don't despawn,
@@ -623,6 +635,7 @@ impl LoomApp {
         self.schedule.run(&mut self.world);
         let t_schedule_end = stage::now_ms();
         let writes = std::mem::take(&mut self.world.resource_mut::<PendingDomWrites>().0);
+        dom.begin_batch();
         for write in writes {
             match write {
                 DomWrite::SetText { target, text } => dom.set_text_content(target, &text),
