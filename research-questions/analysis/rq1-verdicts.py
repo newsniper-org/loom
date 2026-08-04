@@ -30,7 +30,7 @@ CI = 0.99
 random.seed(20260802)
 
 DATA = "/home/ybi/loom-research/research-questions/data"
-VERSION = "v16"
+VERSION = "v17"
 
 # §3.1 워크로드 이름 ↔ 하네스 이름.
 W = {"W1": "swap", "W2": "shuffle", "W3": "shuffle10", "W4": "head_insert",

@@ -180,11 +180,6 @@ impl Workload {
 
     /// 이 워크로드가 `rng`를 전혀 쓰지 않는가 — 같은 baseline이면 시드와
     /// 무관하게 **같은 target**을 낸다.
-    ///
-    /// §8 배치 규칙에서 결정적이다: 이 부류를 "baseline에서 매번 새로 유도"
-    /// 방식으로 묶으면 10회 중 9회가 **무변화**가 되고, retain 계열(C/D/E)은
-    /// DOM write를 0개 내는 반면 K는 값과 무관하게 전량 재스폰하므로 후보별
-    /// 비대칭 감쇠가 생긴다. 그래서 이쪽만 baseline↔target 교대로 묶는다.
     fn is_deterministic(&self) -> bool {
         matches!(self, Workload::Swap | Workload::RemoveMiddle)
     }
@@ -675,19 +670,32 @@ async fn run_combination<T, F>(
             pilot_min = pilot_min.min(median_of(&ps));
         }
         let batched = pilot_min < batch_threshold_ms;
-        // rng를 쓰지 않는 워크로드(W1 swap, remove_middle)는 시드가 달라도
-        // 같은 target을 낸다 → 묶음 안에서 j=1..9가 **무변화**가 되고, retain
-        // 계열은 DOM write를 0개 내는 반면 K는 매번 전량 재스폰하므로 후보별로
-        // 비대칭 감쇠가 생긴다. 그래서 이쪽은 baseline↔target을 **번갈아**
-        // 적용한다 — 10회 전부 실제 상태 전이다(되돌림은 정방향의 거울상:
-        // swap의 역은 swap, remove의 역은 insert).
-        let batch_mode = if !batched {
-            "none"
-        } else if workload.is_deterministic() {
-            "alternate"
-        } else {
-            "chain"
-        };
+        // -------------------------------------------------------------------
+        // §8 배치 규칙의 묶음 구성 — **전부 baseline↔target 교대**.
+        //
+        // 2026-08-04 이전에는 rng를 쓰는 워크로드를 "매 target을 baseline에서
+        // 새로 유도해 이어 붙이는"(chain) 방식으로 묶었다. 그 방식은 두 번
+        // 틀렸다:
+        //
+        //   (1) rng를 안 쓰는 워크로드(W1 swap, remove_middle)에서는 10회 중
+        //       9회가 **무변화**가 된다(같은 시드든 아니든 같은 target).
+        //       retain 계열은 DOM write를 0개 내고 K는 값과 무관하게 전량
+        //       재스폰하므로 후보별 비대칭 감쇠가 생겼다. → 2026-08-03 수리.
+        //   (2) **길이가 변하는 워크로드에서는 남는 9회가 워크로드가 아니다.**
+        //       head_insert의 t_{j-1}→t_j는 "머리에 삽입"이 아니라 "머리 항목
+        //       교체"다. 위치 귀속 후보 C는 삽입에서 전 슬롯을 다시 쓰지만
+        //       (setText 1001회) 교체에서는 슬롯 하나만 쓴다(1회) — 실측에서
+        //       chain 셀의 C가 정확히 `setText=1`로 나왔다. K는 어차피 전량
+        //       재스폰이라 1001을 그대로 내므로 **C만 10배 싸진다**. 이 때문에
+        //       Firefox 열에서 §9 C 채택 (a)가 충족으로 뒤집혔다(Chromium은
+        //       같은 셀이 비배치라 영향 없음).
+        //
+        // 교대는 두 문제를 함께 없앤다: 10회 전부 실제 상태 전이이고, 길이가
+        // baseline과 target 사이에서만 오간다. 되돌림은 정방향의 정확한 역이라
+        // (삽입↔삭제, 재정렬↔복원) 크기가 같은 연산이며, M2/단계 귀속은
+        // **정방향 전이**의 값을 따로 붙잡아 보고한다.
+        // -------------------------------------------------------------------
+        let batch_mode = if batched { "alternate" } else { "none" };
 
         for &ci in &cand_order {
             let cell_started_ms = measure_now();
@@ -719,21 +727,6 @@ async fn run_combination<T, F>(
                 candidate.set_and_tick(initial.clone());
                 double_raf().await; // §8 복원↔측정 경계
                 match batch_mode {
-                    // 묶음 안에서는 되돌리지 않는다 — 되돌림을 시간 괄호 안에
-                    // 넣을 수 없기 때문이다. 대신 매 target을 **baseline에서
-                    // 새로 유도**한다. 직전 상태에서 이어 붙이면 길이가 변하는
-                    // 워크로드가 누적되어 리스트가 비고 wasm이 트랩한다
-                    // (2026-08-03에 전면 수집이 실제로 그렇게 죽었다).
-                    "chain" => {
-                        let mut total = 0.0;
-                        for j in 0..BATCH_K {
-                            let mut rng =
-                                Pcg64::from_seed(derive_seed("measure", &cid, rep * BATCH_K + j));
-                            let target = workload.apply(&initial, &mut rng, &fresh);
-                            total += candidate.set_and_tick(target);
-                        }
-                        samples.push(total / BATCH_K as f64);
-                    }
                     "alternate" => {
                         let mut rng = Pcg64::from_seed(derive_seed("measure", &cid, rep));
                         let target = workload.apply(&initial, &mut rng, &fresh);
