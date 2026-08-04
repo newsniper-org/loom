@@ -428,11 +428,19 @@ fn median_of(xs: &[f64]) -> f64 {
 
 impl<T: Send + Sync + Clone + ToString + 'static> Candidate<T> {
     fn set_and_tick(&mut self, items: Vec<T>) -> f64 {
-        self.app.world.get_mut::<Signal<Vec<T>>>(self.entity).unwrap().0 = items;
         // §8 "각 반복 전 초기 상태 복원"과 같은 지점에서 카운터를 0으로 —
         // 셋업 단계의 op가 측정 반복에 새지 않게 한다.
         self.dom.reset_counts();
+        // §7 M1(a): "**조작 트리거 직전** performance.now() = t0".
+        //
+        // 2026-08-04 이전에는 Signal 대입을 끝낸 **뒤에** t0를 찍었다. 대입은
+        // 새 Vec를 move-in하고 **직전 리스트를 그 자리에서 drop**한다 — heap
+        // 아이템이면 n개의 String 해제라 O(n)이다. 네이티브 실측으로 n=1,000
+        // 0.0062ms / n=10,000 0.0672ms이고 wasm의 dlmalloc은 통상 2~4배이므로
+        // 그만큼이 측정 괄호 밖에 있었다. 같은 하네스가 M1(b)에서는 t0를 대입
+        // **앞**에 찍고 있어서 같은 조항의 (a)와 (b)가 서로 다른 t0를 썼다.
         let start = measure_now();
+        self.app.world.get_mut::<Signal<Vec<T>>>(self.entity).unwrap().0 = items;
         self.app.tick(&mut self.dom);
         let elapsed = measure_now() - start;
         self.last_counts = self.dom.counts();
@@ -697,70 +705,107 @@ async fn run_combination<T, F>(
         // -------------------------------------------------------------------
         let batch_mode = if batched { "alternate" } else { "none" };
 
+        // -------------------------------------------------------------------
+        // 측정 — **rep 단위 라운드로빈**으로 후보를 교대한다.
+        //
+        // 2026-08-04 이전에는 후보를 통째 블록으로 순차 측정했다
+        // (`for 후보 { 워밍업 50 → 측정 200 }`). 그러면 (셀, rep i)의 K 표본과
+        // D 표본이 수 초~수십 초 떨어진 서로 다른 시간창에서 나온 값이 되는데,
+        // §9의 모든 판정은 `paired_ratio_ci`가 **같은 rep 인덱스로 두 후보를
+        // 리샘플**해서 낸다. 시드 공유는 *같은 target*을 보장할 뿐 *같은 측정
+        // 환경*을 보장하지 않으므로, 블록 수준 오프셋(thermal/JIT 드리프트)이
+        // 부트스트랩이 리샘플하지 않는 성분이 되어 CI에서 통째로 빠진다.
+        // 게다가 판정 셀의 절반(W1 swap, remove_middle)은 rng를 안 써서 200
+        // rep이 전부 같은 target이라, 그 셀에서 인덱스 짝짓기는 문자 그대로
+        // 아무것도 짝짓지 않았다.
+        //
+        // 라운드로빈이면 한 rep 안의 6후보가 같은 시간창(약 0.2초)을 공유하므로
+        // 짝짓기가 의미를 갖는다. tick 총수는 그대로다.
+        // -------------------------------------------------------------------
+        let cell_started_ms = measure_now();
+        let mut nat0 = vec![0u64; candidates.len()];
+        let mut fb0 = vec![0u64; candidates.len()];
         for &ci in &cand_order {
-            let cell_started_ms = measure_now();
-            let candidate = &mut candidates[ci];
-            // §7 M2 네이티브/폴백 분해는 백엔드에 누적되므로 셀 시작 시점
-            // 값을 빼서 **델타**로 보고한다(2026-08-03 수리 — 그 전에는 조합
-            // 전체 누계가 셀별 필드로 나가고 있었다).
-            let (nat0, fb0) = loom_runtime::DomOps::reposition_split(&candidate.dom);
+            let (n0, f0) = loom_runtime::DomOps::reposition_split(&candidates[ci].dom);
+            nat0[ci] = n0;
+            fb0[ci] = f0;
+        }
 
-            // §8 워밍업: "셀당 워밍업 50회". 시드는 **분리 대역**("warmup")에서
-            // 뽑는다 — 측정 반복이 워밍업이 이미 데운 바로 그 난수열을 다시
-            // 보면 캐시 워밍 편향이 생긴다.
-            for w in 0..WARMUP {
-                candidate.set_and_tick(initial.clone());
+        // §8 워밍업: "셀당 워밍업 50회". 시드는 **분리 대역**("warmup")에서
+        // 뽑는다 — 측정 반복이 워밍업이 이미 데운 바로 그 난수열을 다시 보면
+        // 캐시 워밍 편향이 생긴다. 워밍업도 라운드로빈으로 돌려 측정 직전의
+        // 상태가 후보 간에 같아지게 한다.
+        for w in 0..WARMUP {
+            for &ci in &cand_order {
+                candidates[ci].set_and_tick(initial.clone());
                 double_raf().await; // §8 복원↔측정 경계
                 let mut rng = Pcg64::from_seed(derive_seed("warmup", &cid, w));
                 let target = workload.apply(&initial, &mut rng, &fresh);
-                candidate.set_and_tick(target);
+                candidates[ci].set_and_tick(target);
             }
+        }
 
-            let mut samples = Vec::with_capacity(reps as usize);
-            let mut over_cap = false;
-            // 교대 묶음에서 정방향 전이의 M2/단계 귀속을 따로 붙잡아 둔다.
-            let mut fwd_counts = loom_runtime::DomOpCounts::default();
-            let mut fwd_stages = loom_runtime::StageTimings::default();
-            for rep in 0..reps {
+        let mut samples: Vec<Vec<f64>> = vec![Vec::with_capacity(reps as usize); candidates.len()];
+        let mut fwd_counts = vec![loom_runtime::DomOpCounts::default(); candidates.len()];
+        let mut fwd_stages = vec![loom_runtime::StageTimings::default(); candidates.len()];
+        let mut over_cap = false;
+        'measure: for rep in 0..reps {
+            for &ci in &cand_order {
+                let candidate = &mut candidates[ci];
                 // Reset to the identical baseline (untimed) before each
                 // timed rep, so every rep starts from the same condition.
                 candidate.set_and_tick(initial.clone());
                 double_raf().await; // §8 복원↔측정 경계
-                match batch_mode {
-                    "alternate" => {
-                        let mut rng = Pcg64::from_seed(derive_seed("measure", &cid, rep));
-                        let target = workload.apply(&initial, &mut rng, &fresh);
-                        let mut total = 0.0;
-                        for j in 0..BATCH_K {
-                            let items = if j % 2 == 0 { target.clone() } else { initial.clone() };
-                            total += candidate.set_and_tick(items);
-                            // `m2_dom_ops`/`stage_ms`는 **정방향 전이**의 값이어야
-                            // 한다. 교대 묶음의 마지막(j=K-1, 홀수)은 되돌림이므로
-                            // 그대로 두면 §9 C 기각 (ii)/E 기각 (i)이 역방향 op를
-                            // 읽는다. swap은 정/역이 대칭이라 v15 판정에는 영향이
-                            // 없었지만(remove_middle은 비대칭), 구조적으로 틀렸다.
-                            if j % 2 == 0 {
-                                fwd_counts = candidate.last_counts;
-                                fwd_stages = candidate.last_stages;
-                            }
+                let mut rng = Pcg64::from_seed(derive_seed("measure", &cid, rep));
+                let target = workload.apply(&initial, &mut rng, &fresh);
+                if batch_mode == "alternate" {
+                    // §8 배치 규칙: "k=10회 묶음 총 시간/k = 1측정치".
+                    //
+                    // **묶음 안의 매 회에도 프레임 경계를 준다**(2026-08-04).
+                    // 그 전에는 double-rAF가 묶음 앞에 하나뿐이라 j=1..9가 한
+                    // JS 태스크에서 연속 실행됐고, 그 사이 style/layout/paint가
+                    // 한 번도 돌지 않았다 — §8이 "복원 비용 누출 차단"을 위해
+                    // 요구한 바로 그 경계가 묶음 내부에 없었다. 그 결과 배치
+                    // 셀은 같은 조작을 **0.28~0.98배로 계통 감쇠**해서 쟀고,
+                    // 감쇠 계수가 후보마다 달라(K 0.525 / C 0.653 / D 0.716)
+                    // 셀 안에서 상쇄되지 않았다. §9가 읽는 median 비율이
+                    // 12~110% 왜곡됐다(같은 셀 force_batch A/B로 실측 확인).
+                    //
+                    // 경계를 주면 배치는 **순수한 양자화 저감 장치**가 된다 —
+                    // 같은 물리량을 10회 재서 평균할 뿐이다. 대가는 벽시계고,
+                    // 그건 조항이 요구한 정밀도의 값이다.
+                    let mut total = 0.0;
+                    for j in 0..BATCH_K {
+                        if j > 0 {
+                            double_raf().await;
                         }
-                        samples.push(total / BATCH_K as f64);
+                        let items = if j % 2 == 0 { target.clone() } else { initial.clone() };
+                        total += candidate.set_and_tick(items);
+                        // M2/단계 귀속은 **정방향 전이**의 값이어야 한다 —
+                        // 교대 묶음의 마지막(j=K-1, 홀수)은 되돌림이다.
+                        if j % 2 == 0 {
+                            fwd_counts[ci] = candidate.last_counts;
+                            fwd_stages[ci] = candidate.last_stages;
+                        }
                     }
-                    _ => {
-                        let mut rng = Pcg64::from_seed(derive_seed("measure", &cid, rep));
-                        let target = workload.apply(&initial, &mut rng, &fresh);
-                        samples.push(candidate.set_and_tick(target));
-                    }
-                }
-                // §8 셀 상한: "셀당 벽시계 상한 30분(전 트랙). 초과 시 임기응변
-                // 중단이 아니라 '측정 불가(상한 초과)' 프로파일 등재 — 그 자체가
-                // 유효한 결과 데이터."
-                if measure_now() - cell_started_ms > CELL_CAP_MS {
-                    over_cap = true;
-                    break;
+                    samples[ci].push(total / BATCH_K as f64);
+                } else {
+                    samples[ci].push(candidate.set_and_tick(target));
+                    fwd_counts[ci] = candidate.last_counts;
+                    fwd_stages[ci] = candidate.last_stages;
                 }
             }
+            // §8 셀 상한: "셀당 벽시계 상한 30분(전 트랙). 초과 시 임기응변
+            // 중단이 아니라 '측정 불가(상한 초과)' 프로파일 등재."
+            if measure_now() - cell_started_ms > CELL_CAP_MS {
+                over_cap = true;
+                break 'measure;
+            }
+        }
 
+        for &ci in &cand_order {
+            let candidate = &mut candidates[ci];
+            let samples = &samples[ci];
             // §9 C 기각 (ii)/E 기각 (ii)가 읽는 `m2_dom_ops`·`stage_ms`는
             // **마지막 측정 반복**의 값이어야 한다. 아래 M1(b)/MutationObserver
             // tick이 이것들을 덮어쓰므로 여기서 붙잡아 둔다 — 2026-08-03까지는
@@ -772,13 +817,9 @@ async fn run_combination<T, F>(
             // 값이다. 스케일이 다르므로 이름에 그 사실을 넣었다 — 감사가
             // "두 필드의 시간 스케일이 다르다는 점을 레코드만 봐서는 알 수
             // 없다"고 지적한 지점.
-            let (measured_counts, measured_stages) = if batch_mode == "alternate" {
-                (fwd_counts, fwd_stages)
-            } else {
-                (candidate.last_counts, candidate.last_stages)
-            };
+            let (measured_counts, measured_stages) = (fwd_counts[ci], fwd_stages[ci]);
             let (nat1, fb1) = loom_runtime::DomOps::reposition_split(&candidate.dom);
-            let (native, fallback) = (nat1 - nat0, fb1 - fb0);
+            let (native, fallback) = (nat1 - nat0[ci], fb1 - fb0[ci]);
 
             // ---------------------------------------------------------------
             // §7 M1(b): "프레임 완결 시간 = double-rAF 콜백 − t0". 판정에는
@@ -804,12 +845,17 @@ async fn run_combination<T, F>(
             candidate.set_and_tick(initial.clone());
             double_raf().await;
             let mutation_json = {
-                let mut rng = Pcg64::from_seed(derive_seed("mo", &cid, 0));
+                // §7 M2 교차 검증은 `m2_dom_ops`와 **같은 전이**를 봐야 의미가
+                // 있다 — 2026-08-04까지 별도 난수 대역("mo")을 써서 다른 표적을
+                // 관측하고 있었고, 그러면 두 수치를 대조할 근거가 없다.
+                // 마지막 측정 rep과 같은 시드를 쓴다.
+                let mut rng = Pcg64::from_seed(derive_seed("measure", &cid, reps - 1));
                 let target = workload.apply(&initial, &mut rng, &fresh);
                 observe_mutations(&combo_node, || {
                     candidate.set_and_tick(target);
                 })
             };
+            // 셀 벽시계는 라운드로빈 구조상 (조합 × 워크로드) 전체의 값이다.
             let cell_ms = measure_now() - cell_started_ms;
             let live_nodes = loom_runtime::DomOps::live_node_count(&candidate.dom).unwrap_or(0);
 
@@ -847,6 +893,7 @@ async fn run_combination<T, F>(
                  \"reposition_native_cell_total\": {}, \"reposition_fallback_cell_total\": {}, \
                  \"m1b_frame_ms\": {:.4}, \"m1b_reps\": 1, \"mutation_records\": {}, \
                  \"cell_wall_ms\": {:.1}, \"over_cell_cap\": {}, \"live_node_slots\": {}, \
+                 \"user_agent\": \"{}\", \"cross_origin_isolated\": {}, \
                  \"stage_ms\": {{\"systems\": {:.4}, \"sync_point\": {:.4}, \
                  \"dom_apply\": {:.4}, \"total\": {:.4}}}}}",
                 candidate.name,
@@ -870,6 +917,8 @@ async fn run_combination<T, F>(
                 cell_ms,
                 over_cap,
                 live_nodes,
+                user_agent(),
+                cross_origin_isolated(),
                 measured_stages.systems_ms,
                 measured_stages.sync_point_ms,
                 measured_stages.dom_apply_ms,
@@ -977,6 +1026,17 @@ async fn run_all() -> Result<(), JsValue> {
     };
     let combo_index: Option<usize> = group.map(|g| g / Workload::ALL.len());
     let mut ci_counter: usize = 0;
+    // **§3.2 "Item 타입 축: ... 기본 POD, W7과 트랙 R에서 양쪽."**
+    //
+    // 2026-08-04 이전에는 정반대로 String(heap)을 전 축의 기본으로 돌리고 POD는
+    // n=1,000 × R1 한 조합만 돌렸다. 그래서 §9 판정 셀 전부(§3.3 핵심 격자)가
+    // 조항의 기본값이 아닌 아이템 타입에서 나왔고, R2(= D 기각 (iii)·D 양성·
+    // E 기각 (i)의 셀)에는 POD 레코드가 **하나도 없어** 조항 기본값으로는
+    // 판정 자체가 불가능했다.
+    //
+    // 이제 POD가 기본 축이고(n 스케일링 + R2 + R3), String은 한 조합만 남긴다 —
+    // §3.2가 양쪽을 요구하는 것은 W7과 트랙 R뿐이고, W7은 그 String 조합에
+    // 들어 있다.
     for &n in &[100usize, 1000, 10000] {
         let this = ci_counter;
         ci_counter += 1;
@@ -984,15 +1044,15 @@ async fn run_all() -> Result<(), JsValue> {
             continue;
         }
         let reps = MEASURE_REPS;
-        let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
+        let initial: Vec<ItemId> = (0..n as u32).map(ItemId).collect();
         run_combination(
             &document,
             &container_node,
-            "String(heap)",
+            "ItemId(POD u32)",
             n,
             reps,
             initial,
-            |seed| format!("new-{seed}"),
+            |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
             1, // R1
             false, // R3 축 꺼짐
             only_workload,
@@ -1016,15 +1076,17 @@ async fn run_all() -> Result<(), JsValue> {
     // heap-vs-POD item axis (stated plainly, not silently narrowed).
     if !combo_gate!() {
         let n = 1000;
-        let initial: Vec<ItemId> = (0..n as u32).map(ItemId).collect();
+        // §3.2가 "양쪽"을 요구하는 것은 W7과 트랙 R이다 — 이 조합이 W7의
+        // heap 쪽을 담당하고, 나머지 워크로드는 참고 프로파일이 된다.
+        let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
         run_combination(
             &document,
             &container_node,
-            "ItemId(POD u32)",
+            "String(heap)",
             n,
             MEASURE_REPS,
             initial,
-            |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
+            |seed| format!("new-{seed}"),
             1, // R1
             false, // R3 축 꺼짐
             only_workload,
@@ -1042,15 +1104,15 @@ async fn run_all() -> Result<(), JsValue> {
     // RQ1-dynamic-control-flow-scheduling.md's row-depth write-up).
     if !combo_gate!() {
         let n = 1000;
-        let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
+        let initial: Vec<ItemId> = (0..n as u32).map(ItemId).collect();
         run_combination(
             &document,
             &container_node,
-            "String(heap)",
+            "ItemId(POD u32)",
             n,
             MEASURE_REPS,
             initial,
-            |seed| format!("new-{seed}"),
+            |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
             8, // R2
             false, // R3 축 꺼짐
             only_workload,
@@ -1064,15 +1126,15 @@ async fn run_all() -> Result<(), JsValue> {
     // (§2.4 동일 조건 유지에도 유리).
     if !combo_gate!() {
         let n = 1000;
-        let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
+        let initial: Vec<ItemId> = (0..n as u32).map(ItemId).collect();
         run_combination(
             &document,
             &container_node,
-            "String(heap)",
+            "ItemId(POD u32)",
             n,
             MEASURE_REPS,
             initial,
-            |seed| format!("new-{seed}"),
+            |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
             1, // R3는 row 깊이와 독립 축이므로 binding은 R1로 둔다
             true, // R3 축 켬
             only_workload,
@@ -1156,6 +1218,18 @@ async fn run_all() -> Result<(), JsValue> {
     }
 
     Ok(())
+}
+
+/// 브라우저 빌드 식별자.
+///
+/// §11 개정 #4가 Firefox 열 전체를 무효화한 원인은 **Playwright가 번들한
+/// 비-stable 빌드**였는데, 레코드에 빌드 식별자가 없어 데이터만으로는 그
+/// 사실을 다시 판별할 수 없었다. 이제 매 레코드가 자기 출처를 들고 다닌다.
+fn user_agent() -> String {
+    web_sys::window()
+        .and_then(|w| w.navigator().user_agent().ok())
+        .unwrap_or_default()
+        .replace('"', "'")
 }
 
 /// 진행 상황 한 줄을 서버로 보낸다(`?collect=<이름>`일 때만).
