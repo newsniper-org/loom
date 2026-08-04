@@ -68,13 +68,37 @@ def paired_ratio_ci(a, b, ci=CI):
     return pct(ratios, lo_p), pct(ratios, 1 - lo_p)
 
 
+# §8 판정 어휘의 등가 대역 — **사전 등록 수치**.
+EQ_LO, EQ_HI = 1 / 1.1, 1.1
+
+
 def verdict(lo, hi):
-    """§8 판정 어휘. 비율 = 후보/기준선이므로 1 미만이 빠른 쪽."""
+    """§8 "판정 어휘(로그 척도 비율 통일)"를 문언 그대로.
+
+      우세 = CI 전체 < 1 / 열세 = CI 전체 > 1
+      등가 = CI ⊂ [1/1.1, 1.1]  ← **사전 등록 수치**
+      어느 것도 아니면 판정 비결정 — "발동 조건 불성립 처리(어느 쪽으로도 불계상)"
+
+    2026-08-04 정정: 이전 판은 등가 분기가 아예 없어 **비결정을 등가로 대신
+    읽었다**. 주석에 "§8 판정 어휘에 '등가'가 별도로 없으므로"라고 적었는데
+    사실이 아니었다 — §8은 등가를 CI ⊂ [1/1.1, 1.1]로 명시하고 §9 C 채택 (a)도
+    "동등 이상(**우세 또는 등가**)"로 괄호까지 달아 두었다. 이 치환은 채택
+    조항에서는 후보에 유리하게, 기각 조항에서는 불리하게 작동해 방향이
+    후보별로 갈렸고, 사전 등록 수치를 우회한 사후 재해석이라 §11-1(d)에도
+    걸린다.
+    """
     if hi < 1:
         return "우세"
     if lo > 1:
         return "열세"
+    if lo >= EQ_LO and hi <= EQ_HI:
+        return "등가"
     return "비결정"
+
+
+def at_least_equal(v):
+    """§9의 "동등 이상" = 우세 또는 등가. 비결정은 **불계상**이므로 불충족."""
+    return v in ("우세", "등가")
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +120,33 @@ def load(browser):
     return rows, idx
 
 
+# ---------------------------------------------------------------------------
+# 후보 이름 매핑 — §10의 사전 등록 고정
+# ---------------------------------------------------------------------------
+#
+# §10 "D: 이동 최소화 (LIS vs 순열 매칭만)" 행은 **LIS 고정**이다:
+#   "근거: (1) G0 통과가 'LIS 포함 keyed reconcile' 명명에 대해 내려짐
+#    (docs/03 판정례 1, N5 구현 특정성 — **무LIS 변형은 재심사 대상**),
+#    (2) O(이동 수) 주장은 LIS 없이 불성립(RQ1 확정)."
+#
+# 그런데 하네스의 후보 이름 "D"는 `place_in_order`(무LIS)이고 "D-LIS"가
+# `place_in_order_lis`다. 즉 **사전 등록된 D는 데이터의 D-LIS**다.
+# 2026-08-04까지 이 스크립트는 §9 D 조항 전부와 C 채택 (a)의 기준선을 무LIS
+# 쪽으로 읽고 있었다 — §10이 재심사 대상으로 못 박은 변형에 대해 판정을
+# 내리고 있었던 셈이다.
+#
+# E는 §10에 같은 고정이 없으므로 하네스의 "E"(무LIS)를 그대로 쓰고, "E-LIS"는
+# 변형 프로파일로 병기한다.
+D = "D-LIS"          # §10 D-4: LIS 고정
+D_NOLIS = "D"        # 무LIS 변형 — §11-1(c)로 W2×R1 1셀 한정 추가 측정 지위
+E = "E"
+K = "K"
+C = "C"
+
 STR, N = "String(heap)", 1000
+# §3.2 "Item 타입 축: ... **기본 POD**, W7과 트랙 R에서 양쪽."
+# 즉 §3.3 핵심 격자(= §9 판정 셀 전부)의 기본 아이템 타입은 POD다.
+POD = "ItemId(POD u32)"
 
 
 def cell(idx, workload, bindings, cand, variants=False, n=N, item=STR):
@@ -129,18 +179,16 @@ def gate_c(idx, browser):
     print("  채택 (a): {W1,W2,W3,W4} × R1 전 셀에서 D 대비 동등 이상")
     ok_a = True
     for w in JUDGE_WORKLOADS:
-        v, lo, hi, note = compare(idx, w, 1, "C", "D")
+        v, lo, hi, note = compare(idx, w, 1, C, D)
         line(f"{w} × R1  C/D", v, lo, hi, note)
-        if v not in ("우세", "비결정"):
+        if not at_least_equal(v):
             ok_a = False
-    # "동등 이상"은 우세 또는 등가. 비결정(CI가 1을 걸침)을 등가로 읽는다 —
-    # §8 판정 어휘에 "등가"가 별도로 없으므로 이것이 문언에 가장 가깝다.
     print(f"    ⇒ (a) {'충족' if ok_a else '**불충족**'}")
 
     print("  채택 (b): {W1,W2,W3,W4} × R1 중 최소 1셀에서 K 대비 우세")
     ok_b = False
     for w in JUDGE_WORKLOADS:
-        v, lo, hi, note = compare(idx, w, 1, "C", "K")
+        v, lo, hi, note = compare(idx, w, 1, C, K)
         line(f"{w} × R1  C/K", v, lo, hi, note)
         if v == "우세":
             ok_b = True
@@ -149,14 +197,14 @@ def gate_c(idx, browser):
     print("  채택 (c): opt-in 문법 수용 — **설계 판단, 실측 아님**(§9 문언)")
 
     print("  기각 앞 분기: W2 × R2에서 C/D 비율 CI 하한 ≥ 3")
-    v, lo, hi, note = compare(idx, "W2", 8, "C", "D")
+    v, lo, hi, note = compare(idx, "W2", 8, C, D)
     fired_front = lo >= 3.0 if lo == lo else False
     line("W2 × R2  C/D", v, lo, hi, note)
     print(f"    ⇒ 앞 분기 {'**발동**' if fired_front else '미발동'}"
           f" (하한 {lo:.3f} {'≥' if fired_front else '<'} 3)")
 
     print("  기각 뒷 분기: W2 × R3에서 archetype move 구간 ≥ 스크립트 시간의 50%")
-    r = cell(idx, "W2", 1, "C", variants=True)
+    r = cell(idx, "W2", 1, C, variants=True)
     if not r or "stage_ms" not in r:
         print("    미계측 — R3 셀 또는 §7.1 단계 귀속 없음")
         fired_back = False
@@ -184,9 +232,9 @@ def gate_d(idx, browser):
     k_all = True
     for bindings in (1, 8):
         for w in JUDGE_WORKLOADS:
-            v, lo, hi, note = compare(idx, w, bindings, "K", "D")
+            v, lo, hi, note = compare(idx, w, bindings, K, D)
             line(f"{w} × R{1 if bindings == 1 else 2}  K/D", v, lo, hi, note)
-            if v not in ("우세", "비결정"):
+            if not at_least_equal(v):
                 k_all = False
     print(f"    ⇒ 앞항 {'성립' if k_all else '**불성립**'}")
 
@@ -197,15 +245,30 @@ def gate_d(idx, browser):
     print("  채택 양성 조건: {W1,W2,W3} × R2 중 최소 1셀에서 K 대비 우세")
     ok_pos = False
     for w in ["W1", "W2", "W3"]:
-        v, lo, hi, note = compare(idx, w, 8, "D", "K")
+        v, lo, hi, note = compare(idx, w, 8, D, K)
         line(f"{w} × R2  D/K", v, lo, hi, note)
         if v == "우세":
             ok_pos = True
     print(f"    ⇒ 양성 조건 {'충족' if ok_pos else '**불충족** → 후퇴 경로 판정'}")
 
+    # §9 D "채택 추가 선결": "§5 FV 계류(D·E 공통), **W5에서 K/C 대비 열세
+    # 확인 시 unkeyed 정적 opt-out 경로 명세를 채택 조건에 부속**".
+    # 데이터가 있는데 계산되지 않고 있었다(2026-08-04 감사) — 이걸 빼면 D가
+    # 조건 없이 채택 경로에 있는 것처럼 읽힌다.
+    print("  채택 추가 선결: W5(append)에서 K/C 대비 열세면 unkeyed opt-out 명세 부속")
+    w5_worse = []
+    for base in (K, C):
+        v, lo, hi, note = compare(idx, "W5", 1, D, base)
+        line(f"W5 × R1  D/{base}", v, lo, hi, note)
+        if v == "열세":
+            w5_worse.append(base)
+    print(f"    ⇒ {'**부속 조건 발동** (' + ', '.join(w5_worse) + ' 대비 열세)' if w5_worse else '미발동'}")
+    print("    ※ §5 FV 계류(D·E 공통)는 이 스크립트 범위 밖 — 채택은 그것까지 통과해야 한다.")
+
     print(f"\n  ▶ D 판정: 기각 (iii) {'불성립(뒷항 미계측)' if k_all else '불성립(앞항 불성립)'}"
-          f" / 양성 조건 {'충족' if ok_pos else '불충족'}")
-    return {"reject_iii_front": k_all, "adopt_positive": ok_pos}
+          f" / 양성 조건 {'충족' if ok_pos else '불충족'}"
+          f" / W5 부속 {'발동' if w5_worse else '미발동'}")
+    return {"reject_iii_front": k_all, "adopt_positive": ok_pos, "w5_rider": bool(w5_worse)}
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +278,7 @@ def gate_d(idx, browser):
 def gate_e(idx, browser):
     print(f"\n{'=' * 78}\n§9 E (OrderKey) — {browser}\n{'=' * 78}")
     print("  ※ 기각 (i)/(ii)는 **네이티브 경로**에서만 판정(§9 E-1).")
-    r = cell(idx, "W2", 8, "E")
+    r = cell(idx, "W1", 8, E)  # §9 E-1 확인은 판정 셀에서
     if r and "reposition_native_cell_total" in r:
         nat, fb = r["reposition_native_cell_total"], r["reposition_fallback_cell_total"]
         print(f"    reposition 경로: 네이티브 {nat} / 폴백 {fb}"
@@ -224,7 +287,7 @@ def gate_e(idx, browser):
     print("  기각 (i): 판정 셀 W1·W3 × R2 중 **어느 셀에서도** K 대비 우세를 못 보이면 기각")
     any_win = False
     for w in ["W1", "W3"]:
-        v, lo, hi, note = compare(idx, w, 8, "E", "K")
+        v, lo, hi, note = compare(idx, w, 8, E, K)
         line(f"{w} × R2  E/K", v, lo, hi, note)
         if v == "우세":
             any_win = True
@@ -233,7 +296,7 @@ def gate_e(idx, browser):
 
     print("  기각 (i) 병기(결정적): E의 셀당 총 DOM op 수 ≥ K의 50%이면 'DOM 연산 절감 없음'")
     for w in ["W1", "W3"]:
-        e, k = cell(idx, w, 8, "E"), cell(idx, w, 8, "K")
+        e, k = cell(idx, w, 8, E), cell(idx, w, 8, K)
         if not e or not k:
             print(f"    {w} × R2: 미계측")
             continue
@@ -243,18 +306,26 @@ def gate_e(idx, browser):
         print(f"    {w} × R2  E={eo} K={ko}  비율={ratio:.3f} "
               f"→ {'**절감 없음**' if ratio >= 0.5 else '절감 있음'}")
 
-    print("  기각 (ii): reconcile System 시간 ≥ (K의 DOM 적용 − E의 DOM 적용)")
-    e, k = cell(idx, "W2", 8, "E"), cell(idx, "W2", 8, "K")
-    if not e or not k or "stage_ms" not in e:
-        print("    미계측")
-        fired_ii = False
-    else:
+    # §9 E는 판정 셀을 "W1·W3(× R2, n=1,000)"으로 한 번 지정하고 기각 (ii)에
+    # 셀을 따로 쓰지 않는다 — 같은 후보 항목 안의 그 지정이 (ii)에도 적용된다고
+    # 읽는 것이 문언에 가장 가깝다. 2026-08-04까지 이 스크립트는 §9 어디에서도
+    # E의 판정 셀로 지정된 적 없는 W2×R2 하나만 썼다(그건 C 기각 앞 분기의
+    # 셀이다) — 결과 확인 후 셀을 고르는 자유도가 남아 있었고, §11-3이 막으려는
+    # 형태다.
+    print("  기각 (ii): reconcile System 시간 ≥ (K의 DOM 적용 − E의 DOM 적용)  [판정 셀 W1·W3 × R2]")
+    fired_ii = False
+    for w in ["W1", "W3"]:
+        e, k = cell(idx, w, 8, E), cell(idx, w, 8, K)
+        if not e or not k or "stage_ms" not in e:
+            print(f"    {w} × R2: 미계측")
+            continue
         recon = e["stage_ms"]["systems"]
         saving = k["stage_ms"]["dom_apply"] - e["stage_ms"]["dom_apply"]
-        fired_ii = recon >= saving
-        print(f"    E systems={recon:.4f}ms  절감분=K({k['stage_ms']['dom_apply']:.4f}) "
-              f"− E({e['stage_ms']['dom_apply']:.4f}) = {saving:.4f}ms")
-        print(f"    ⇒ 기각 (ii) {'**발동**' if fired_ii else '미발동'}")
+        hit = recon >= saving
+        fired_ii = fired_ii or hit
+        print(f"    {w} × R2  E systems={recon:.4f}ms  절감분=K({k['stage_ms']['dom_apply']:.4f}) "
+              f"− E({e['stage_ms']['dom_apply']:.4f}) = {saving:.4f}ms → {'**발동**' if hit else '미발동'}")
+    print(f"    ⇒ 기각 (ii) {'**발동**' if fired_ii else '미발동'}")
 
     print(f"\n  ▶ E 판정: {'**기각**' if (fired_i or fired_ii) else '기각 미발동'}")
     return {"reject_i": fired_i, "reject_ii": fired_ii}
@@ -351,6 +422,33 @@ def integrity_checks(rows, browser):
     if reps != {200} or warm != {50}:
         problems.append("표본 수 §8 미달")
 
+    # (6) 배치 묶음 구성 — §11 개정 #5 이전의 `chain` 셀은 무효다.
+    chain = [r for r in rows if r.get("batch_mode") == "chain"]
+    print(f"  §11 개정 #5 이전의 chain 배치 셀: {len(chain)}건")
+    if chain:
+        problems.append("chain 배치 셀 혼입(개정 #5로 무효)")
+        print("    ⇒ **판정에 쓸 수 없다** — chain의 이웃 전이는 워크로드가 아니다")
+
+    # (7) §7 M2 "시드 고정 하에 결정적 수치" — 같은 셀·같은 후보의 op 수는
+    # 브라우저와 무관하게 같아야 한다. 다르면 시드/워크로드/배치가 어긋난 것이다.
+    # 이 검사가 없어서 배치 결함 (1)(2)(3)이 데이터만으로는 잡히지 않았다.
+    print("  §7 M2 결정성(브라우저 간 op 수 일치)은 종합 절에서 대조한다.")
+
+    # (8) 노드 슬롯 임계 — 셀의 기대 노드 수는 row_bindings에 비례한다.
+    worst2 = max(rows, key=lambda r: r["live_node_slots"] / max(r["n"] * (1 + r["row_bindings"]), 1))
+    ratio2 = worst2["live_node_slots"] / (worst2["n"] * (1 + worst2["row_bindings"]))
+    print(f"  노드 슬롯 / (n × (1+binding)): 최대 {ratio2:.2f}× "
+          f"(R{worst2['row_bindings']}, {worst2['candidate']}/{worst2['workload']})")
+    if ratio2 > 2.0:
+        problems.append("노드 슬롯 누수 의심(binding 보정)")
+
+    # (9) 브라우저 빌드 식별자 — §11 개정 #4가 Firefox 열 전체를 무효화한
+    # 원인(Playwright 번들 빌드)을 데이터만으로 다시 판별할 수 있어야 한다.
+    ua = {r.get("user_agent") for r in rows if r.get("user_agent")}
+    print(f"  브라우저 빌드 식별자: {'있음 — ' + next(iter(ua))[:70] if ua else '**없음** (개정 #4의 원인을 데이터로 재판별 불가)'}")
+    if not ua:
+        problems.append("브라우저 빌드 식별자 부재")
+
     print(f"\n  ⇒ 무결성 문제 {len(problems)}건" + (f": {problems}" if problems else ""))
     return problems
 
@@ -429,10 +527,38 @@ def main():
         for cand in ("C", "D", "E"):
             if f[cand] != c[cand]:
                 print(f"  ⚠️ Firefox가 {cand}에서 다른 게이트 결론 — §11-1(b) 검토 대상 등재 사유")
-        cross_browser_direction_check(results)
+        bad_cells = cross_browser_consistency(results)
+        cross_browser_direction_check(results, bad_cells)
 
 
-def cross_browser_direction_check(results):
+def cross_browser_consistency(results):
+    """§7 M2 결정성과 배치 모드 일치를 브라우저 간에 대조한다.
+
+    §7 M2는 "시드 고정 하에 결정적 수치"라고 못박는다 — 같은 셀·같은 후보의
+    op 수는 브라우저와 무관하게 같아야 한다. 다르면 시드·워크로드·배치 중
+    하나가 어긋난 것이고, **그때 우세 방향 대조는 '측정 정의가 다른 두 셀'의
+    비교가 된다**(2026-08-04 감사 지적).
+    """
+    print(f"\n{'-' * 78}\n브라우저 간 측정 정의 일치 (방향 대조의 전제)\n{'-' * 78}")
+    ci, fi = results["chromium"]["_idx"], results["firefox"]["_idx"]
+    common = set(ci) & set(fi)
+    mode_diff = [k for k in common
+                 if ci[k].get("batch_mode") != fi[k].get("batch_mode")]
+    m2_diff = [k for k in common
+               if ci[k].get("batch_mode") == fi[k].get("batch_mode")
+               and ci[k]["m2_dom_ops"]["total_mutations"] != fi[k]["m2_dom_ops"]["total_mutations"]]
+    print(f"  배치 모드가 브라우저 간에 다른 셀: {len(mode_diff)}/{len(common)}")
+    if mode_diff:
+        print("    ⇒ 그 셀들의 방향 대조는 **같은 조건의 비교가 아니다**")
+        for k in sorted(mode_diff)[:6]:
+            print(f"      {k[1]}/R{k[2]}/{k[4]}/{k[5]}: "
+                  f"{ci[k].get('batch_mode')} vs {fi[k].get('batch_mode')}")
+    print(f"  같은 배치 모드인데 M2가 다른 셀: {len(m2_diff)} "
+          f"— {'정상(§7 M2 결정성 유지)' if not m2_diff else '**시드/워크로드 어긋남**'}")
+    return set(mode_diff)
+
+
+def cross_browser_direction_check(results, incomparable=frozenset()):
     """§8: "Firefox 교차 확인이 우세 방향을 뒤집으면 자동 판정 변경이 아니라
     §11-1(b) 검토 대상 등재."
 
@@ -451,6 +577,11 @@ def cross_browser_direction_check(results):
                 ka, kb = cell(ci, w, bindings, a), cell(ci, w, bindings, b)
                 fa, fb = cell(fi, w, bindings, a), cell(fi, w, bindings, b)
                 if not (ka and kb and fa and fb):
+                    continue
+                keys = [(STR, N, bindings, False, W[w], a), (STR, N, bindings, False, W[w], b)]
+                if any(k in incomparable for k in keys):
+                    print(f"  (비교 불가)  {w}×R{1 if bindings == 1 else 2} {a}/{b:2s}  "
+                          f"— 브라우저 간 배치 모드 불일치")
                     continue
                 total += 1
                 vc = verdict(*paired_ratio_ci(ka["samples_ms"], kb["samples_ms"]))
