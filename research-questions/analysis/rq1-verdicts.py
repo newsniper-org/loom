@@ -30,7 +30,7 @@ CI = 0.99
 random.seed(20260802)
 
 DATA = "/home/ybi/loom-research/research-questions/data"
-VERSION = "v17"
+VERSION = "v18"
 
 # §3.1 워크로드 이름 ↔ 하네스 이름.
 W = {"W1": "swap", "W2": "shuffle", "W3": "shuffle10", "W4": "head_insert",
@@ -149,7 +149,9 @@ STR, N = "String(heap)", 1000
 POD = "ItemId(POD u32)"
 
 
-def cell(idx, workload, bindings, cand, variants=False, n=N, item=STR):
+def cell(idx, workload, bindings, cand, variants=False, n=N, item=POD):
+    # §3.2 "기본 POD" — 판정 셀의 기본 아이템 타입은 POD다(v18부터 하네스도
+    # POD를 기본 축으로 수집한다). String은 W7 프로파일 전용.
     return idx.get((item, n, bindings, variants, W[workload], cand))
 
 
@@ -339,7 +341,7 @@ def profile_w7(idx, browser):
     print(f"\n{'=' * 78}\nW7 (값 갱신) 프로파일 — {browser}   ※ §9 어느 조항에도 걸리지 않음\n{'=' * 78}")
     print("  §3.4 기대: 'C, D, E (retain 경로)' / 'K (전량 재스폰)'")
     for cand in ["K", "C", "D", "E", "D-LIS", "E-LIS"]:
-        r = cell(idx, "W7", 1, cand)
+        r = cell(idx, "W7", 1, cand, item=STR)  # §3.2: W7은 양쪽 — heap 쪽 프로파일
         if not r:
             continue
         ops = r["m2_dom_ops"]["total_mutations"]
@@ -578,7 +580,7 @@ def cross_browser_direction_check(results, incomparable=frozenset()):
                 fa, fb = cell(fi, w, bindings, a), cell(fi, w, bindings, b)
                 if not (ka and kb and fa and fb):
                     continue
-                keys = [(STR, N, bindings, False, W[w], a), (STR, N, bindings, False, W[w], b)]
+                keys = [(POD, N, bindings, False, W[w], a), (POD, N, bindings, False, W[w], b)]
                 if any(k in incomparable for k in keys):
                     print(f"  (비교 불가)  {w}×R{1 if bindings == 1 else 2} {a}/{b:2s}  "
                           f"— 브라우저 간 배치 모드 불일치")
