@@ -58,8 +58,20 @@ const GRIDS = {
   "throttle-cells": { f: [0.1, 1, 10], s: [100, 1000] },
   pilot: { f: [1, 10], s: [10, 100] },
 };
-const grid = GRIDS[gridName];
+let grid = GRIDS[gridName];
 if (!grid) throw new Error(`unknown --grid ${gridName} (expected ${Object.keys(GRIDS).join("|")})`);
+
+// §4.1: "서브트리 구성 축: flat binding형 vs 파생/계산 체인 깊이 3 포함형 —
+// **s=100 행에서만** 양쪽." chain3를 다른 s 행에서 돌리는 것은 조항 밖의
+// 추가 측정이라 시간 낭비다(60초 창 × 6 arm × 10시행 = 행당 6시간). 드라이버
+// 층에서 조항을 강제한다 — 어떤 grid가 와도 chain3면 s=100만 남긴다.
+if (composition === "chain3" && axis !== "catchup") {
+  const before = grid.s.length;
+  grid = { ...grid, s: grid.s.filter((v) => v === 100) };
+  if (grid.s.length === 0) throw new Error("chain3는 s=100 행 전용(§4.1)인데 격자에 s=100이 없다");
+  if (grid.s.length !== before)
+    console.log(`[track-t] §4.1 구성 축 조항 적용 — chain3는 s=100 행만 (${before}→${grid.s.length}행)`);
+}
 
 const cells = [];
 if (axis === "catchup") {
