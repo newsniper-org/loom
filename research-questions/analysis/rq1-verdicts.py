@@ -434,6 +434,27 @@ def integrity_checks(rows, browser):
         problems.append("chain 배치 셀 혼입(개정 #5로 무효)")
         print("    ⇒ **판정에 쓸 수 없다** — chain의 이웃 전이는 워크로드가 아니다")
 
+    # (6-b) §7 M2 결정성의 **런 내부** 검사 (2026-08-07 신설). 하네스가
+    # 결정적 워크로드(swap/remove_middle)에서 첫 rep과 마지막 rep의 op 수를
+    # 대조해 `m2_deterministic`으로 실어 보낸다. `null`은 "해당 없음"(난수
+    # 워크로드)이지 통과가 아니다 — false만 결함이다.
+    nd = [r for r in rows if r.get("m2_deterministic") is False]
+    if nd:
+        print(f"  §7 M2 런 내부 결정성 위반: {len(nd)}건 "
+              f"— rep 사이에 상태가 새고 있다(v15의 배치 소진 결함과 같은 유형)")
+        for r in nd[:6]:
+            print(f"    {r['candidate']}/{r['workload']}/n={r['n']}/R{r['row_bindings']}")
+    else:
+        checked = sum(1 for r in rows if r.get("m2_deterministic") is True)
+        if checked == 0:
+            # 0건은 "통과"가 아니라 "이 필드가 없는 옛 수집분"이다. 둘을 같은
+            # 문장으로 보고하면 계측 부재가 통과로 읽힌다.
+            print("  §7 M2 런 내부 결정성: **미계측** — 이 수집분은 "
+                  "`m2_deterministic` 필드 이전(2026-08-07 신설)이다")
+            problems.append("§7 M2 런 내부 결정성 미계측(옛 수집분)")
+        else:
+            print(f"  §7 M2 런 내부 결정성: 위반 0건 (검사된 셀 {checked}개)")
+
     # (7) §7 M2 "시드 고정 하에 결정적 수치" — 같은 셀·같은 후보의 op 수는
     # 브라우저와 무관하게 같아야 한다. 다르면 시드/워크로드/배치가 어긋난 것이다.
     # 이 검사가 없어서 배치 결함 (1)(2)(3)이 데이터만으로는 잡히지 않았다.

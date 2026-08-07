@@ -242,6 +242,94 @@ mod tests {
         codegen::generate(graph.root_component());
     }
 
+    /// row 템플릿의 사이트별 monomorphize (2026-08-07). 동작 확인은
+    /// `crates/loom-nested-fixture`가 실제로 돌려서 하고, 여기서는 **생성된
+    /// 코드의 구조 성질** — 동작 테스트로는 원리적으로 관측할 수 없는 것 — 만
+    /// 고정한다.
+    mod row_template {
+        use super::*;
+
+        const NESTED: &str = r#"
+            export function App() {
+              const outer = signal(["a", "bb"]);
+              const open = signal(false);
+              const inner = signal(["p", "q"]);
+              return (
+                <div>
+                  <button onClick={() => open.toggle()}>t</button>
+                  <ul>
+                    {outer().map((it) => (
+                      <li>
+                        {it}
+                        {open() && it.length > 1 && (
+                          <div class="panel">
+                            <ul>{inner().slice(0, it.length).map((x) => <li>{x}</li>)}</ul>
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            }
+        "#;
+
+        #[test]
+        fn the_row_mirror_sync_system_is_gated_on_the_source_actually_changing() {
+            // **docs/03 N3(변경 무관 크기 비례 갱신 금지)**. 이 System은 row를
+            // 전부 훑으므로, 게이팅이 없으면 *무관한* 갱신 하나에도 이 사이트
+            // 크기에 비례하는 비용이 붙는다.
+            //
+            // 이 단언이 문자열 대조인 이유: 게이팅의 유무는 **비용** 성질이고,
+            // 결과 DOM에는 아무 차이도 남기지 않는다(값이 같으면 어차피 쓰지
+            // 않으므로). 실제로 게이팅을 걷어내고 loom-nested-fixture의 동작
+            // 테스트 14개를 돌려 봐도 전부 통과한다 — 즉 동작 테스트로는
+            // 원리적으로 못 잡는다. 그래서 구조로 고정한다.
+            let rust = compile_tsx_to_rust(NESTED);
+            assert!(rust.contains("fn row_site_0_sync("), "{rust}");
+            let body_start = rust.find("fn row_site_0_sync(").unwrap();
+            let body = &rust[body_start..];
+            assert!(
+                body.contains("DetectChanges::is_changed(&site) { return; }"),
+                "row mirror sync System에 N3 게이팅이 없다: {body}"
+            );
+        }
+
+        #[test]
+        fn every_list_site_gets_a_marker_when_any_row_template_is_rich() {
+            // 마커 없는 제네릭 K와 섞이면 한 리스트를 두 시스템이 각각
+            // 재조정한다 — `RowSpawner::Marker` 문서의 근거.
+            let rust = compile_tsx_to_rust(NESTED);
+            assert!(!rust.contains("app.add_systems(::loom_runtime::list_reconcile_k_system::<String>);"), "{rust}");
+            assert!(rust.contains("list_reconcile_k_system_with::<String, RowSite0Spawner>"), "{rust}");
+            assert!(rust.contains("list_reconcile_k_system_with::<String, RowSite0InnerSpawner>"), "{rust}");
+        }
+
+        #[test]
+        fn row_derived_values_are_inlined_not_stored_as_behavior() {
+            // CLAUDE.md 금지 4: Component에는 파생 **결과**만 POD로 들어가고,
+            // 계산은 생성 코드에 인라인된다.
+            let rust = compile_tsx_to_rust(NESTED);
+            assert!(rust.contains("let derived_flag = text.chars().count() > 1usize;"), "{rust}");
+            assert!(rust.contains("::loom_runtime::RowDerivedFlag(derived_flag)"), "{rust}");
+            assert!(rust.contains("::loom_runtime::RowDerivedTake(derived_take)"), "{rust}");
+        }
+
+        #[test]
+        #[should_panic(expected = "row 템플릿 안에서만")]
+        fn rejects_a_row_predicate_outside_a_row_template() {
+            let source = r#"
+                export function App() {
+                  const open = signal(false);
+                  const n = signal(0);
+                  return <div>{open() && n() > 1 && <p>x</p>}</div>;
+                }
+            "#;
+            let module = parse_tsx(source);
+            lower::lower_module(&module);
+        }
+    }
+
     mod conditional {
         use super::*;
 

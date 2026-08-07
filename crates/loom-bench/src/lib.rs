@@ -748,6 +748,13 @@ async fn run_combination<T, F>(
         let mut samples: Vec<Vec<f64>> = vec![Vec::with_capacity(reps as usize); candidates.len()];
         let mut fwd_counts = vec![loom_runtime::DomOpCounts::default(); candidates.len()];
         let mut fwd_stages = vec![loom_runtime::StageTimings::default(); candidates.len()];
+        // §7 M2 "시드 고정 하에 결정적 수치"의 **런 내부 검사**용. 결정적
+        // 워크로드(rng를 안 쓰는 것들)는 rep이 달라도 같은 표적을 내므로 op 수가
+        // 같아야 한다. 다르면 rep 사이에 상태가 새고 있다는 뜻이다 — v15에서
+        // 실제로 그런 결함이 있었다(배치 묶음이 리스트를 소진해 rep마다 다른
+        // 길이에서 remove_middle이 돌았다). 추가 tick 없이 첫 rep 값을 붙잡아
+        // 마지막 rep 값과 대조하는 것이 전부다.
+        let mut first_counts = vec![None::<loom_runtime::DomOpCounts>; candidates.len()];
         let mut over_cap = false;
         'measure: for rep in 0..reps {
             for &ci in &cand_order {
@@ -786,6 +793,7 @@ async fn run_combination<T, F>(
                         if j % 2 == 0 {
                             fwd_counts[ci] = candidate.last_counts;
                             fwd_stages[ci] = candidate.last_stages;
+                            first_counts[ci].get_or_insert(candidate.last_counts);
                         }
                     }
                     samples[ci].push(total / BATCH_K as f64);
@@ -793,6 +801,7 @@ async fn run_combination<T, F>(
                     samples[ci].push(candidate.set_and_tick(target));
                     fwd_counts[ci] = candidate.last_counts;
                     fwd_stages[ci] = candidate.last_stages;
+                    first_counts[ci].get_or_insert(candidate.last_counts);
                 }
             }
             // §8 셀 상한: "셀당 벽시계 상한 30분(전 트랙). 초과 시 임기응변
@@ -818,6 +827,16 @@ async fn run_combination<T, F>(
             // "두 필드의 시간 스케일이 다르다는 점을 레코드만 봐서는 알 수
             // 없다"고 지적한 지점.
             let (measured_counts, measured_stages) = (fwd_counts[ci], fwd_stages[ci]);
+            // §7 M2 결정성 — 결정적 워크로드에서만 의미가 있다. `null`은
+            // "해당 없음"(난수 워크로드)이지 "통과"가 아니다.
+            let m2_deterministic = if workload.is_deterministic() {
+                match first_counts[ci] {
+                    Some(first) => Some(first == measured_counts),
+                    None => Some(false),
+                }
+            } else {
+                None
+            };
             let (nat1, fb1) = loom_runtime::DomOps::reposition_split(&candidate.dom);
             let (native, fallback) = (nat1 - nat0[ci], fb1 - fb0[ci]);
 
@@ -888,7 +907,7 @@ async fn run_combination<T, F>(
             // "결정적 보조 지표로 병기"를 명시 요구하는 값 — 시드 고정 하에
             // 결정적이므로(§7 M2) 반복마다 같아야 하고, 따라서 마지막 1회로 충분하다.
             out.push_str(&format!(
-                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"warmup\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}, \"row_variants\": {}, \
+                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"warmup\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}, \"m2_deterministic\": {}, \"row_variants\": {}, \
                  \"timer_resolution_ms\": {:.6}, \"batched\": {}, \"batch_mode\": \"{}\", \"batch_k\": {}, \
                  \"reposition_native_cell_total\": {}, \"reposition_fallback_cell_total\": {}, \
                  \"m1b_frame_ms\": {:.4}, \"m1b_reps\": 1, \"mutation_records\": {}, \
@@ -905,6 +924,10 @@ async fn run_combination<T, F>(
                 WARMUP,
                 samples_json,
                 measured_counts.to_json(),
+                match m2_deterministic {
+                    Some(ok) => ok.to_string(),
+                    None => "null".to_string(),
+                },
                 row_variants,
                 resolution_ms,
                 batched,

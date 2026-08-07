@@ -17,8 +17,18 @@
 //!       static `class` attribute
 //!     - static text children
 //!     - `{signal()}` text bindings
-//!     - `{signal().map((row) => <tag>{row}</tag>)}` list bindings, exactly
-//!       one text-child row shape
+//!     - `{signal().map((row) => <tag>{row}</tag>)}` list bindings. **2026-08-07
+//!       이후** row 템플릿은 `{item}`으로 시작하기만 하면 그 뒤로 정적 마크업과
+//!       **조건부 하나**(그 안에 정적 마크업 + 중첩 리스트 하나)를 가질 수 있다
+//!       — RQ1 §5 트랙 N의 3중 중첩이 이것으로 표현된다(codegen.rs 모듈 문서의
+//!       "row 템플릿의 사이트별 monomorphize" 절)
+//!     - `{cond() && <tag>...</tag>}` 조건부. **2026-08-07 이후** 그 안에 정적
+//!       마크업 / `{signal()}` / `{signal().map(...)}` / 그것들을 감싸는
+//!       엘리먼트를 넣을 수 있다(그 전에는 정적 텍스트만)
+//!     - **row 스코프 파생** (row 템플릿 안에서만):
+//!       `{open() && item.length > n && <X/>}` 와
+//!       `{xs().slice(0, item.length).map(...)}` — 둘 다 닫힌 형태이고,
+//!       계산은 생성 코드에 인라인된다(`ir::RowPredicate`/`ir::RowSlice`)
 //!     - `onClick={() => signal.increment()|.append("lit")|.rotate()}`
 //!     - `<ComponentName client:load|client:visible prop={literal} .../>` —
 //!       an uppercase-leading tag name is *always* classified as a

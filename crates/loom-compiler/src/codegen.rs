@@ -2443,6 +2443,17 @@ fn emit_row_site_systems(out: &mut String, names: &RowSiteNames, mirrors: &RowMi
         .unwrap();
     }
     writeln!(out, ") {{").unwrap();
+    // **docs/03 N3(변경 무관 크기 비례 갱신 금지)**. 이 System은 row 전부를
+    // 훑으므로, 무조건 돌면 *무관한* 갱신 하나에도 이 사이트 크기에 비례하는
+    // 비용이 붙는다. 원본 signal이 실제로 바뀐 틱에만 돌게 게이팅한다 —
+    // `*_ctx`가 값이 달라졌을 때만 Resource에 쓰므로(`if !=`) 이 검사가 곧
+    // "원본이 바뀌었는가"다. 새로 생긴 row는 spawn 시점에 이미 현재 값으로
+    // 만들어지므로 이 경로가 필요 없다.
+    writeln!(
+        out,
+        "    if !::bevy_ecs::change_detection::DetectChanges::is_changed(&site) {{ return; }}"
+    )
+    .unwrap();
     if mirrors.cond.is_some() {
         // 공유 조건과 **그 row의 파생 술어**를 다시 AND한다. row마다 결과가
         // 달라지는 것이 요점이다(균일하면 §5 불변식 2의 일부 결함을 못 잡는다).
