@@ -195,12 +195,12 @@ fn match_keys(old_order: &[(String, Entity)], new_keys: &[String]) -> Matched {
 /// re-run this fix produced). `Chain`'s `next_of`/`unlink`/`insert_before`
 /// are all O(1), so adjacency checks and moves no longer cost more than the
 /// handful of rows that actually move.
-fn place_in_order(
+fn place_in_order<R: crate::RowSpawner>(
+    site: &R::Ctx,
     parent: NodeHandle,
     current: &[Entity],
     target: &[Slot],
-    pending: &mut PendingDomWrites,
-    row_bindings: usize,
+    out: &mut crate::RowSpawnCtx,
 ) {
     // 순서 결정은 전부 검증된 `loom_flush_core::plan_writes`가 한다 — 이
     // 함수에 남은 일은 그 계획을 `DomWrite`로 옮겨 적는 것뿐이다.
@@ -213,7 +213,7 @@ fn place_in_order(
         &target.iter().map(|s| slot_entity(s).to_bits()).collect::<Vec<u64>>(),
         &target.iter().map(|s| matches!(s, Slot::Fresh { .. })).collect::<Vec<bool>>(),
     );
-    emit_plan(parent, target, &ops, pending, row_bindings);
+    emit_plan::<R>(site, parent, target, &ops, out);
 }
 
 /// `Slot`에서 Entity 하나를 꺼낸다.
@@ -227,12 +227,12 @@ fn slot_entity(slot: &Slot) -> Entity {
 /// 검증된 계획(`PlanOp` 열, 방출 순서 그대로)을 실제 `DomWrite`로 옮긴다.
 /// **순서 판단은 여기 없다** — `before` anchor도 `plan_writes`가 정한 것을
 /// 그대로 쓴다. 이 함수가 하는 일은 Entity/텍스트를 붙이는 것뿐이다.
-fn emit_plan(
+fn emit_plan<R: crate::RowSpawner>(
+    site: &R::Ctx,
     parent: NodeHandle,
     target: &[Slot],
     ops: &[loom_flush_core::PlanOp],
-    pending: &mut PendingDomWrites,
-    row_bindings: usize,
+    out: &mut crate::RowSpawnCtx,
 ) {
     for op in ops {
         let slot = &target[op.idx];
@@ -244,19 +244,9 @@ fn emit_plan(
                 Slot::Fresh { text, .. } => text.clone(),
                 Slot::Retained(_) => unreachable!("plan_writes marks spawn only for Fresh slots"),
             };
-            pending.0.push(DomWrite::SpawnRow {
-                entity,
-                parent,
-                tag: "li",
-                text: text.clone(),
-                before,
-            });
-            let extra = crate::extra_binding_texts(row_bindings, &text);
-            if !extra.is_empty() {
-                pending.0.push(DomWrite::AppendStaticChildren { row: entity, texts: extra });
-            }
+            R::emit(site, out, entity, parent, &text, before);
         } else {
-            pending.0.push(DomWrite::Reposition { parent, entity, before });
+            out.pending.push(DomWrite::Reposition { parent, entity, before });
         }
     }
 }
@@ -325,12 +315,12 @@ fn lis_indices(sequence: &[usize]) -> std::collections::HashSet<usize> {
 /// Track L section) — see this function's sibling for that non-LIS variant
 /// and why both are kept as separate, comparable candidates rather than one
 /// replacing the other.
-fn place_in_order_lis(
+fn place_in_order_lis<R: crate::RowSpawner>(
+    site: &R::Ctx,
     parent: NodeHandle,
     current: &[Entity],
     target: &[Slot],
-    pending: &mut PendingDomWrites,
-    row_bindings: usize,
+    out: &mut crate::RowSpawnCtx,
 ) {
     let old_index_of: std::collections::HashMap<Entity, usize> =
         current.iter().enumerate().map(|(i, &e)| (e, i)).collect();
@@ -398,7 +388,7 @@ fn place_in_order_lis(
         &target.iter().map(|s| matches!(s, Slot::Fresh { .. })).collect::<Vec<bool>>(),
         &keep_in_place,
     );
-    emit_plan(parent, target, &ops, pending, row_bindings);
+    emit_plan::<R>(site, parent, target, &ops, out);
 }
 
 // ============================================================================
@@ -419,7 +409,8 @@ pub struct RowKey(pub String);
 /// `Reposition`, and only new/removed keys get `SpawnRow`/`RemoveNode` —
 /// this is the entire "row identity survives reordering" property K can't
 /// offer.
-pub fn list_reconcile_d_system<T>(
+fn d_body<T, R: crate::RowSpawner>(
+    site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
     keys: Query<&RowKey>,
     dom_targets: Query<&DomTarget>,
@@ -472,7 +463,14 @@ pub fn list_reconcile_d_system<T>(
             })
             .collect();
 
-        place_in_order(anchor.0, &current, &target, &mut pending, row_bindings.0);
+        {
+            let mut out = crate::RowSpawnCtx {
+                commands: &mut commands,
+                pending: &mut pending.0,
+                row_bindings: row_bindings.0,
+            };
+            place_in_order::<R>(site, anchor.0, &current, &target, &mut out);
+        }
 
         rows.0 = target
             .iter()
@@ -490,7 +488,8 @@ pub fn list_reconcile_d_system<T>(
 /// RQ1's "이동 최소화: LIS" variant, kept as a separate candidate from
 /// plain D (not a replacement) so the two can be measured against each
 /// other directly (research-questions/RQ1-dynamic-control-flow-scheduling.md).
-pub fn list_reconcile_d_lis_system<T>(
+fn d_lis_body<T, R: crate::RowSpawner>(
+    site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
     keys: Query<&RowKey>,
     dom_targets: Query<&DomTarget>,
@@ -536,7 +535,14 @@ pub fn list_reconcile_d_lis_system<T>(
             })
             .collect();
 
-        place_in_order_lis(anchor.0, &current, &target, &mut pending, row_bindings.0);
+        {
+            let mut out = crate::RowSpawnCtx {
+                commands: &mut commands,
+                pending: &mut pending.0,
+                row_bindings: row_bindings.0,
+            };
+            place_in_order_lis::<R>(site, anchor.0, &current, &target, &mut out);
+        }
 
         rows.0 = target
             .iter()
@@ -583,7 +589,8 @@ pub struct OrderKeyMembers(pub Vec<Entity>);
 /// controller-side `Vec` — architecturally closer to "archetype table
 /// partial memcpy" (RQ1's description) since there's no separate ordered
 /// index structure to keep in sync.
-pub fn list_reconcile_e_system<T>(
+fn e_body<T, R: crate::RowSpawner>(
+    site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut OrderKeyMembers, &DomTarget), Changed<Signal<Vec<T>>>>,
     // Single query for both reading (`OrderedKey`, current `OrderKey`) and
     // later writing `OrderKey` — two separate Queries (one read, one write)
@@ -655,7 +662,14 @@ pub fn list_reconcile_e_system<T>(
             }
         }
 
-        place_in_order(anchor.0, &current, &target, &mut pending, row_bindings.0);
+        {
+            let mut out = crate::RowSpawnCtx {
+                commands: &mut commands,
+                pending: &mut pending.0,
+                row_bindings: row_bindings.0,
+            };
+            place_in_order::<R>(site, anchor.0, &current, &target, &mut out);
+        }
 
         members.0 = target
             .iter()
@@ -672,7 +686,8 @@ pub fn list_reconcile_e_system<T>(
 /// `place_in_order_lis` — see `list_reconcile_d_lis_system`'s doc comment
 /// for why this is a separate, directly-comparable candidate rather than a
 /// replacement.
-pub fn list_reconcile_e_lis_system<T>(
+fn e_lis_body<T, R: crate::RowSpawner>(
+    site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut OrderKeyMembers, &DomTarget), Changed<Signal<Vec<T>>>>,
     mut keyed: Query<(&OrderedKey, &mut OrderKey)>,
     dom_targets: Query<&DomTarget>,
@@ -732,7 +747,14 @@ pub fn list_reconcile_e_lis_system<T>(
             }
         }
 
-        place_in_order_lis(anchor.0, &current, &target, &mut pending, row_bindings.0);
+        {
+            let mut out = crate::RowSpawnCtx {
+                commands: &mut commands,
+                pending: &mut pending.0,
+                row_bindings: row_bindings.0,
+            };
+            place_in_order_lis::<R>(site, anchor.0, &current, &target, &mut out);
+        }
 
         members.0 = target
             .iter()
@@ -829,3 +851,98 @@ mod lis_tests {
         assert_eq!(lis.len(), 4);
     }
 }
+
+// ============================================================================
+// row 모양의 사이트별 monomorphize (2026-08-07)
+// ============================================================================
+//
+// 위 네 후보의 **알고리즘 본문은 하나씩**(`d_body`/`d_lis_body`/`e_body`/
+// `e_lis_body`)이고, 아래 여덟 함수는 그 본문을 `R` 하나만 바꿔 부르는 얇은
+// 껍데기다. 즉 "제네릭 판본"이 생겼다고 해서 후보 동작이 두 갈래로 갈라지지
+// 않는다 — `list_reconcile_d_system`은 `DefaultRow`로 부른 `d_body`이고,
+// `DefaultRow`는 리팩터 이전 `emit_plan`이 내던 write 열을 그대로 낸다.
+//
+// 트랙 L 하네스는 계속 접미사 없는 쪽(`list_reconcile_d_system` 등)을 등록한다 —
+// 시그니처가 그대로이므로 하네스는 한 줄도 바뀌지 않았고, 따라서 §2.5의
+// 재측정 사유가 되지 않는다. 접미사 `_with` 쪽은 loom-compiler가 복잡한 row
+// 템플릿을 만났을 때만 쓴다.
+
+macro_rules! keyed_candidate_systems {
+    ($body:ident, $plain:ident, $with:ident, $rows:ty, $keys:ty) => {
+        pub fn $plain<T>(
+            lists: Query<(&Signal<Vec<T>>, &mut $rows, &DomTarget), Changed<Signal<Vec<T>>>>,
+            keys: $keys,
+            dom_targets: Query<&DomTarget>,
+            commands: Commands,
+            pending: ResMut<PendingDomWrites>,
+            row_bindings: Res<crate::RowBindings>,
+            variant_mode: Res<crate::RowVariantMode>,
+        ) where
+            T: Send + Sync + Clone + ToString + 'static,
+        {
+            $body::<T, crate::DefaultRow>(
+                &crate::NoRowCtx,
+                lists,
+                keys,
+                dom_targets,
+                commands,
+                pending,
+                row_bindings,
+                variant_mode,
+            );
+        }
+
+        pub fn $with<T, R: crate::RowSpawner>(
+            lists: Query<(&Signal<Vec<T>>, &mut $rows, &DomTarget), Changed<Signal<Vec<T>>>>,
+            keys: $keys,
+            dom_targets: Query<&DomTarget>,
+            commands: Commands,
+            pending: ResMut<PendingDomWrites>,
+            row_bindings: Res<crate::RowBindings>,
+            variant_mode: Res<crate::RowVariantMode>,
+            site: Res<R::Ctx>,
+        ) where
+            T: Send + Sync + Clone + ToString + 'static,
+        {
+            $body::<T, R>(
+                &site,
+                lists,
+                keys,
+                dom_targets,
+                commands,
+                pending,
+                row_bindings,
+                variant_mode,
+            );
+        }
+    };
+}
+
+keyed_candidate_systems!(
+    d_body,
+    list_reconcile_d_system,
+    list_reconcile_d_system_with,
+    crate::ListRows,
+    Query<&RowKey>
+);
+keyed_candidate_systems!(
+    d_lis_body,
+    list_reconcile_d_lis_system,
+    list_reconcile_d_lis_system_with,
+    crate::ListRows,
+    Query<&RowKey>
+);
+keyed_candidate_systems!(
+    e_body,
+    list_reconcile_e_system,
+    list_reconcile_e_system_with,
+    OrderKeyMembers,
+    Query<(&OrderedKey, &mut OrderKey)>
+);
+keyed_candidate_systems!(
+    e_lis_body,
+    list_reconcile_e_lis_system,
+    list_reconcile_e_lis_system_with,
+    OrderKeyMembers,
+    Query<(&OrderedKey, &mut OrderKey)>
+);

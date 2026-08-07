@@ -1,0 +1,456 @@
+======== K R1 ========
+--- tick 0 (6 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+SpawnRow(e1, NodeHandle(0), li, "b", before=None)
+SpawnRow(e2, NodeHandle(0), li, "c", before=None)
+SpawnRow(e3, NodeHandle(0), li, "d", before=None)
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+--- tick 1 (7 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e5, NodeHandle(0), li, "a", before=None)
+SpawnRow(e6, NodeHandle(0), li, "b", before=None)
+SpawnRow(e7, NodeHandle(0), li, "c", before=None)
+SpawnRow(e8, NodeHandle(0), li, "d", before=None)
+SpawnRow(e9, NodeHandle(0), li, "e", before=None)
+SpawnRow(e10, NodeHandle(0), li, "f", before=None)
+--- tick 2 (8 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e11, NodeHandle(0), li, "z", before=None)
+SpawnRow(e12, NodeHandle(0), li, "a", before=None)
+SpawnRow(e13, NodeHandle(0), li, "b", before=None)
+SpawnRow(e14, NodeHandle(0), li, "c", before=None)
+SpawnRow(e15, NodeHandle(0), li, "d", before=None)
+SpawnRow(e16, NodeHandle(0), li, "e", before=None)
+SpawnRow(e17, NodeHandle(0), li, "f", before=None)
+--- tick 3 (7 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e18, NodeHandle(0), li, "z", before=None)
+SpawnRow(e19, NodeHandle(0), li, "a", before=None)
+SpawnRow(e20, NodeHandle(0), li, "c", before=None)
+SpawnRow(e21, NodeHandle(0), li, "d", before=None)
+SpawnRow(e22, NodeHandle(0), li, "e", before=None)
+SpawnRow(e23, NodeHandle(0), li, "f", before=None)
+--- tick 4 (7 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e24, NodeHandle(0), li, "z", before=None)
+SpawnRow(e25, NodeHandle(0), li, "f", before=None)
+SpawnRow(e26, NodeHandle(0), li, "c", before=None)
+SpawnRow(e27, NodeHandle(0), li, "d", before=None)
+SpawnRow(e28, NodeHandle(0), li, "e", before=None)
+SpawnRow(e29, NodeHandle(0), li, "a", before=None)
+--- tick 5 (7 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e30, NodeHandle(0), li, "f", before=None)
+SpawnRow(e31, NodeHandle(0), li, "e", before=None)
+SpawnRow(e32, NodeHandle(0), li, "d", before=None)
+SpawnRow(e33, NodeHandle(0), li, "c", before=None)
+SpawnRow(e34, NodeHandle(0), li, "a", before=None)
+SpawnRow(e35, NodeHandle(0), li, "z", before=None)
+--- tick 6 (4 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e36, NodeHandle(0), li, "p", before=None)
+SpawnRow(e37, NodeHandle(0), li, "q", before=None)
+SpawnRow(e38, NodeHandle(0), li, "r", before=None)
+--- tick 7 (4 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e39, NodeHandle(0), li, "p", before=None)
+SpawnRow(e40, NodeHandle(0), li, "q", before=None)
+SpawnRow(e41, NodeHandle(0), li, "r", before=None)
+======== D R1 ========
+--- tick 0 (5 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "e", before=None)
+SpawnRow(e1, NodeHandle(0), li, "d", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "c", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "b", before=e2)
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+--- tick 1 (1 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "f", before=None)
+--- tick 2 (1 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "z", before=e4)
+--- tick 3 (1 writes) ---
+RemoveNode(NodeHandle(101))
+--- tick 4 (4 writes) ---
+Reposition(NodeHandle(0), e4, before=None)
+Reposition(NodeHandle(0), e0, before=e4)
+Reposition(NodeHandle(0), e1, before=e0)
+Reposition(NodeHandle(0), e2, before=e1)
+--- tick 5 (3 writes) ---
+Reposition(NodeHandle(0), e6, before=None)
+Reposition(NodeHandle(0), e2, before=e4)
+Reposition(NodeHandle(0), e1, before=e2)
+--- tick 6 (9 writes) ---
+RemoveNode(NodeHandle(105))
+RemoveNode(NodeHandle(104))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(100))
+SpawnRow(e7, NodeHandle(0), li, "r", before=None)
+SpawnRow(e8, NodeHandle(0), li, "q", before=e7)
+SpawnRow(e9, NodeHandle(0), li, "p", before=e8)
+--- tick 7 (0 writes) ---
+======== D-LIS R1 ========
+--- tick 0 (5 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "e", before=None)
+SpawnRow(e1, NodeHandle(0), li, "d", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "c", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "b", before=e2)
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+--- tick 1 (1 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "f", before=None)
+--- tick 2 (1 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "z", before=e4)
+--- tick 3 (1 writes) ---
+RemoveNode(NodeHandle(101))
+--- tick 4 (2 writes) ---
+Reposition(NodeHandle(0), e4, before=None)
+Reposition(NodeHandle(0), e5, before=e2)
+--- tick 5 (3 writes) ---
+Reposition(NodeHandle(0), e6, before=None)
+Reposition(NodeHandle(0), e1, before=e2)
+Reposition(NodeHandle(0), e0, before=e1)
+--- tick 6 (9 writes) ---
+RemoveNode(NodeHandle(105))
+RemoveNode(NodeHandle(104))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(100))
+SpawnRow(e7, NodeHandle(0), li, "r", before=None)
+SpawnRow(e8, NodeHandle(0), li, "q", before=e7)
+SpawnRow(e9, NodeHandle(0), li, "p", before=e8)
+--- tick 7 (0 writes) ---
+======== E R1 ========
+--- tick 0 (5 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "e", before=None)
+SpawnRow(e1, NodeHandle(0), li, "d", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "c", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "b", before=e2)
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+--- tick 1 (1 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "f", before=None)
+--- tick 2 (1 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "z", before=e4)
+--- tick 3 (1 writes) ---
+RemoveNode(NodeHandle(101))
+--- tick 4 (4 writes) ---
+Reposition(NodeHandle(0), e4, before=None)
+Reposition(NodeHandle(0), e0, before=e4)
+Reposition(NodeHandle(0), e1, before=e0)
+Reposition(NodeHandle(0), e2, before=e1)
+--- tick 5 (3 writes) ---
+Reposition(NodeHandle(0), e6, before=None)
+Reposition(NodeHandle(0), e2, before=e4)
+Reposition(NodeHandle(0), e1, before=e2)
+--- tick 6 (9 writes) ---
+RemoveNode(NodeHandle(105))
+RemoveNode(NodeHandle(104))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(100))
+SpawnRow(e7, NodeHandle(0), li, "r", before=None)
+SpawnRow(e8, NodeHandle(0), li, "q", before=e7)
+SpawnRow(e9, NodeHandle(0), li, "p", before=e8)
+--- tick 7 (0 writes) ---
+======== E-LIS R1 ========
+--- tick 0 (5 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "e", before=None)
+SpawnRow(e1, NodeHandle(0), li, "d", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "c", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "b", before=e2)
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+--- tick 1 (1 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "f", before=None)
+--- tick 2 (1 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "z", before=e4)
+--- tick 3 (1 writes) ---
+RemoveNode(NodeHandle(101))
+--- tick 4 (2 writes) ---
+Reposition(NodeHandle(0), e4, before=None)
+Reposition(NodeHandle(0), e5, before=e2)
+--- tick 5 (3 writes) ---
+Reposition(NodeHandle(0), e6, before=None)
+Reposition(NodeHandle(0), e1, before=e2)
+Reposition(NodeHandle(0), e0, before=e1)
+--- tick 6 (9 writes) ---
+RemoveNode(NodeHandle(105))
+RemoveNode(NodeHandle(104))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(100))
+SpawnRow(e7, NodeHandle(0), li, "r", before=None)
+SpawnRow(e8, NodeHandle(0), li, "q", before=e7)
+SpawnRow(e9, NodeHandle(0), li, "p", before=e8)
+--- tick 7 (0 writes) ---
+======== K R2 ========
+--- tick 0 (11 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+AppendStaticChildren(e0, ["a-bind1", "a-bind2", "a-bind3", "a-bind4", "a-bind5", "a-bind6", "a-bind7"])
+SpawnRow(e1, NodeHandle(0), li, "b", before=None)
+AppendStaticChildren(e1, ["b-bind1", "b-bind2", "b-bind3", "b-bind4", "b-bind5", "b-bind6", "b-bind7"])
+SpawnRow(e2, NodeHandle(0), li, "c", before=None)
+AppendStaticChildren(e2, ["c-bind1", "c-bind2", "c-bind3", "c-bind4", "c-bind5", "c-bind6", "c-bind7"])
+SpawnRow(e3, NodeHandle(0), li, "d", before=None)
+AppendStaticChildren(e3, ["d-bind1", "d-bind2", "d-bind3", "d-bind4", "d-bind5", "d-bind6", "d-bind7"])
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+AppendStaticChildren(e4, ["e-bind1", "e-bind2", "e-bind3", "e-bind4", "e-bind5", "e-bind6", "e-bind7"])
+--- tick 1 (13 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e5, NodeHandle(0), li, "a", before=None)
+AppendStaticChildren(e5, ["a-bind1", "a-bind2", "a-bind3", "a-bind4", "a-bind5", "a-bind6", "a-bind7"])
+SpawnRow(e6, NodeHandle(0), li, "b", before=None)
+AppendStaticChildren(e6, ["b-bind1", "b-bind2", "b-bind3", "b-bind4", "b-bind5", "b-bind6", "b-bind7"])
+SpawnRow(e7, NodeHandle(0), li, "c", before=None)
+AppendStaticChildren(e7, ["c-bind1", "c-bind2", "c-bind3", "c-bind4", "c-bind5", "c-bind6", "c-bind7"])
+SpawnRow(e8, NodeHandle(0), li, "d", before=None)
+AppendStaticChildren(e8, ["d-bind1", "d-bind2", "d-bind3", "d-bind4", "d-bind5", "d-bind6", "d-bind7"])
+SpawnRow(e9, NodeHandle(0), li, "e", before=None)
+AppendStaticChildren(e9, ["e-bind1", "e-bind2", "e-bind3", "e-bind4", "e-bind5", "e-bind6", "e-bind7"])
+SpawnRow(e10, NodeHandle(0), li, "f", before=None)
+AppendStaticChildren(e10, ["f-bind1", "f-bind2", "f-bind3", "f-bind4", "f-bind5", "f-bind6", "f-bind7"])
+--- tick 2 (15 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e11, NodeHandle(0), li, "z", before=None)
+AppendStaticChildren(e11, ["z-bind1", "z-bind2", "z-bind3", "z-bind4", "z-bind5", "z-bind6", "z-bind7"])
+SpawnRow(e12, NodeHandle(0), li, "a", before=None)
+AppendStaticChildren(e12, ["a-bind1", "a-bind2", "a-bind3", "a-bind4", "a-bind5", "a-bind6", "a-bind7"])
+SpawnRow(e13, NodeHandle(0), li, "b", before=None)
+AppendStaticChildren(e13, ["b-bind1", "b-bind2", "b-bind3", "b-bind4", "b-bind5", "b-bind6", "b-bind7"])
+SpawnRow(e14, NodeHandle(0), li, "c", before=None)
+AppendStaticChildren(e14, ["c-bind1", "c-bind2", "c-bind3", "c-bind4", "c-bind5", "c-bind6", "c-bind7"])
+SpawnRow(e15, NodeHandle(0), li, "d", before=None)
+AppendStaticChildren(e15, ["d-bind1", "d-bind2", "d-bind3", "d-bind4", "d-bind5", "d-bind6", "d-bind7"])
+SpawnRow(e16, NodeHandle(0), li, "e", before=None)
+AppendStaticChildren(e16, ["e-bind1", "e-bind2", "e-bind3", "e-bind4", "e-bind5", "e-bind6", "e-bind7"])
+SpawnRow(e17, NodeHandle(0), li, "f", before=None)
+AppendStaticChildren(e17, ["f-bind1", "f-bind2", "f-bind3", "f-bind4", "f-bind5", "f-bind6", "f-bind7"])
+--- tick 3 (13 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e18, NodeHandle(0), li, "z", before=None)
+AppendStaticChildren(e18, ["z-bind1", "z-bind2", "z-bind3", "z-bind4", "z-bind5", "z-bind6", "z-bind7"])
+SpawnRow(e19, NodeHandle(0), li, "a", before=None)
+AppendStaticChildren(e19, ["a-bind1", "a-bind2", "a-bind3", "a-bind4", "a-bind5", "a-bind6", "a-bind7"])
+SpawnRow(e20, NodeHandle(0), li, "c", before=None)
+AppendStaticChildren(e20, ["c-bind1", "c-bind2", "c-bind3", "c-bind4", "c-bind5", "c-bind6", "c-bind7"])
+SpawnRow(e21, NodeHandle(0), li, "d", before=None)
+AppendStaticChildren(e21, ["d-bind1", "d-bind2", "d-bind3", "d-bind4", "d-bind5", "d-bind6", "d-bind7"])
+SpawnRow(e22, NodeHandle(0), li, "e", before=None)
+AppendStaticChildren(e22, ["e-bind1", "e-bind2", "e-bind3", "e-bind4", "e-bind5", "e-bind6", "e-bind7"])
+SpawnRow(e23, NodeHandle(0), li, "f", before=None)
+AppendStaticChildren(e23, ["f-bind1", "f-bind2", "f-bind3", "f-bind4", "f-bind5", "f-bind6", "f-bind7"])
+--- tick 4 (13 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e24, NodeHandle(0), li, "z", before=None)
+AppendStaticChildren(e24, ["z-bind1", "z-bind2", "z-bind3", "z-bind4", "z-bind5", "z-bind6", "z-bind7"])
+SpawnRow(e25, NodeHandle(0), li, "f", before=None)
+AppendStaticChildren(e25, ["f-bind1", "f-bind2", "f-bind3", "f-bind4", "f-bind5", "f-bind6", "f-bind7"])
+SpawnRow(e26, NodeHandle(0), li, "c", before=None)
+AppendStaticChildren(e26, ["c-bind1", "c-bind2", "c-bind3", "c-bind4", "c-bind5", "c-bind6", "c-bind7"])
+SpawnRow(e27, NodeHandle(0), li, "d", before=None)
+AppendStaticChildren(e27, ["d-bind1", "d-bind2", "d-bind3", "d-bind4", "d-bind5", "d-bind6", "d-bind7"])
+SpawnRow(e28, NodeHandle(0), li, "e", before=None)
+AppendStaticChildren(e28, ["e-bind1", "e-bind2", "e-bind3", "e-bind4", "e-bind5", "e-bind6", "e-bind7"])
+SpawnRow(e29, NodeHandle(0), li, "a", before=None)
+AppendStaticChildren(e29, ["a-bind1", "a-bind2", "a-bind3", "a-bind4", "a-bind5", "a-bind6", "a-bind7"])
+--- tick 5 (13 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e30, NodeHandle(0), li, "f", before=None)
+AppendStaticChildren(e30, ["f-bind1", "f-bind2", "f-bind3", "f-bind4", "f-bind5", "f-bind6", "f-bind7"])
+SpawnRow(e31, NodeHandle(0), li, "e", before=None)
+AppendStaticChildren(e31, ["e-bind1", "e-bind2", "e-bind3", "e-bind4", "e-bind5", "e-bind6", "e-bind7"])
+SpawnRow(e32, NodeHandle(0), li, "d", before=None)
+AppendStaticChildren(e32, ["d-bind1", "d-bind2", "d-bind3", "d-bind4", "d-bind5", "d-bind6", "d-bind7"])
+SpawnRow(e33, NodeHandle(0), li, "c", before=None)
+AppendStaticChildren(e33, ["c-bind1", "c-bind2", "c-bind3", "c-bind4", "c-bind5", "c-bind6", "c-bind7"])
+SpawnRow(e34, NodeHandle(0), li, "a", before=None)
+AppendStaticChildren(e34, ["a-bind1", "a-bind2", "a-bind3", "a-bind4", "a-bind5", "a-bind6", "a-bind7"])
+SpawnRow(e35, NodeHandle(0), li, "z", before=None)
+AppendStaticChildren(e35, ["z-bind1", "z-bind2", "z-bind3", "z-bind4", "z-bind5", "z-bind6", "z-bind7"])
+--- tick 6 (7 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e36, NodeHandle(0), li, "p", before=None)
+AppendStaticChildren(e36, ["p-bind1", "p-bind2", "p-bind3", "p-bind4", "p-bind5", "p-bind6", "p-bind7"])
+SpawnRow(e37, NodeHandle(0), li, "q", before=None)
+AppendStaticChildren(e37, ["q-bind1", "q-bind2", "q-bind3", "q-bind4", "q-bind5", "q-bind6", "q-bind7"])
+SpawnRow(e38, NodeHandle(0), li, "r", before=None)
+AppendStaticChildren(e38, ["r-bind1", "r-bind2", "r-bind3", "r-bind4", "r-bind5", "r-bind6", "r-bind7"])
+--- tick 7 (7 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e39, NodeHandle(0), li, "p", before=None)
+AppendStaticChildren(e39, ["p-bind1", "p-bind2", "p-bind3", "p-bind4", "p-bind5", "p-bind6", "p-bind7"])
+SpawnRow(e40, NodeHandle(0), li, "q", before=None)
+AppendStaticChildren(e40, ["q-bind1", "q-bind2", "q-bind3", "q-bind4", "q-bind5", "q-bind6", "q-bind7"])
+SpawnRow(e41, NodeHandle(0), li, "r", before=None)
+AppendStaticChildren(e41, ["r-bind1", "r-bind2", "r-bind3", "r-bind4", "r-bind5", "r-bind6", "r-bind7"])
+======== D R2 ========
+--- tick 0 (10 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "e", before=None)
+AppendStaticChildren(e0, ["e-bind1", "e-bind2", "e-bind3", "e-bind4", "e-bind5", "e-bind6", "e-bind7"])
+SpawnRow(e1, NodeHandle(0), li, "d", before=e0)
+AppendStaticChildren(e1, ["d-bind1", "d-bind2", "d-bind3", "d-bind4", "d-bind5", "d-bind6", "d-bind7"])
+SpawnRow(e2, NodeHandle(0), li, "c", before=e1)
+AppendStaticChildren(e2, ["c-bind1", "c-bind2", "c-bind3", "c-bind4", "c-bind5", "c-bind6", "c-bind7"])
+SpawnRow(e3, NodeHandle(0), li, "b", before=e2)
+AppendStaticChildren(e3, ["b-bind1", "b-bind2", "b-bind3", "b-bind4", "b-bind5", "b-bind6", "b-bind7"])
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+AppendStaticChildren(e4, ["a-bind1", "a-bind2", "a-bind3", "a-bind4", "a-bind5", "a-bind6", "a-bind7"])
+--- tick 1 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "f", before=None)
+AppendStaticChildren(e5, ["f-bind1", "f-bind2", "f-bind3", "f-bind4", "f-bind5", "f-bind6", "f-bind7"])
+--- tick 2 (2 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "z", before=e4)
+AppendStaticChildren(e6, ["z-bind1", "z-bind2", "z-bind3", "z-bind4", "z-bind5", "z-bind6", "z-bind7"])
+--- tick 3 (1 writes) ---
+RemoveNode(NodeHandle(101))
+--- tick 4 (4 writes) ---
+Reposition(NodeHandle(0), e4, before=None)
+Reposition(NodeHandle(0), e0, before=e4)
+Reposition(NodeHandle(0), e1, before=e0)
+Reposition(NodeHandle(0), e2, before=e1)
+--- tick 5 (3 writes) ---
+Reposition(NodeHandle(0), e6, before=None)
+Reposition(NodeHandle(0), e2, before=e4)
+Reposition(NodeHandle(0), e1, before=e2)
+--- tick 6 (12 writes) ---
+RemoveNode(NodeHandle(105))
+RemoveNode(NodeHandle(104))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(100))
+SpawnRow(e7, NodeHandle(0), li, "r", before=None)
+AppendStaticChildren(e7, ["r-bind1", "r-bind2", "r-bind3", "r-bind4", "r-bind5", "r-bind6", "r-bind7"])
+SpawnRow(e8, NodeHandle(0), li, "q", before=e7)
+AppendStaticChildren(e8, ["q-bind1", "q-bind2", "q-bind3", "q-bind4", "q-bind5", "q-bind6", "q-bind7"])
+SpawnRow(e9, NodeHandle(0), li, "p", before=e8)
+AppendStaticChildren(e9, ["p-bind1", "p-bind2", "p-bind3", "p-bind4", "p-bind5", "p-bind6", "p-bind7"])
+--- tick 7 (0 writes) ---
+======== D-LIS R2 ========
+--- tick 0 (10 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "e", before=None)
+AppendStaticChildren(e0, ["e-bind1", "e-bind2", "e-bind3", "e-bind4", "e-bind5", "e-bind6", "e-bind7"])
+SpawnRow(e1, NodeHandle(0), li, "d", before=e0)
+AppendStaticChildren(e1, ["d-bind1", "d-bind2", "d-bind3", "d-bind4", "d-bind5", "d-bind6", "d-bind7"])
+SpawnRow(e2, NodeHandle(0), li, "c", before=e1)
+AppendStaticChildren(e2, ["c-bind1", "c-bind2", "c-bind3", "c-bind4", "c-bind5", "c-bind6", "c-bind7"])
+SpawnRow(e3, NodeHandle(0), li, "b", before=e2)
+AppendStaticChildren(e3, ["b-bind1", "b-bind2", "b-bind3", "b-bind4", "b-bind5", "b-bind6", "b-bind7"])
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+AppendStaticChildren(e4, ["a-bind1", "a-bind2", "a-bind3", "a-bind4", "a-bind5", "a-bind6", "a-bind7"])
+--- tick 1 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "f", before=None)
+AppendStaticChildren(e5, ["f-bind1", "f-bind2", "f-bind3", "f-bind4", "f-bind5", "f-bind6", "f-bind7"])
+--- tick 2 (2 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "z", before=e4)
+AppendStaticChildren(e6, ["z-bind1", "z-bind2", "z-bind3", "z-bind4", "z-bind5", "z-bind6", "z-bind7"])
+--- tick 3 (1 writes) ---
+RemoveNode(NodeHandle(101))
+--- tick 4 (2 writes) ---
+Reposition(NodeHandle(0), e4, before=None)
+Reposition(NodeHandle(0), e5, before=e2)
+--- tick 5 (3 writes) ---
+Reposition(NodeHandle(0), e6, before=None)
+Reposition(NodeHandle(0), e1, before=e2)
+Reposition(NodeHandle(0), e0, before=e1)
+--- tick 6 (12 writes) ---
+RemoveNode(NodeHandle(105))
+RemoveNode(NodeHandle(104))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(100))
+SpawnRow(e7, NodeHandle(0), li, "r", before=None)
+AppendStaticChildren(e7, ["r-bind1", "r-bind2", "r-bind3", "r-bind4", "r-bind5", "r-bind6", "r-bind7"])
+SpawnRow(e8, NodeHandle(0), li, "q", before=e7)
+AppendStaticChildren(e8, ["q-bind1", "q-bind2", "q-bind3", "q-bind4", "q-bind5", "q-bind6", "q-bind7"])
+SpawnRow(e9, NodeHandle(0), li, "p", before=e8)
+AppendStaticChildren(e9, ["p-bind1", "p-bind2", "p-bind3", "p-bind4", "p-bind5", "p-bind6", "p-bind7"])
+--- tick 7 (0 writes) ---
+======== E R2 ========
+--- tick 0 (10 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "e", before=None)
+AppendStaticChildren(e0, ["e-bind1", "e-bind2", "e-bind3", "e-bind4", "e-bind5", "e-bind6", "e-bind7"])
+SpawnRow(e1, NodeHandle(0), li, "d", before=e0)
+AppendStaticChildren(e1, ["d-bind1", "d-bind2", "d-bind3", "d-bind4", "d-bind5", "d-bind6", "d-bind7"])
+SpawnRow(e2, NodeHandle(0), li, "c", before=e1)
+AppendStaticChildren(e2, ["c-bind1", "c-bind2", "c-bind3", "c-bind4", "c-bind5", "c-bind6", "c-bind7"])
+SpawnRow(e3, NodeHandle(0), li, "b", before=e2)
+AppendStaticChildren(e3, ["b-bind1", "b-bind2", "b-bind3", "b-bind4", "b-bind5", "b-bind6", "b-bind7"])
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+AppendStaticChildren(e4, ["a-bind1", "a-bind2", "a-bind3", "a-bind4", "a-bind5", "a-bind6", "a-bind7"])
+--- tick 1 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "f", before=None)
+AppendStaticChildren(e5, ["f-bind1", "f-bind2", "f-bind3", "f-bind4", "f-bind5", "f-bind6", "f-bind7"])
+--- tick 2 (2 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "z", before=e4)
+AppendStaticChildren(e6, ["z-bind1", "z-bind2", "z-bind3", "z-bind4", "z-bind5", "z-bind6", "z-bind7"])
+--- tick 3 (1 writes) ---
+RemoveNode(NodeHandle(101))
+--- tick 4 (4 writes) ---
+Reposition(NodeHandle(0), e4, before=None)
+Reposition(NodeHandle(0), e0, before=e4)
+Reposition(NodeHandle(0), e1, before=e0)
+Reposition(NodeHandle(0), e2, before=e1)
+--- tick 5 (3 writes) ---
+Reposition(NodeHandle(0), e6, before=None)
+Reposition(NodeHandle(0), e2, before=e4)
+Reposition(NodeHandle(0), e1, before=e2)
+--- tick 6 (12 writes) ---
+RemoveNode(NodeHandle(105))
+RemoveNode(NodeHandle(104))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(100))
+SpawnRow(e7, NodeHandle(0), li, "r", before=None)
+AppendStaticChildren(e7, ["r-bind1", "r-bind2", "r-bind3", "r-bind4", "r-bind5", "r-bind6", "r-bind7"])
+SpawnRow(e8, NodeHandle(0), li, "q", before=e7)
+AppendStaticChildren(e8, ["q-bind1", "q-bind2", "q-bind3", "q-bind4", "q-bind5", "q-bind6", "q-bind7"])
+SpawnRow(e9, NodeHandle(0), li, "p", before=e8)
+AppendStaticChildren(e9, ["p-bind1", "p-bind2", "p-bind3", "p-bind4", "p-bind5", "p-bind6", "p-bind7"])
+--- tick 7 (0 writes) ---
+======== E-LIS R2 ========
+--- tick 0 (10 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "e", before=None)
+AppendStaticChildren(e0, ["e-bind1", "e-bind2", "e-bind3", "e-bind4", "e-bind5", "e-bind6", "e-bind7"])
+SpawnRow(e1, NodeHandle(0), li, "d", before=e0)
+AppendStaticChildren(e1, ["d-bind1", "d-bind2", "d-bind3", "d-bind4", "d-bind5", "d-bind6", "d-bind7"])
+SpawnRow(e2, NodeHandle(0), li, "c", before=e1)
+AppendStaticChildren(e2, ["c-bind1", "c-bind2", "c-bind3", "c-bind4", "c-bind5", "c-bind6", "c-bind7"])
+SpawnRow(e3, NodeHandle(0), li, "b", before=e2)
+AppendStaticChildren(e3, ["b-bind1", "b-bind2", "b-bind3", "b-bind4", "b-bind5", "b-bind6", "b-bind7"])
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+AppendStaticChildren(e4, ["a-bind1", "a-bind2", "a-bind3", "a-bind4", "a-bind5", "a-bind6", "a-bind7"])
+--- tick 1 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "f", before=None)
+AppendStaticChildren(e5, ["f-bind1", "f-bind2", "f-bind3", "f-bind4", "f-bind5", "f-bind6", "f-bind7"])
+--- tick 2 (2 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "z", before=e4)
+AppendStaticChildren(e6, ["z-bind1", "z-bind2", "z-bind3", "z-bind4", "z-bind5", "z-bind6", "z-bind7"])
+--- tick 3 (1 writes) ---
+RemoveNode(NodeHandle(101))
+--- tick 4 (2 writes) ---
+Reposition(NodeHandle(0), e4, before=None)
+Reposition(NodeHandle(0), e5, before=e2)
+--- tick 5 (3 writes) ---
+Reposition(NodeHandle(0), e6, before=None)
+Reposition(NodeHandle(0), e1, before=e2)
+Reposition(NodeHandle(0), e0, before=e1)
+--- tick 6 (12 writes) ---
+RemoveNode(NodeHandle(105))
+RemoveNode(NodeHandle(104))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(100))
+SpawnRow(e7, NodeHandle(0), li, "r", before=None)
+AppendStaticChildren(e7, ["r-bind1", "r-bind2", "r-bind3", "r-bind4", "r-bind5", "r-bind6", "r-bind7"])
+SpawnRow(e8, NodeHandle(0), li, "q", before=e7)
+AppendStaticChildren(e8, ["q-bind1", "q-bind2", "q-bind3", "q-bind4", "q-bind5", "q-bind6", "q-bind7"])
+SpawnRow(e9, NodeHandle(0), li, "p", before=e8)
+AppendStaticChildren(e9, ["p-bind1", "p-bind2", "p-bind3", "p-bind4", "p-bind5", "p-bind6", "p-bind7"])
+--- tick 7 (0 writes) ---

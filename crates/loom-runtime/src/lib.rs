@@ -33,9 +33,10 @@ use bevy_ecs::schedule::Schedule;
 
 pub mod list;
 pub use list::{
-    list_reconcile_c_system, list_reconcile_d_lis_system, list_reconcile_d_system,
-    list_reconcile_e_lis_system, list_reconcile_e_system, OrderKey, OrderKeyMembers, OrderedKey,
-    RowKey, SlotValue,
+    list_reconcile_c_system, list_reconcile_d_lis_system, list_reconcile_d_lis_system_with,
+    list_reconcile_d_system, list_reconcile_d_system_with, list_reconcile_e_lis_system,
+    list_reconcile_e_lis_system_with, list_reconcile_e_system, list_reconcile_e_system_with,
+    OrderKey, OrderKeyMembers, OrderedKey, RowKey, SlotValue,
 };
 
 pub mod stage;
@@ -292,6 +293,7 @@ pub trait DomOps {
 /// wants to reference it as a `before` anchor. Processing writes strictly
 /// in emission order and resolving anchors just-in-time makes that safe —
 /// see candidates D/E in `list.rs`.
+#[derive(Debug)]
 pub enum DomWrite {
     /// 컴파일러가 생성한 **지연 서브트리**의 엘리먼트 하나
     /// (loom-compiler codegen.rs의 `emit_lazy_subtree`). `SpawnRow`와 같은
@@ -506,6 +508,83 @@ pub(crate) fn extra_binding_texts(row_bindings: usize, primary: &str) -> Vec<Str
     (1..row_bindings).map(|i| format!("{primary}-bind{i}")).collect()
 }
 
+/// row 하나를 만들 때 생성기가 쓸 수 있는 것들. `Commands`와 write 큐만 있고
+/// **World를 읽을 수단은 없다** — row 생성은 "이 모양대로 write를 낸다"이지
+/// 상태를 조회하는 일이 아니어야 하기 때문이다. 사이트가 외부 값을 필요로
+/// 하면 `RowSpawner::Ctx`(아래)로 받는다.
+pub struct RowSpawnCtx<'a, 'w, 's> {
+    pub commands: &'a mut Commands<'w, 's>,
+    pub pending: &'a mut Vec<DomWrite>,
+    pub row_bindings: usize,
+}
+
+/// **리스트 row의 모양**. 알고리즘(C/D/E/K)은 제네릭으로 그대로 두고 이 한
+/// 지점만 컴파일타임에 갈아 끼운다 — 컴파일러가 사이트마다 ZST 구현을 하나
+/// 생성하고 시스템을 그 타입으로 monomorphize한다. 런타임 디스패치도, row
+/// 템플릿 트리를 런타임에 해석하는 인터프리터도 없다.
+///
+/// 왜 알고리즘을 코드젠으로 복제하지 않는가: D/E의 배치 계획은 Verus로 검증된
+/// `loom_flush_core::plan_writes*`가 낸다(`list.rs` 참고). 사이트마다 그 알고리즘을
+/// 복제하면 검증된 코드가 아니라 **복제본**이 배포된다. 모양만 파라미터로 빼면
+/// 검증 대상은 하나로 유지된다.
+///
+/// **RQ1 §2.4 [E]의 "site별 monomorphize"** 최선형 항목이 요구하는 것이 정확히
+/// 이 형태이기도 하다 — 새로 발명한 구조가 아니다.
+pub trait RowSpawner: Send + Sync + 'static {
+    /// 이 생성기가 row를 만들 때 필요로 하는 **사이트 고유 입력**. 없으면
+    /// `NoRowCtx`. Resource로 두는 이유: row 생성은 리스트 System 안에서
+    /// 일어나므로 값을 미리 계산해 두는 System을 앞에 세워야 하고, 그 둘
+    /// 사이의 통로가 Resource다(Component에 클로저를 담지 않는다는 원칙
+    /// — CLAUDE.md 금지 4 — 을 유지하면서 값을 전달하는 방법).
+    type Ctx: Resource + Default;
+
+    /// row 서브트리를 만드는 write들을 방출한다. `row`는 알고리즘이 이미 만들어
+    /// 둔 entity(키/OrderKey를 이미 달고 있다)이고, 드라이버가 여기에
+    /// `DomTarget`을 붙인다. `text`는 이 row의 아이템 값.
+    fn emit(
+        site: &Self::Ctx,
+        out: &mut RowSpawnCtx,
+        row: Entity,
+        parent: NodeHandle,
+        text: &str,
+        before: Option<Entity>,
+    );
+}
+
+/// `RowSpawner::Ctx`가 필요 없는 사이트용 빈 입력.
+#[derive(Resource, Default)]
+pub struct NoRowCtx;
+
+/// 오늘까지의 유일한 row 모양(`<li>{item}</li>` + R2 축의 추가 binding들).
+/// **방출하는 write 열이 이 리팩터 이전과 한 글자도 다르지 않아야 한다** —
+/// 그래야 트랙 L의 기존 측정이 §2.5의 재측정 대상이 되지 않는다.
+pub struct DefaultRow;
+
+impl RowSpawner for DefaultRow {
+    type Ctx = NoRowCtx;
+
+    fn emit(
+        _site: &NoRowCtx,
+        out: &mut RowSpawnCtx,
+        row: Entity,
+        parent: NodeHandle,
+        text: &str,
+        before: Option<Entity>,
+    ) {
+        out.pending.push(DomWrite::SpawnRow {
+            entity: row,
+            parent,
+            tag: "li",
+            text: text.to_string(),
+            before,
+        });
+        let extra = extra_binding_texts(out.row_bindings, text);
+        if !extra.is_empty() {
+            out.pending.push(DomWrite::AppendStaticChildren { row, texts: extra });
+        }
+    }
+}
+
 /// docs/03 §"반응성 파이프라인": one narrow System per binding-site *shape*
 /// (monomorphized per `T`), gated by `Changed<Signal<T>>`, performing
 /// exactly one DOM operation. No diff — the changed value is written
@@ -561,6 +640,35 @@ pub fn patch_input_system(
 /// them with correct content baked in at spawn time, so there is nothing
 /// left to patch after that.
 pub fn list_reconcile_k_system<T>(
+    q: Query<(&Signal<Vec<T>>, &mut ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
+    commands: Commands,
+    pending: ResMut<PendingDomWrites>,
+    row_bindings: Res<RowBindings>,
+) where
+    T: Send + Sync + Clone + ToString + 'static,
+{
+    k_body::<T, DefaultRow>(&NoRowCtx, q, commands, pending, row_bindings);
+}
+
+/// K를 **사이트별 row 모양**으로 monomorphize한 판본 (2026-08-07 신설).
+/// 알고리즘은 `list_reconcile_k_system`과 같은 함수 하나(`k_body`)이고, 다른
+/// 것은 `R`뿐이다 — 즉 이 변형이 생겼다고 해서 K의 동작이 두 갈래로 갈라지지
+/// 않는다. loom-compiler가 `<tag>{item}</tag>`보다 복잡한 row 템플릿을
+/// 만났을 때 이쪽을 등록한다.
+pub fn list_reconcile_k_system_with<T, R: RowSpawner>(
+    q: Query<(&Signal<Vec<T>>, &mut ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
+    commands: Commands,
+    pending: ResMut<PendingDomWrites>,
+    row_bindings: Res<RowBindings>,
+    site: Res<R::Ctx>,
+) where
+    T: Send + Sync + Clone + ToString + 'static,
+{
+    k_body::<T, R>(&site, q, commands, pending, row_bindings);
+}
+
+fn k_body<T, R: RowSpawner>(
+    site: &R::Ctx,
     mut q: Query<(&Signal<Vec<T>>, &mut ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
@@ -577,17 +685,14 @@ pub fn list_reconcile_k_system<T>(
             let new_entity = commands.spawn_empty().id();
             rows.0.push(new_entity);
             let text = item.to_string();
-            pending.0.push(DomWrite::SpawnRow {
-                entity: new_entity,
-                parent: anchor.0,
-                tag: "li",
-                text: text.clone(),
-                before: None, // ClearChildren already emptied the parent; append in order.
-            });
-            let extra = extra_binding_texts(row_bindings.0, &text);
-            if !extra.is_empty() {
-                pending.0.push(DomWrite::AppendStaticChildren { row: new_entity, texts: extra });
-            }
+            let mut out = RowSpawnCtx {
+                commands: &mut commands,
+                pending: &mut pending.0,
+                row_bindings: row_bindings.0,
+            };
+            // `before: None` — `ClearChildren`가 이미 부모를 비웠으므로 순서대로
+            // append하면 된다(리팩터 전과 동일).
+            R::emit(site, &mut out, new_entity, anchor.0, &text, None);
         }
     }
 }
@@ -613,6 +718,9 @@ impl LoomApp {
         world.init_resource::<PendingDomWrites>();
         world.init_resource::<RowBindings>();
         world.init_resource::<RowVariantMode>();
+        // `RowSpawner::Ctx`의 기본값 — `DefaultRow`로 monomorphize된
+        // `*_system_with`가 `Res<NoRowCtx>`를 요구한다.
+        world.init_resource::<NoRowCtx>();
         Self {
             world,
             schedule: Schedule::default(),
@@ -686,6 +794,15 @@ impl LoomApp {
     /// `NodeHandle` *at the moment each write is applied* — by then, any
     /// earlier write in this same batch that mounted that entity has
     /// already attached its `DomTarget`. See `DomWrite`'s doc comment.
+    /// **테스트 전용**: 스케줄만 돌리고 write 큐는 그대로 둔다.
+    /// `tick`은 큐를 비우며 DOM에 적용하므로, "무엇이 방출됐는가"를 그대로
+    /// 보려면 이 경로가 필요하다(`tests/row_spawner.rs` — `DefaultRow`의
+    /// write-동일성 검사). 프로덕션 경로에서는 쓰지 말 것.
+    #[doc(hidden)]
+    pub fn run_schedule_for_test(&mut self) {
+        self.schedule.run(&mut self.world);
+    }
+
     pub fn tick<D: DomOps>(&mut self, dom: &mut D) {
         // §7.1의 "DOM 배치 적용 구간"은 스케줄 **바깥**이라 마커 System으로는
         // 잴 수 없다 — 여기서 직접 스탬프한다. `StageTimings`가 없는 앱
