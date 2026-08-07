@@ -184,3 +184,78 @@ fn static_text_is_never_touched_by_a_patch_tick() {
     app.tick(&mut dom); // no systems registered — must not panic or alter anything
     assert_eq!(dom.child_texts(root), vec!["label:"]);
 }
+
+// ============================================================================
+// §5 트랙 N 관측 축 — MockDom 확장의 음성 대조 (2026-08-07)
+// ============================================================================
+//
+// 확장이 "통과한다"만으로는 공허할 수 있으므로, **일부러 위반을 만들어** 잡히는지
+// 확인한다. 여기서 검사하는 계약 셋:
+//   (a) 노드는 부모가 최대 하나 — 부모를 건너뛴 이동이 양쪽에 남지 않는다
+//   (b) strict 모드에서 anchor 위반이 패닉 대신 기록된다
+//   (c) detach 후에도 앵커 조작이 살아남고, 재부착이 순서를 보존한다
+
+#[test]
+fn cross_parent_move_leaves_exactly_one_parent() {
+    use loom_runtime::DomOps;
+    let (mut dom, root) = MockDom::new_root();
+    let p1 = dom.create_element(root, "ul", None);
+    let p2 = dom.create_element(root, "ul", None);
+    let n = dom.create_element(p1, "li", None);
+    assert_eq!(dom.children[&p1.0], vec![n.0]);
+
+    // 부모를 건너뛴 이동 — 수리 전에는 n이 p1·p2 **양쪽**에 남았다.
+    dom.reposition(p2, n, None);
+    assert_eq!(dom.children[&p1.0], Vec::<u32>::new(), "옛 부모에서 빠져야 한다");
+    assert_eq!(dom.children[&p2.0], vec![n.0]);
+    assert_eq!(dom.parent_of[&n.0], p2.0);
+
+    dom.assert_tree_wellformed();
+    assert!(dom.violations.is_empty(), "정상 이동은 위반이 아니다");
+}
+
+#[test]
+fn strict_mode_records_anchor_violation_instead_of_panicking() {
+    use loom_runtime::DomOps;
+    let (mut dom, root) = MockDom::new_root();
+    dom.strict = true;
+    let p1 = dom.create_element(root, "ul", None);
+    let p2 = dom.create_element(root, "ul", None);
+    let a = dom.create_element(p1, "li", None);
+    let stranger = dom.create_element(p2, "li", None);
+
+    // anchor가 목표 부모의 자식이 아니다 — §5 불변식 2("anchor가 자기 소유
+    // 노드만 포위") 위반. strict가 아니면 패닉이라 property test가 첫 건에서
+    // 멈춘다.
+    dom.reposition(p1, a, Some(stranger));
+    assert_eq!(dom.violations.len(), 1, "위반이 기록돼야 한다");
+    assert_eq!(dom.violations[0].family, support::InvariantFamily::DomSpan);
+    assert!(dom.violations[0].detail.contains("자식이 아님"));
+}
+
+#[test]
+fn detached_anchor_survives_edits_and_reattach_preserves_order() {
+    use loom_runtime::DomOps;
+    let (mut dom, root) = MockDom::new_root();
+    let anchor = dom.create_element(root, "div", None);
+    let a = dom.create_element(anchor, "span", None);
+    let b = dom.create_element(anchor, "span", None);
+
+    let frag = dom.detach_to_fragment(anchor);
+    assert!(!dom.is_in_document(root, a), "분리된 노드는 문서 밖");
+    assert!(dom.is_in_document(root, anchor), "앵커 자신은 문서에 남는다");
+
+    // 동결 중 앵커에 자식 추가 — 수리 전에는 여기서 패닉이라 §5 불변식 4
+    // 시나리오가 통째로 실행 불가였다.
+    let c = dom.create_element(anchor, "span", None);
+    assert_eq!(dom.children[&anchor.0], vec![c.0]);
+
+    dom.attach_from_fragment(anchor, frag);
+    assert_eq!(
+        dom.children[&anchor.0],
+        vec![a.0, b.0, c.0],
+        "재부착이 원래 순서를 앞쪽에 복원해야 한다 — 끝에 붙이면 [c,a,b]로 역전된다"
+    );
+    dom.assert_tree_wellformed();
+    assert!(dom.violations.is_empty());
+}
