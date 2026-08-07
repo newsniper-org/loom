@@ -420,10 +420,23 @@ impl DomOps for BrowserDom {
 
     fn attach_from_fragment(&mut self, parent: NodeHandle, fragment: FragmentHandle) {
         let frag = self.fragments[fragment.0 as usize].clone();
-        self.node(parent)
-            .append_child(&frag)
-            .expect("attach_from_fragment: append fragment failed");
-        // fragment는 append 시 비워진다(내용이 부모로 옮겨감) — 테이블에는
+        let node = self.node(parent).clone();
+        // **맨 앞에 되돌린다** (2026-08-07 수리).
+        //
+        // 이전에는 `append_child`로 **끝**에 붙였다. 동결 중 앵커에 자식이
+        // 추가되면 순서가 역전된다 — [a,b] 분리 → c 추가 → 재부착이
+        // `[c,a,b]`가 된다. 분리된 것들은 원래 **앞에** 있었으므로 앞에
+        // 복원하는 것이 원래 상대 순서를 지킨다. §5 불변식 4("동결 중 내부
+        // 리스트 변경이 재부착 후 전부 반영")가 겨냥하는 지점이다.
+        //
+        // MockDom은 2026-08-07에 이미 앞쪽 복원으로 고쳐 뒀는데 이쪽이 그대로
+        // 남아 있었다 — 그러면 **네이티브 오라클이 배포 코드에만 있는 결함을
+        // 이상화해 없애 버린다**(MEMORY.md "검증된 코드 = 배포되는 코드"가
+        // 경고하는 바로 그 형태). 두 백엔드의 계약을 맞춘다.
+        let first = node.first_child();
+        node.insert_before(&frag, first.as_ref())
+            .expect("attach_from_fragment: insert fragment failed");
+        // fragment는 삽입 시 비워진다(내용이 부모로 옮겨감) — 테이블에는
         // 빈 껍데기가 남지만, 핸들 안정성을 위해 제거하지 않는다.
     }
 
