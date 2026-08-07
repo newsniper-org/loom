@@ -206,6 +206,9 @@ def gate_c(idx, browser):
           f" (하한 {lo:.3f} {'≥' if fired_front else '<'} 3)")
 
     print("  기각 뒷 분기: W2 × R3에서 archetype move 구간 ≥ 스크립트 시간의 50%")
+    print("    (주의: R3 셀은 C만 유효. D/D-LIS/E/E-LIS/K는 2026-08-07까지 축이")
+    print("     적용되지 않아 §11-2 개정 #8로 무효 처리됨 — 이 분기는 C 자신의")
+    print("     절대 임계값이므로 영향 없다)")
     r = cell(idx, "W2", 1, C, variants=True)
     if not r or "stage_ms" not in r:
         print("    미계측 — R3 셀 또는 §7.1 단계 귀속 없음")

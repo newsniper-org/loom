@@ -749,23 +749,45 @@ mod r3_heterogeneous_branch {
             .id();
         app.tick(&mut dom);
 
-        let snapshot = |app: &LoomApp| -> Vec<bool> {
+        // **entity 기준**으로 찍는다. 위치 기준으로 찍으면 D는 재정렬만으로
+        // 위치별 값이 달라져 "전환됐다"고 오독된다 — 2026-08-07까지 이 함수가
+        // 실제로 그랬고, D에 marker가 아예 없어서(개정 #8) 우연히 0이 나와
+        // 드러나지 않았다. 재는 것은 "이 row의 브랜치가 바뀌었는가"이지
+        // "이 자리의 브랜치가 바뀌었는가"가 아니다.
+        let snapshot = |app: &LoomApp| -> std::collections::HashMap<bevy_ecs::entity::Entity, bool> {
             app.world
                 .get::<ListRows>(e)
                 .unwrap()
                 .0
                 .iter()
-                .map(|&r| app.world.get::<RowVariantA>(r).is_some())
+                .map(|&r| (r, app.world.get::<RowVariantA>(r).is_some()))
                 .collect()
         };
         let before = snapshot(&app);
+        // **공허성 방지**: marker가 하나도 없으면 아래 계수는 무조건 0이 되어
+        // "전환이 없다"가 자동 참이 된다(개정 #8이 기록한 바로 그 함정).
+        let marked = app
+            .world
+            .get::<ListRows>(e)
+            .unwrap()
+            .0
+            .iter()
+            .filter(|&&r| {
+                app.world.get::<RowVariantA>(r).is_some() || app.world.get::<RowVariantB>(r).is_some()
+            })
+            .count();
+        assert_eq!(marked, initial.len(), "R3 축이 켜졌는데 브랜치 marker가 배정되지 않았다");
 
         let reversed: Vec<String> = initial.iter().rev().cloned().collect();
         app.world.get_mut::<Signal<Vec<String>>>(e).unwrap().0 = reversed;
         app.tick(&mut dom);
         let after = snapshot(&app);
 
-        before.iter().zip(after.iter()).filter(|(a, b)| a != b).count()
+        // 살아남은 entity만 비교한다(C는 슬롯이 그대로, D는 row가 그대로).
+        before
+            .iter()
+            .filter(|(entity, was_a)| after.get(entity).is_some_and(|now_a| now_a != *was_a))
+            .count()
     }
 
     #[test]

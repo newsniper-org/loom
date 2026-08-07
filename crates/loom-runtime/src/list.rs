@@ -468,6 +468,7 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 commands: &mut commands,
                 pending: &mut pending.0,
                 row_bindings: row_bindings.0,
+                row_variants: variant_mode.0,
             };
             place_in_order::<R>(site, anchor.0, &current, &target, &mut out);
         }
@@ -540,6 +541,7 @@ fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 commands: &mut commands,
                 pending: &mut pending.0,
                 row_bindings: row_bindings.0,
+                row_variants: variant_mode.0,
             };
             place_in_order_lis::<R>(site, anchor.0, &current, &target, &mut out);
         }
@@ -667,6 +669,7 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 commands: &mut commands,
                 pending: &mut pending.0,
                 row_bindings: row_bindings.0,
+                row_variants: variant_mode.0,
             };
             place_in_order::<R>(site, anchor.0, &current, &target, &mut out);
         }
@@ -752,6 +755,7 @@ fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 commands: &mut commands,
                 pending: &mut pending.0,
                 row_bindings: row_bindings.0,
+                row_variants: variant_mode.0,
             };
             place_in_order_lis::<R>(site, anchor.0, &current, &target, &mut out);
         }

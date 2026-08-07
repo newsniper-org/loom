@@ -531,6 +531,9 @@ pub struct RowSpawnCtx<'a, 'w, 's> {
     pub commands: &'a mut Commands<'w, 's>,
     pub pending: &'a mut Vec<DomWrite>,
     pub row_bindings: usize,
+    /// RQ1 §3.2의 R3 축이 켜져 있는가. `RowVariantMode`를 그대로 실어 나른다 —
+    /// row를 만드는 지점이 곧 브랜치 marker를 붙일 지점이기 때문이다.
+    pub row_variants: bool,
 }
 
 /// **리스트 row의 모양**. 알고리즘(C/D/E/K)은 제네릭으로 그대로 두고 이 한
@@ -615,6 +618,25 @@ impl RowSpawner for DefaultRow {
         if !extra.is_empty() {
             out.pending.push(DomWrite::AppendStaticChildren { row, texts: extra });
         }
+        // **R3(§3.2) — 이질 브랜치 row** (2026-08-07 수리). 그 전까지 이 축을
+        // 실제로 적용하는 후보는 C 하나뿐이었고, D/D-LIS/E/E-LIS는
+        // `RowVariantMode`를 파라미터로 **선언만 하고 읽지 않았으며** K는 선언조차
+        // 없었다. 그래서 수집분의 `row_variants: true` 셀이 C 외 다섯 후보에
+        // 대해서는 R1 셀에 R3 라벨이 붙은 것이었다(§3.3의 "R3 × {C,D}" 사전등록이
+        // D에 대해 이행된 적이 없다).
+        //
+        // 여기서 붙이는 것은 §10이 사전 고정한 "슬롯 entity 컴포넌트 교체
+        // (archetype move)형"의 **초기 배정**이다. keyed 후보(D/E)에서 브랜치
+        // *전환*이 일어나지 않는 것은 정상이다 — retained row는 키(=텍스트)가
+        // 그대로라 파생 브랜치도 그대로다. 그것이 RQ1이 예측한 비대칭이고, 이제
+        // 그 비대칭은 **구현 누락 때문이 아니라 keyed 성질 때문에** 성립한다.
+        if out.row_variants {
+            if row_variant_is_a(text) {
+                out.commands.entity(row).insert(RowVariantA);
+            } else {
+                out.commands.entity(row).insert(RowVariantB);
+            }
+        }
     }
 }
 
@@ -677,10 +699,11 @@ pub fn list_reconcile_k_system<T>(
     commands: Commands,
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<RowBindings>,
+    row_variants: Res<RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
-    k_body::<T, DefaultRow, _>(&NoRowCtx, q, commands, pending, row_bindings);
+    k_body::<T, DefaultRow, _>(&NoRowCtx, q, commands, pending, row_bindings, row_variants);
 }
 
 /// K를 **사이트별 row 모양**으로 monomorphize한 판본 (2026-08-07 신설).
@@ -693,11 +716,12 @@ pub fn list_reconcile_k_system_with<T, R: RowSpawner>(
     commands: Commands,
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<RowBindings>,
+    row_variants: Res<RowVariantMode>,
     site: Res<R::Ctx>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
-    k_body::<T, R, _>(&site, q, commands, pending, row_bindings);
+    k_body::<T, R, _>(&site, q, commands, pending, row_bindings, row_variants);
 }
 
 fn k_body<T, R: RowSpawner, F: bevy_ecs::query::QueryFilter>(
@@ -706,6 +730,7 @@ fn k_body<T, R: RowSpawner, F: bevy_ecs::query::QueryFilter>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<RowBindings>,
+    row_variants: Res<RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
@@ -722,6 +747,7 @@ fn k_body<T, R: RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 commands: &mut commands,
                 pending: &mut pending.0,
                 row_bindings: row_bindings.0,
+                row_variants: row_variants.0,
             };
             // `before: None` — `ClearChildren`가 이미 부모를 비웠으므로 순서대로
             // append하면 된다(리팩터 전과 동일).
