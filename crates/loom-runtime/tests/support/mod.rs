@@ -130,6 +130,10 @@ impl DomOps for MockDom {
         self.static_html_writes += 1;
     }
 
+    /// `SetText`는 "이 엘리먼트의 **텍스트 바인딩** 갱신"이지 "자식을 전부
+    /// 갈아치움"이 아니다 — 그래서 자식을 건드리지 않는다. 이 계약은
+    /// `web::BrowserDom::set_text_content`와 동형이어야 한다(2026-08-07에
+    /// 실브라우저 쪽이 파괴적 폴백을 갖고 있던 것을 수리하면서 맞췄다).
     fn set_text_content(&mut self, target: NodeHandle, text: &str) {
         self.text.insert(target.0, text.to_string());
         self.set_text_calls += 1;

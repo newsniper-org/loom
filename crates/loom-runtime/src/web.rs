@@ -336,13 +336,36 @@ impl DomOps for BrowserDom {
         // 엘리먼트를 만드는 쪽은 첫 자식이 없어 여기 걸리지 않는다. 따라서
         // 이 수리는 **C에 유리한 방향**이며, §9 판정을 새 데이터로 다시
         // 유도해야 한다(§2.5 전면 재수집 사유).
-        if let Some(first) = node.first_child() {
-            if first.node_type() == web_sys::Node::TEXT_NODE && first.next_sibling().is_none() {
-                first.unchecked_ref::<web_sys::CharacterData>().set_data(text);
+        // **2026-08-07 정정 — 파괴적 폴백이 실제 버그였다.**
+        //
+        // 이전 판은 "첫 자식이 **단독** 텍스트 노드"일 때만 제자리 변경하고
+        // 아니면 `textContent =`로 떨어졌다. R2 축의 row는
+        // `<li>값<span>바인딩1</span>…<span>바인딩7</span></li>` 모양이라 첫
+        // 자식이 텍스트지만 단독이 아니고, 그래서 값이 바뀔 때마다 **span 7개를
+        // 통째로 파괴**했다. 실브라우저 프로브로 재현:
+        //   spawn 후 : <li>item-0<span>item-0-bind1</span>…</li>
+        //   값 변경 후: <li>zz-0</li>          ← 바인딩 전멸
+        // 그 뒤 `SetRowBindingTexts` 7회는 떨어져 나간 핸들에 쓰여 아무 효과가
+        // 없었다(v18 실측: 방출 7,992 vs 관측 characterData 999 = 정확히 1/8).
+        //
+        // 옳은 의미론: `SetText`는 "이 엘리먼트의 **텍스트 바인딩**을 갱신"이지
+        // "자식을 전부 갈아치움"이 아니다. §7 M2의 대응표가 이미 그렇게 말한다 —
+        // "setText → characterData". 그러니 첫 **텍스트 노드**만 제자리에서
+        // 바꾸고, 없으면 맨 앞에 하나 만들어 넣는다. 엘리먼트 자식은 건드리지
+        // 않는다.
+        let mut child = node.first_child();
+        while let Some(n) = child {
+            if n.node_type() == web_sys::Node::TEXT_NODE {
+                n.unchecked_ref::<web_sys::CharacterData>().set_data(text);
                 return;
             }
+            child = n.next_sibling();
         }
-        node.set_text_content(Some(text));
+        // 텍스트 노드가 없다 — 맨 앞에 새로 끼운다(자식 보존).
+        let t = self.document.create_text_node(text);
+        let first = node.first_child();
+        node.insert_before(&t, first.as_ref())
+            .expect("set_text_content: insert text node failed");
     }
 
     fn clear_children(&mut self, parent: NodeHandle) {

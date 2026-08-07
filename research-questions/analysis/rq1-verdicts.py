@@ -444,7 +444,31 @@ def integrity_checks(rows, browser):
     if ratio2 > 2.0:
         problems.append("노드 슬롯 누수 의심(binding 보정)")
 
-    # (9) 브라우저 빌드 식별자 — §11 개정 #4가 Firefox 열 전체를 무효화한
+    # (9) **방출 op vs 관측 op 대조** — 떨어져 나간 노드에 쓰는 결함 탐지.
+    #
+    # 2026-08-07에 R2 × C가 `set_text_content` 7,992회를 내는데 MutationObserver는
+    # `characterData` 999건(정확히 1/8)만 관측하는 것이 발견됐다. 원인은
+    # `BrowserDom::set_text_content`의 파괴적 폴백이 row의 binding span을 전부
+    # 지우고, 뒤이은 쓰기가 떨어져 나간 핸들로 갔던 것 — R2 축이 재려던 비용이
+    # 측정에서 통째로 사라져 있었다. 이 대조가 있었으면 첫 수집에서 잡혔다.
+    #
+    # 판정 규칙: reposition/create가 없는(= 순수 텍스트 갱신) 셀에서
+    # 관측 characterData가 방출 setText의 절반에 못 미치면 유실로 본다.
+    lost = []
+    for r in rows:
+        o, m = r["m2_dom_ops"], r.get("mutation_records")
+        if not m or o["reposition"] or o["create_element"] or o["remove_node"]:
+            continue
+        st = o["set_text_content"]
+        if st >= 8 and m["character_data"] * 2 < st and m["child_list"] == 0:
+            lost.append((r["workload"], r["row_bindings"], r["candidate"], st, m["character_data"]))
+    print(f"  방출 setText ↔ 관측 characterData 유실 셀: {len(lost)}건")
+    for w, rb, c, st, cd in lost[:5]:
+        print(f"    {w}/R{rb}/{c}: 방출 {st} vs 관측 {cd}")
+    if lost:
+        problems.append("DOM write 유실(떨어져 나간 노드에 쓰기)")
+
+    # (10) 브라우저 빌드 식별자 — §11 개정 #4가 Firefox 열 전체를 무효화한
     # 원인(Playwright 번들 빌드)을 데이터만으로 다시 판별할 수 있어야 한다.
     ua = {r.get("user_agent") for r in rows if r.get("user_agent")}
     print(f"  브라우저 빌드 식별자: {'있음 — ' + next(iter(ua))[:70] if ua else '**없음** (개정 #4의 원인을 데이터로 재판별 불가)'}")

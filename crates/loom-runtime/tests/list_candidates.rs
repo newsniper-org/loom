@@ -867,3 +867,65 @@ fn repeated_reconcile_does_not_accumulate_node_slots() {
         );
     }
 }
+
+// ============================================================================
+// R2 row의 binding 자식 보존 — 2026-08-07 회귀 테스트
+// ============================================================================
+//
+// **무엇이 있었나**: R2 축의 row는
+// `<li>값<span>바인딩1</span>…<span>바인딩7</span></li>` 모양인데,
+// `BrowserDom::set_text_content`가 "첫 자식이 **단독** 텍스트 노드"가 아니면
+// `textContent =`로 떨어져 **span 7개를 통째로 파괴**했다. 실브라우저 프로브로
+// 재현했고(값 변경 1회 뒤 `<li>zz-0</li>`), v18 실측에서도 방출 setText 7,992
+// 대 관측 characterData 999(정확히 1/8)로 나타나 있었다 — 나머지 7/8이 떨어져
+// 나간 핸들에 쓰이고 있었다.
+//
+// C의 R2 셀은 §9 C 기각 앞 분기가 읽는 셀이라, 이 결함은 판정 데이터를 직접
+// 오염시켰다(파괴된 뒤의 쓰기는 살아 있는 노드에 쓰는 것보다 싸다).
+//
+// 이 테스트는 **DOM op 계약**을 고정한다: 값이 바뀌어도 row의 binding 자식이
+// 살아 있어야 한다. MockDom은 원래 자식을 건드리지 않으므로 이 테스트가
+// 잡는 것은 `list.rs` 방출 쪽 회귀다(브라우저 백엔드 쪽은 web.rs의 주석과
+// 계약 동형성으로 묶여 있다).
+#[test]
+fn r2_row_bindings_survive_value_change() {
+    let (mut dom, root) = MockDom::new_root();
+    let mut app = LoomApp::new();
+    app.set_row_bindings(8);
+    app.add_systems(list_reconcile_c_system::<String>);
+    let entity = app
+        .world
+        .spawn((
+            Signal(vec!["a".to_string(), "b".to_string()]),
+            ListRows::default(),
+            DomTarget(root),
+        ))
+        .id();
+    app.tick(&mut dom);
+
+    let rows_after_spawn: Vec<usize> = dom.children[&root.0]
+        .iter()
+        .map(|r| dom.children[r].len())
+        .collect();
+    assert_eq!(
+        rows_after_spawn,
+        vec![7, 7],
+        "spawn 후 row마다 binding span 7개(= row_bindings 8 − row 자신의 텍스트)"
+    );
+
+    // 값 변경 — C의 SetText + SetRowBindingTexts 경로.
+    app.world.get_mut::<Signal<Vec<String>>>(entity).unwrap().0 =
+        vec!["zz".to_string(), "yy".to_string()];
+    app.tick(&mut dom);
+
+    let rows_after_patch: Vec<usize> = dom.children[&root.0]
+        .iter()
+        .map(|r| dom.children[r].len())
+        .collect();
+    assert_eq!(
+        rows_after_patch, rows_after_spawn,
+        "값이 바뀌어도 binding 자식은 살아 있어야 한다 — 파괴되면 뒤이은 \
+         SetRowBindingTexts가 떨어져 나간 노드에 쓰게 되고, R2 축이 재려던 \
+         'O(n×binding) retained-slot value-patch'가 측정에서 사라진다"
+    );
+}
