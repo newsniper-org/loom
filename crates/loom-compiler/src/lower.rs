@@ -33,8 +33,8 @@
 //! — this is a real, narrow compiler front end, not a fuzzy best-effort one.
 
 use crate::ir::{
-    ClickAction, Component, ComponentGraph, IslandActivation, JsxNode, PropLiteral, SharedBinding, SignalDecl,
-    SignalInit,
+    ClickAction, Component, ComponentGraph, IslandActivation, JsxNode, PropLiteral, RowPredicate,
+    RowSlice, SharedBinding, SignalDecl, SignalInit,
 };
 use std::collections::HashSet;
 use swc_ecma_ast::*;
@@ -753,6 +753,23 @@ fn lower_expr_container(
             right,
             ..
         }) => {
+            // `{open() && item.length > 2 && <X/>}` — SWC는 `&&`를 좌결합으로
+            // 파싱하므로 `left`가 다시 `&&`이면 그 오른쪽이 **row 술어**다.
+            // row 템플릿 밖에서는 애초에 row 변수가 없으므로 자연히 거부된다.
+            let (left, row_predicate) = match unwrap_paren(left) {
+                Expr::Bin(BinExpr {
+                    op: BinaryOp::LogicalAnd,
+                    left: inner_left,
+                    right: inner_right,
+                    ..
+                }) => {
+                    let row_var = row_var.unwrap_or_else(|| {
+                        panic!("loomc: `a() && b && <X/>` 형태의 가운데 항은 row 템플릿 안에서만 쓸 수 있다 — 바깥에서는 조건 signal 하나만 받는다")
+                    });
+                    (inner_left.as_ref(), Some(parse_row_predicate(inner_right, row_var)))
+                }
+                other => (other, None),
+            };
             let Expr::Call(CallExpr {
                 callee: Callee::Expr(callee),
                 args,
@@ -805,6 +822,7 @@ fn lower_expr_container(
             }
             JsxNode::CondBinding {
                 cond: cond_name,
+                row_predicate,
                 then_branch: Box::new(then_branch),
             }
         }
@@ -841,11 +859,28 @@ fn lower_expr_container(
             if method != "map" {
                 panic!("loomc: only `.map(...)` is supported on a list signal read, got `.{method}(...)`");
             }
+            // `xs().slice(0, item.length).map(...)` — row 변수로 좁힌 리스트
+            // (2026-08-07). `.slice`가 끼어 있으면 한 겹 벗기고 그 사실을 기록한다.
+            let (obj, row_slice) = match obj.as_ref() {
+                Expr::Call(CallExpr { callee: Callee::Expr(c), args: slice_args, .. })
+                    if matches!(c.as_ref(), Expr::Member(MemberExpr { prop: MemberProp::Ident(IdentName { sym, .. }), .. }) if sym == "slice") =>
+                {
+                    let Expr::Member(MemberExpr { obj: slice_obj, .. }) = c.as_ref() else {
+                        unreachable!()
+                    };
+                    let row_var = row_var.unwrap_or_else(|| {
+                        panic!("loomc: `.slice(...)`는 row 템플릿 안에서만 쓸 수 있다 — row 변수로 좁히는 것이 유일한 용도다")
+                    });
+                    parse_row_slice(slice_args, row_var);
+                    (slice_obj.as_ref(), Some(RowSlice::PrefixByItemLen))
+                }
+                other => (other, None),
+            };
             let Expr::Call(CallExpr {
                 callee: Callee::Expr(inner_callee),
                 args: inner_args,
                 ..
-            }) = obj.as_ref()
+            }) = obj
             else {
                 panic!("loomc: `.map(...)` must be called directly on `signalName()`");
             };
@@ -892,8 +927,59 @@ fn lower_expr_container(
                 signal: signal_name,
                 row_var: row_var_name,
                 row: Box::new(row),
+                row_slice,
             }
         }
         other => panic!("loomc: unsupported JSX expression: {other:?}"),
     }
+}
+
+/// `item.length > n` 한 형태만 받는다. 표현식 언어를 여는 것이 목적이 아니라,
+/// **row마다 구조가 달라지는 픽스처**를 컴파일러가 낼 수 있게 하는 것이 목적이다
+/// (RQ1 §5 트랙 N — 구간 크기가 row마다 같으면 못 잡는 결함이 있다).
+fn parse_row_predicate(expr: &Expr, row_var: &str) -> RowPredicate {
+    let Expr::Bin(BinExpr { op: BinaryOp::Gt, left, right, .. }) = unwrap_paren(expr) else {
+        panic!("loomc: row 술어는 `{row_var}.length > <정수>` 형태여야 한다 — 받은 것: {expr:?}");
+    };
+    let Expr::Member(MemberExpr { obj, prop: MemberProp::Ident(IdentName { sym, .. }), .. }) =
+        unwrap_paren(left)
+    else {
+        panic!("loomc: row 술어의 왼쪽은 `{row_var}.length` 여야 한다");
+    };
+    assert!(sym == "length", "loomc: row 술어가 지원하는 속성은 `.length` 뿐이다 (`.{sym}` 받음)");
+    let Expr::Ident(Ident { sym: obj_name, .. }) = obj.as_ref() else {
+        panic!("loomc: row 술어의 왼쪽은 row 변수여야 한다");
+    };
+    assert!(
+        obj_name == row_var,
+        "loomc: row 술어는 이 row의 변수(`{row_var}`)를 써야 한다 — `{obj_name}` 받음"
+    );
+    let Expr::Lit(Lit::Num(Number { value, .. })) = unwrap_paren(right) else {
+        panic!("loomc: row 술어의 오른쪽은 정수 리터럴이어야 한다");
+    };
+    RowPredicate::LenGt(*value as usize)
+}
+
+/// `.slice(0, item.length)` 한 형태만. 인자 모양을 실제로 검사한다 —
+/// 통과시켜 놓고 다른 의미로 코드를 내면 저작 표면과 산출물이 조용히 어긋난다.
+fn parse_row_slice(args: &[ExprOrSpread], row_var: &str) {
+    let [start, end] = args else {
+        panic!("loomc: `.slice(...)`는 `slice(0, {row_var}.length)` 형태여야 한다 (인자 2개)");
+    };
+    let Expr::Lit(Lit::Num(Number { value: 0.0, .. })) = unwrap_paren(&start.expr) else {
+        panic!("loomc: `.slice(...)`의 첫 인자는 `0` 이어야 한다");
+    };
+    let Expr::Member(MemberExpr { obj, prop: MemberProp::Ident(IdentName { sym, .. }), .. }) =
+        unwrap_paren(&end.expr)
+    else {
+        panic!("loomc: `.slice(...)`의 둘째 인자는 `{row_var}.length` 여야 한다");
+    };
+    assert!(sym == "length", "loomc: `.slice(...)`의 둘째 인자는 `.length` 여야 한다");
+    let Expr::Ident(Ident { sym: obj_name, .. }) = obj.as_ref() else {
+        panic!("loomc: `.slice(...)`의 둘째 인자는 row 변수여야 한다");
+    };
+    assert!(
+        obj_name == row_var,
+        "loomc: `.slice(...)`는 이 row의 변수(`{row_var}`)를 써야 한다 — `{obj_name}` 받음"
+    );
 }

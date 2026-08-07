@@ -148,12 +148,33 @@
 //!   생성 함수와 같은 제어 흐름이고, 다른 것은 쿼리가 여러 entity를
 //!   매치한다는 점뿐이다(사이트 = 템플릿, 인스턴스 = row).
 //!
-//! **한계(숨기지 않음)**: 조건부의 술어와 안쪽 리스트의 내용이 row마다
-//! 독립적이지 않다 — row 스코프 파생 signal이 IR에 없기 때문이다. 구조는
-//! 성립하지만 구간 크기가 row마다 같으므로, "구간 크기를 엉뚱한 데서
-//! 계산하는" 결함 중 균일 구간에서 상쇄되는 부류는 이 픽스처가 못 잡는다.
-//! 그리고 row 안 조건부는 `data-loom-id`를 달 수 없어(row가 여럿이라 id가
-//! 유일하지 않다) `resume()`이 선언된 초기값으로 되살린다.
+//! #### row 스코프 파생 (2026-08-07, 3단계) — 구간을 row마다 다르게
+//! 위 구조만으로는 모든 row의 구간 크기가 같아서, "구간 크기를 엉뚱한 데서
+//! 계산하는" 결함 중 **균일 구간에서 상쇄되는 부류**를 원리적으로 못 잡았다.
+//! 그래서 row 변수에서 파생되는 두 형태를 저작 표면에 넣었다:
+//!
+//! - `{open() && item.length > n && <X/>}` — 조건부의 실효값이
+//!   `공유 signal && 그 row의 술어`가 된다. 어떤 row는 열리고 어떤 row는 닫힌다.
+//! - `{xs().slice(0, item.length).map(...)}` — 안쪽 리스트 길이가 아이템에
+//!   묶인다. 내용은 여전히 공유 signal에서 오므로 §5가 요구하는 "내부 리스트
+//!   ops의 독립성"이 유지된다(파생이 조작을 잡아먹지 않는다).
+//!
+//! **클로저가 아니다.** `ir::RowPredicate`/`ir::RowSlice`는 닫힌 열거형이고,
+//! 계산은 사이트별 생성 코드에 **인라인**된다. Component에 들어가는 것은 그
+//! 계산의 결과(`RowDerivedFlag(bool)`/`RowDerivedTake(usize)`)뿐이다 —
+//! CLAUDE.md 금지 4가 요구하는 그대로이고, docs/03의 PatchTable 패턴과 같은
+//! 결이다(런타임에 해석되는 표현식 트리도, 저장된 함수 포인터도 없다).
+//! 결과를 저장해 두는 이유는 공유 signal이 바뀔 때 row별로 다시 계산해야 하는데
+//! 그 시점에 "이 row의 아이템"을 알 방법이 없기 때문이다(row 아이템은 후보에
+//! 따라 `RowKey`/`OrderedKey`/없음으로 제각각이다).
+//!
+//! 파생은 **spawn 시점에 한 번** 계산된다. K는 매번 전면 재생성이고 D/E는
+//! retained row의 아이템이 바뀌지 않으므로 이것으로 충분하다. 아이템이 제자리에서
+//! 바뀌는 후보(C)를 이 경로로 돌리려면 재계산 지점이 필요하다 — 지금은 컴파일러가
+//! C를 등록하지 않으므로 해당 없음.
+//!
+//! **남은 한계(숨기지 않음)**: row 안 조건부는 `data-loom-id`를 달 수 없어
+//! (row가 여럿이라 id가 유일하지 않다) `resume()`이 선언된 초기값으로 되살린다.
 //!
 //! ## `<input>` two-way binding (2026-07-24)
 //! `<input value={s()} onInput={(e) => s.set(e.target.value)}/>`
@@ -175,6 +196,7 @@
 //! comment).
 
 use crate::ir::{
+    RowPredicate, RowSlice,
     ClickAction, Component, ComponentGraph, IslandActivation, JsxNode, SharedBinding, SignalDecl, SignalInit,
 };
 use std::collections::{HashMap, HashSet};
@@ -495,12 +517,14 @@ fn flatten_node(
                 .map(|c| flatten_node(c, graph, signals, shared_bindings))
                 .collect(),
         },
-        JsxNode::ListBinding { signal, row_var, row } => JsxNode::ListBinding {
+        JsxNode::ListBinding { signal, row_var, row, row_slice } => JsxNode::ListBinding {
+            row_slice: *row_slice,
             signal: signal.clone(),
             row_var: row_var.clone(),
             row: Box::new(flatten_node(row, graph, signals, shared_bindings)),
         },
-        JsxNode::CondBinding { cond, then_branch } => JsxNode::CondBinding {
+        JsxNode::CondBinding { cond, row_predicate, then_branch } => JsxNode::CondBinding {
+            row_predicate: *row_predicate,
             cond: cond.clone(),
             then_branch: Box::new(flatten_node(then_branch, graph, signals, shared_bindings)),
         },
@@ -2077,13 +2101,17 @@ fn has_rich_row_template(node: &JsxNode) -> bool {
 struct RowMirrors {
     cond: Option<String>,
     list: Option<String>,
+    /// `{open() && item.length > n && ...}` 의 가운데 항.
+    predicate: Option<RowPredicate>,
+    /// `{xs().slice(0, item.length).map(...)}`.
+    slice: Option<RowSlice>,
 }
 
 /// 한 리스트 사이트의 row 템플릿을 훑어, 어떤 mirror가 필요한지 모은다.
 /// v1 범위(넘으면 명시적으로 거부): 첫 자식은 `{item}`, 그 뒤로 정적 마크업과
 /// **조건부 하나**, 조건부 안에는 정적 마크업과 **리스트 하나**.
 fn collect_row_mirrors(children: &[JsxNode], signal: &str) -> RowMirrors {
-    let mut m = RowMirrors { cond: None, list: None };
+    let mut m = RowMirrors { cond: None, list: None, predicate: None, slice: None };
     let [JsxNode::RowItemText, rest @ ..] = children else {
         panic!(
             "loomc: `{signal}`의 row 템플릿은 `{{item}}`으로 시작해야 한다 — row 루트 엘리먼트가 아이템 값을 담는 텍스트 노드를 갖는다는 것이 후보 C의 값 교체 경로(`SetText`)가 기대하는 모양이다. 받은 것: {children:?}"
@@ -2092,7 +2120,8 @@ fn collect_row_mirrors(children: &[JsxNode], signal: &str) -> RowMirrors {
     for child in rest {
         match child {
             JsxNode::StaticText(_) => {}
-            JsxNode::CondBinding { cond, then_branch } => {
+            JsxNode::CondBinding { cond, row_predicate, then_branch } => {
+                m.predicate = *row_predicate;
                 if m.cond.is_some() {
                     panic!("loomc: row 템플릿 안의 조건부는 아직 하나만 지원한다 (`{signal}`)");
                 }
@@ -2125,7 +2154,8 @@ fn collect_row_mirror_node(node: &JsxNode, signal: &str, m: &mut RowMirrors) {
     }
     match node {
         JsxNode::StaticText(_) => {}
-        JsxNode::ListBinding { signal: list, row, .. } => {
+        JsxNode::ListBinding { signal: list, row, row_slice, .. } => {
+            m.slice = *row_slice;
             let JsxNode::Element { children, .. } = row.as_ref() else {
                 panic!("loomc: list row template must be a single element");
             };
@@ -2189,7 +2219,14 @@ impl RowSiteNames {
 /// `emit_lazy_subtree`(조건부용)와 나뉘어 있는 이유: 여기서 만드는 entity는
 /// **row 인스턴스마다 새로** 생기므로 `CondNested`의 고정 인덱스가 아니라
 /// `out.commands.spawn`으로 만든다.
-fn emit_row_child(out: &mut String, node: &JsxNode, names: &RowSiteNames, indent: &str) {
+fn emit_row_child(
+    out: &mut String,
+    node: &JsxNode,
+    names: &RowSiteNames,
+    predicate: Option<RowPredicate>,
+    slice: Option<RowSlice>,
+    indent: &str,
+) {
     if let Some(html) = try_render_fully_static(node) {
         writeln!(
             out,
@@ -2215,12 +2252,31 @@ fn emit_row_child(out: &mut String, node: &JsxNode, names: &RowSiteNames, indent
                 None => "None".to_string(),
             };
             let n = children.len();
+            // row 스코프 파생 (2026-08-07). 계산은 **여기서 인라인**되고,
+            // Component에는 결과만 POD로 들어간다. `text`가 이 row의 아이템이다.
+            let (flag_expr, cond_value) = match predicate {
+                Some(RowPredicate::LenGt(k)) => (
+                    format!("text.chars().count() > {k}usize"),
+                    "site.cond && derived_flag".to_string(),
+                ),
+                None => ("true".to_string(), "site.cond".to_string()),
+            };
+            let items_expr = match slice {
+                Some(RowSlice::PrefixByItemLen) => {
+                    "site.list.iter().take(derived_take).cloned().collect::<Vec<String>>()"
+                }
+                None => "site.list.clone()",
+            };
+            writeln!(out, "{indent}let derived_flag = {flag_expr};").unwrap();
+            writeln!(out, "{indent}let derived_take = text.chars().count();").unwrap();
+            writeln!(out, "{indent}let inner_items: Vec<String> = {items_expr};").unwrap();
             // 이 row의 중첩 리스트 entity와 조건부 entity. 값은 사이트 Resource
             // 에서 온다 — **spawn 시점의 현재 값**이어야 한다(열린 채로 생긴
             // row가 한 틱 늦게 그려지는 것을 막는다).
             writeln!(out, "{indent}let inner = out.commands.spawn((").unwrap();
-            writeln!(out, "{indent}    ::loom_runtime::Signal(site.list.clone()),").unwrap();
+            writeln!(out, "{indent}    ::loom_runtime::Signal(inner_items.clone()),").unwrap();
             writeln!(out, "{indent}    ::loom_runtime::ListRows::default(),").unwrap();
+            writeln!(out, "{indent}    ::loom_runtime::RowDerivedTake(derived_take),").unwrap();
             writeln!(out, "{indent}    {},", names.inner_marker).unwrap();
             writeln!(out, "{indent})).id();").unwrap();
             // 이미 열려 있는 상태로 생긴 row는 `CondBlock.children`을 채운 채로
@@ -2228,16 +2284,17 @@ fn emit_row_child(out: &mut String, node: &JsxNode, names: &RowSiteNames, indent
             // 다음 토글부터 `SetVisible`만 낸다.
             writeln!(
                 out,
-                "{indent}let cond_children: Vec<::bevy_ecs::entity::Entity> = if site.cond {{ (0..{n}usize).map(|_| out.commands.spawn(()).id()).collect() }} else {{ Vec::new() }};"
+                "{indent}let cond_open = {cond_value};\n{indent}let cond_children: Vec<::bevy_ecs::entity::Entity> = if cond_open {{ (0..{n}usize).map(|_| out.commands.spawn(()).id()).collect() }} else {{ Vec::new() }};"
             )
             .unwrap();
             writeln!(out, "{indent}let cond = out.commands.spawn((").unwrap();
-            writeln!(out, "{indent}    ::loom_runtime::Signal(site.cond),").unwrap();
+            writeln!(out, "{indent}    ::loom_runtime::Signal(cond_open),").unwrap();
             writeln!(
                 out,
                 "{indent}    ::loom_runtime::CondBlock {{ size: {n}usize, children: cond_children }},"
             )
             .unwrap();
+            writeln!(out, "{indent}    ::loom_runtime::RowDerivedFlag(derived_flag),").unwrap();
             writeln!(out, "{indent}    {},", names.cond_marker).unwrap();
             writeln!(out, "{indent}    ::loom_runtime::CondNested(vec![inner]),").unwrap();
             writeln!(out, "{indent})).id();").unwrap();
@@ -2250,14 +2307,14 @@ fn emit_row_child(out: &mut String, node: &JsxNode, names: &RowSiteNames, indent
             // 요구하는데 그 `DomTarget`은 지금 이 배치가 적용될 때 붙으므로,
             // 그 전에 지나간 `Changed` 틱을 관측할 수 없다(조건부 지연 경로와
             // 같은 근거).
-            writeln!(out, "{indent}if site.cond {{").unwrap();
+            writeln!(out, "{indent}if cond_open {{").unwrap();
             let inner_indent = format!("{indent}    ");
             for child in children {
                 emit_cond_child(
                     out,
                     child,
                     "::loom_runtime::WriteParent::Entity(cond)",
-                    "site.list",
+                    "inner_items",
                     &inner_indent,
                 );
             }
@@ -2372,7 +2429,7 @@ fn emit_row_site_systems(out: &mut String, names: &RowSiteNames, mirrors: &RowMi
     if mirrors.cond.is_some() {
         writeln!(
             out,
-            "    mut conds: ::bevy_ecs::prelude::Query<&mut ::loom_runtime::Signal<bool>, ::bevy_ecs::prelude::With<{}>>,",
+            "    mut conds: ::bevy_ecs::prelude::Query<(&mut ::loom_runtime::Signal<bool>, &::loom_runtime::RowDerivedFlag), ::bevy_ecs::prelude::With<{}>>,",
             names.cond_marker
         )
         .unwrap();
@@ -2380,19 +2437,35 @@ fn emit_row_site_systems(out: &mut String, names: &RowSiteNames, mirrors: &RowMi
     if mirrors.list.is_some() {
         writeln!(
             out,
-            "    mut lists: ::bevy_ecs::prelude::Query<&mut ::loom_runtime::Signal<Vec<String>>, ::bevy_ecs::prelude::With<{}>>,",
+            "    mut lists: ::bevy_ecs::prelude::Query<(&mut ::loom_runtime::Signal<Vec<String>>, &::loom_runtime::RowDerivedTake), ::bevy_ecs::prelude::With<{}>>,",
             names.inner_marker
         )
         .unwrap();
     }
     writeln!(out, ") {{").unwrap();
     if mirrors.cond.is_some() {
+        // 공유 조건과 **그 row의 파생 술어**를 다시 AND한다. row마다 결과가
+        // 달라지는 것이 요점이다(균일하면 §5 불변식 2의 일부 결함을 못 잡는다).
         // `s.0 != ...` 는 `Deref` 경유 읽기라 변경 표시를 세우지 않는다 —
         // 값이 실제로 달라졌을 때만 `DerefMut`이 일어나게 하는 것이 요점이다.
-        writeln!(out, "    for mut s in &mut conds {{ if s.0 != site.cond {{ s.0 = site.cond; }} }}").unwrap();
+        writeln!(
+            out,
+            "    for (mut s, f) in &mut conds {{ let v = site.cond && f.0; if s.0 != v {{ s.0 = v; }} }}"
+        )
+        .unwrap();
     }
     if mirrors.list.is_some() {
-        writeln!(out, "    for mut s in &mut lists {{ if s.0 != site.list {{ s.0 = site.list.clone(); }} }}").unwrap();
+        let expr = match mirrors.slice {
+            Some(RowSlice::PrefixByItemLen) => {
+                "site.list.iter().take(t.0).cloned().collect::<Vec<String>>()"
+            }
+            None => "site.list.clone()",
+        };
+        writeln!(
+            out,
+            "    for (mut s, t) in &mut lists {{ let _ = t; let v: Vec<String> = {expr}; if s.0 != v {{ s.0 = v; }} }}"
+        )
+        .unwrap();
     }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -2606,7 +2679,7 @@ fn lower_node(
             .unwrap();
             let [_, rest @ ..] = children.as_slice() else { unreachable!() };
             for child in rest {
-                emit_row_child(&mut emit_body, child, &names, "        ");
+                emit_row_child(&mut emit_body, child, &names, mirrors.predicate, mirrors.slice, "        ");
             }
 
             writeln!(decls, "struct {};", names.spawner).unwrap();
@@ -2718,7 +2791,7 @@ fn lower_node(
         // `StaticText` children inlined as `DomWrite::AppendStaticText`
         // calls, instead of parameterizing `cond_reconcile_f_system` itself
         // — keeps that already-tested/benchmarked System untouched.
-        JsxNode::CondBinding { cond, then_branch } => {
+        JsxNode::CondBinding { cond, then_branch, .. } => {
             let JsxNode::Element {
                 tag,
                 class,

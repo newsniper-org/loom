@@ -8,6 +8,7 @@ fn main() {
     for (tsx, out) in [
         ("nested-conditional.tsx", "generated.rs"),
         ("nested-list.tsx", "generated_list.rs"),
+        ("nested-list-derived.tsx", "generated_derived.rs"),
     ] {
         let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../demo").join(tsx);
         println!("cargo:rerun-if-changed={}", source_path.display());

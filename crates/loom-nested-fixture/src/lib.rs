@@ -15,9 +15,17 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 }
 
-/// `demo/nested-list.tsx` — RQ1 §5 트랙 N의 3중 중첩(리스트 > 조건부 > 리스트).
+/// `demo/nested-list.tsx` — RQ1 §5 트랙 N의 3중 중첩(리스트 > 조건부 > 리스트),
+/// 모든 row가 같은 구조를 갖는 균일 판본.
 pub mod generated_list {
     include!(concat!(env!("OUT_DIR"), "/generated_list.rs"));
+}
+
+/// `demo/nested-list-derived.tsx` — 같은 3중 중첩이되 **row마다 구간 크기가
+/// 다른** 판본. 균일 판본이 원리적으로 못 잡는 결함(구간 크기를 엉뚱한 데서
+/// 계산하는데 균일해서 상쇄되는 부류)을 겨냥한다.
+pub mod generated_derived {
+    include!(concat!(env!("OUT_DIR"), "/generated_derived.rs"));
 }
 
 use loom_runtime::{DomOps, FragmentHandle, NodeHandle};

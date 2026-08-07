@@ -414,6 +414,21 @@ pub enum DomWrite {
     SetInputValue { node: NodeHandle, value: String },
 }
 
+/// row 스코프 파생값의 **결과**들 (2026-08-07). 파생 *계산*은 컴파일러가
+/// 사이트별 생성 코드에 인라인하므로 런타임에는 남지 않고, Component에는 그
+/// 결과만 POD로 들어간다 — CLAUDE.md 금지 4가 요구하는 그대로다(클로저도,
+/// 런타임에 해석되는 표현식 트리도 없다).
+///
+/// 왜 저장해야 하는가: 공유 signal이 바뀌면 row별 mirror를 다시 계산해야 하는데,
+/// 그때 "이 row의 아이템이 무엇이었나"를 다시 알아낼 방법이 없다(row 아이템은
+/// 후보에 따라 `RowKey`/`OrderedKey`/없음으로 제각각이다). 그래서 아이템에서
+/// 파생된 **부분**을 spawn 시점에 한 번 계산해 여기 남긴다.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct RowDerivedFlag(pub bool);
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct RowDerivedTake(pub usize);
+
 /// `DomWrite`가 부모를 지목하는 두 가지 방식. **이미 해석된 핸들**(`setup()`이
 /// 직접 만든 노드)과 **아직 만들어지지 않았을 수 있는 entity**(같은 배치의 앞선
 /// write가 만들 노드)를 한 타입으로 합친다. 후자는 `SpawnRow`의 `before` 앵커가

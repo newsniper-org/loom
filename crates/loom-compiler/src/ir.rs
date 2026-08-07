@@ -64,6 +64,11 @@ pub enum JsxNode {
         signal: String,
         row_var: String,
         row: Box<JsxNode>,
+        /// `{xs().slice(0, item.length).map(...)}` — **row 변수로 좁힌** 리스트
+        /// (2026-08-07). row 템플릿 안에서만 의미가 있고, 그때 각 row의 안쪽
+        /// 리스트 길이가 자기 아이템에 따라 달라진다. `None`이면 종래대로
+        /// 전체 리스트.
+        row_slice: Option<RowSlice>,
     },
     /// `{cond() && <tag>...</tag>}` — compiles to RQ1 Track T candidate F
     /// (`cond_reconcile_f_system`, already implemented/tested/benchmarked —
@@ -79,6 +84,11 @@ pub enum JsxNode {
     /// 그것이 RQ1 §5 트랙 N에 남은 마지막 조각이다.
     CondBinding {
         cond: String,
+        /// `{open() && item.length > 2 && <X/>}`의 가운데 항 (2026-08-07).
+        /// row 템플릿 안에서만 의미가 있고, 있으면 이 조건부의 실효값은
+        /// `cond signal && 이 술어(그 row의 아이템)`가 된다 — 즉 **어떤 row는
+        /// 열리고 어떤 row는 닫힌다**. `None`이면 종래대로 signal만.
+        row_predicate: Option<RowPredicate>,
         then_branch: Box<JsxNode>,
     },
     /// `<input value={s()} onInput={(e) => s.set(e.target.value)}/>` — a
@@ -130,6 +140,28 @@ pub enum JsxNode {
     /// component that needs to *write* the same key declares its own
     /// `sharedSignal(...)` (`SharedBinding`, below) instead.
     SharedValueBinding { key: String, initial: i32 },
+}
+
+/// row 변수에서 파생되는 **술어**. 클로저가 아니라 닫힌 열거형인 것이 요점이다
+/// (CLAUDE.md 금지 4): 생성 코드가 이 variant를 보고 계산을 **인라인**하고,
+/// Component에는 그 계산의 *결과*(`RowDerivedFlag(bool)`)만 POD로 들어간다.
+/// 런타임에 해석되는 표현식 트리도, 저장된 함수 포인터도 없다.
+///
+/// 지금은 한 가지뿐이다. 여기 무엇을 더할지는 "JSX에서 자연스럽게 쓰이면서
+/// 컴파일러가 확실히 알아볼 수 있는 닫힌 형태인가"로만 판단할 것 — 표현식
+/// 언어를 여는 것은 이 패키지의 리서치 가치가 아니다(CLAUDE.md의 파서 관련
+/// 판단과 같은 결).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowPredicate {
+    /// `item.length > n`
+    LenGt(usize),
+}
+
+/// row 변수로 좁힌 리스트. 위 `RowPredicate`와 같은 규율.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowSlice {
+    /// `xs().slice(0, item.length)` — 아이템 길이만큼 앞에서 자른다.
+    PrefixByItemLen,
 }
 
 /// `const cartCount = sharedSignal("cartCount", 0)` — RQ4's cross-island
