@@ -409,9 +409,9 @@ pub struct RowKey(pub String);
 /// `Reposition`, and only new/removed keys get `SpawnRow`/`RemoveNode` —
 /// this is the entire "row identity survives reordering" property K can't
 /// offer.
-fn d_body<T, R: crate::RowSpawner>(
+fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
-    mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
+    mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), F>,
     keys: Query<&RowKey>,
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
@@ -488,9 +488,9 @@ fn d_body<T, R: crate::RowSpawner>(
 /// RQ1's "이동 최소화: LIS" variant, kept as a separate candidate from
 /// plain D (not a replacement) so the two can be measured against each
 /// other directly (research-questions/RQ1-dynamic-control-flow-scheduling.md).
-fn d_lis_body<T, R: crate::RowSpawner>(
+fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
-    mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
+    mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), F>,
     keys: Query<&RowKey>,
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
@@ -589,9 +589,9 @@ pub struct OrderKeyMembers(pub Vec<Entity>);
 /// controller-side `Vec` — architecturally closer to "archetype table
 /// partial memcpy" (RQ1's description) since there's no separate ordered
 /// index structure to keep in sync.
-fn e_body<T, R: crate::RowSpawner>(
+fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
-    mut lists: Query<(&Signal<Vec<T>>, &mut OrderKeyMembers, &DomTarget), Changed<Signal<Vec<T>>>>,
+    mut lists: Query<(&Signal<Vec<T>>, &mut OrderKeyMembers, &DomTarget), F>,
     // Single query for both reading (`OrderedKey`, current `OrderKey`) and
     // later writing `OrderKey` — two separate Queries (one read, one write)
     // over the same component conflict under Bevy's system-param checker
@@ -686,9 +686,9 @@ fn e_body<T, R: crate::RowSpawner>(
 /// `place_in_order_lis` — see `list_reconcile_d_lis_system`'s doc comment
 /// for why this is a separate, directly-comparable candidate rather than a
 /// replacement.
-fn e_lis_body<T, R: crate::RowSpawner>(
+fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
-    mut lists: Query<(&Signal<Vec<T>>, &mut OrderKeyMembers, &DomTarget), Changed<Signal<Vec<T>>>>,
+    mut lists: Query<(&Signal<Vec<T>>, &mut OrderKeyMembers, &DomTarget), F>,
     mut keyed: Query<(&OrderedKey, &mut OrderKey)>,
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
@@ -880,7 +880,7 @@ macro_rules! keyed_candidate_systems {
         ) where
             T: Send + Sync + Clone + ToString + 'static,
         {
-            $body::<T, crate::DefaultRow>(
+            $body::<T, crate::DefaultRow, _>(
                 &crate::NoRowCtx,
                 lists,
                 keys,
@@ -893,7 +893,10 @@ macro_rules! keyed_candidate_systems {
         }
 
         pub fn $with<T, R: crate::RowSpawner>(
-            lists: Query<(&Signal<Vec<T>>, &mut $rows, &DomTarget), Changed<Signal<Vec<T>>>>,
+            lists: Query<
+                (&Signal<Vec<T>>, &mut $rows, &DomTarget),
+                (Changed<Signal<Vec<T>>>, With<R::Marker>),
+            >,
             keys: $keys,
             dom_targets: Query<&DomTarget>,
             commands: Commands,
@@ -904,7 +907,7 @@ macro_rules! keyed_candidate_systems {
         ) where
             T: Send + Sync + Clone + ToString + 'static,
         {
-            $body::<T, R>(
+            $body::<T, R, _>(
                 &site,
                 lists,
                 keys,

@@ -15,7 +15,7 @@ use loom_runtime::{
     list_reconcile_d_system_with, list_reconcile_e_lis_system, list_reconcile_e_lis_system_with,
     list_reconcile_e_system, list_reconcile_e_system_with, list_reconcile_k_system,
     list_reconcile_k_system_with, DefaultRow, DomTarget, DomWrite, ListRows, LoomApp, NodeHandle,
-    OrderKeyMembers, PendingDomWrites, RowBindings, Signal,
+    AnyRow, OrderKeyMembers, PendingDomWrites, RowBindings, Signal,
 };
 
 /// write 하나를 비교 가능한 문자열로. `Entity`는 두 실행에서 같은 순서로
@@ -44,7 +44,7 @@ fn render(w: &DomWrite) -> String {
 /// 리스트 하나에 시퀀스를 먹이고, **매 tick 방출된 write 열**을 모아 돌려준다.
 /// `app.tick()`을 부르지 않고 스케줄만 돌린 뒤 큐를 직접 비운다 — DOM 백엔드를
 /// 끼우면 적용 과정에서 정보가 사라지기 때문(순서·앵커까지 그대로 봐야 한다).
-fn record<F>(row_bindings: usize, register: F, keyed: Keyed) -> Vec<String>
+fn record<F>(row_bindings: usize, register: F, keyed: Keyed, marker: bool) -> Vec<String>
 where
     F: FnOnce(&mut LoomApp),
 {
@@ -61,6 +61,11 @@ where
             .spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(anchor)))
             .id(),
     };
+    // `_with` 쪽은 `With<R::Marker>`로 걸러지므로 마커를 붙여 준다 — 접미사
+    // 없는 쪽은 필터가 없으므로 붙이지 않는다(하네스가 spawn하는 모양 그대로).
+    if marker {
+        app.world.entity_mut(entity).insert(AnyRow);
+    }
 
     let mut log = Vec::new();
     let mut drain = |app: &mut LoomApp, log: &mut Vec<String>| {
@@ -125,8 +130,8 @@ macro_rules! equivalence {
     ($name:ident, $plain:ident, $with:ident, $keyed:expr, $bindings:expr) => {
         #[test]
         fn $name() {
-            let plain = record($bindings, |app| { app.add_systems($plain::<String>); }, $keyed);
-            let with = record($bindings, |app| { app.add_systems($with::<String, DefaultRow>); }, $keyed);
+            let plain = record($bindings, |app| { app.add_systems($plain::<String>); }, $keyed, false);
+            let with = record($bindings, |app| { app.add_systems($with::<String, DefaultRow>); }, $keyed, true);
             assert_eq!(
                 plain.join("\n"),
                 with.join("\n"),

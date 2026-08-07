@@ -15,6 +15,11 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 }
 
+/// `demo/nested-list.tsx` — RQ1 §5 트랙 N의 3중 중첩(리스트 > 조건부 > 리스트).
+pub mod generated_list {
+    include!(concat!(env!("OUT_DIR"), "/generated_list.rs"));
+}
+
 use loom_runtime::{DomOps, FragmentHandle, NodeHandle};
 
 #[derive(Debug, Clone)]

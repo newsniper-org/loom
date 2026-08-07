@@ -538,6 +538,18 @@ pub trait RowSpawner: Send + Sync + 'static {
     /// — CLAUDE.md 금지 4 — 을 유지하면서 값을 전달하는 방법).
     type Ctx: Resource + Default;
 
+    /// 이 사이트의 **리스트 entity**에 붙는 표시. 한 컴포넌트에 리스트 사이트가
+    /// 여럿이면 각자 자기 것만 재조정해야 하는데, 리스트 entity의 컴포넌트
+    /// 구성(`Signal<Vec<T>>` + `ListRows` + `DomTarget`)만으로는 구분이 안 된다
+    /// — 조건부의 `CondSiteN`이 필요했던 것과 같은 이유, 같은 해법이다.
+    ///
+    /// **접미사 없는 시스템은 이 필터를 쓰지 않는다.** 그래서 트랙 L 하네스처럼
+    /// 마커 없이 spawn하는 쪽은 아무 영향도 받지 않는다. 컴파일러는 한
+    /// 컴포넌트에 복잡한 row 템플릿이 하나라도 있으면 **그 컴포넌트의 리스트
+    /// 사이트 전부**를 마커 + `_with`로 내보내므로, 마커 없는 시스템과 섞여
+    /// 한 리스트가 두 번 재조정되는 일이 생기지 않는다.
+    type Marker: Component;
+
     /// row 서브트리를 만드는 write들을 방출한다. `row`는 알고리즘이 이미 만들어
     /// 둔 entity(키/OrderKey를 이미 달고 있다)이고, 드라이버가 여기에
     /// `DomTarget`을 붙인다. `text`는 이 row의 아이템 값.
@@ -560,8 +572,14 @@ pub struct NoRowCtx;
 /// 그래야 트랙 L의 기존 측정이 §2.5의 재측정 대상이 되지 않는다.
 pub struct DefaultRow;
 
+/// `DefaultRow`용 마커. 접미사 없는 시스템은 마커를 보지 않으므로 실제로는
+/// `_with::<_, DefaultRow>`를 직접 쓰는 테스트에서만 등장한다.
+#[derive(Component, Default)]
+pub struct AnyRow;
+
 impl RowSpawner for DefaultRow {
     type Ctx = NoRowCtx;
+    type Marker = AnyRow;
 
     fn emit(
         _site: &NoRowCtx,
@@ -647,7 +665,7 @@ pub fn list_reconcile_k_system<T>(
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
-    k_body::<T, DefaultRow>(&NoRowCtx, q, commands, pending, row_bindings);
+    k_body::<T, DefaultRow, _>(&NoRowCtx, q, commands, pending, row_bindings);
 }
 
 /// K를 **사이트별 row 모양**으로 monomorphize한 판본 (2026-08-07 신설).
@@ -656,7 +674,7 @@ pub fn list_reconcile_k_system<T>(
 /// 않는다. loom-compiler가 `<tag>{item}</tag>`보다 복잡한 row 템플릿을
 /// 만났을 때 이쪽을 등록한다.
 pub fn list_reconcile_k_system_with<T, R: RowSpawner>(
-    q: Query<(&Signal<Vec<T>>, &mut ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
+    q: Query<(&Signal<Vec<T>>, &mut ListRows, &DomTarget), (Changed<Signal<Vec<T>>>, With<R::Marker>)>,
     commands: Commands,
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<RowBindings>,
@@ -664,12 +682,12 @@ pub fn list_reconcile_k_system_with<T, R: RowSpawner>(
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
-    k_body::<T, R>(&site, q, commands, pending, row_bindings);
+    k_body::<T, R, _>(&site, q, commands, pending, row_bindings);
 }
 
-fn k_body<T, R: RowSpawner>(
+fn k_body<T, R: RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
-    mut q: Query<(&Signal<Vec<T>>, &mut ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
+    mut q: Query<(&Signal<Vec<T>>, &mut ListRows, &DomTarget), F>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<RowBindings>,

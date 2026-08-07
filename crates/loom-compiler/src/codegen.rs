@@ -118,9 +118,42 @@
 //!
 //! 아직 못 받는 것(숨기지 않고 적어 둠): 조건부 안의 또 다른 조건부,
 //! `<input>` 양방향 binding, 지연 노드의 자체 `onClick`, `<Component/>`
-//! 참조, `sharedValue(...)`. 그리고 **리스트 row 템플릿 안의 조건부** —
-//! 트랙 N이 요구하는 바깥쪽 중첩이며, row 템플릿을 사이트별로
-//! monomorphize하는 별도 작업이다.
+//! 참조, `sharedValue(...)`.
+//!
+//! ### row 템플릿의 사이트별 monomorphize (2026-08-07, 같은 날 2단계)
+//! row 템플릿도 `<tag>{item}</tag>` 한 형태에서 풀렸다 — 정적 마크업과
+//! **조건부 하나**(그 안에 중첩 리스트 하나)를 넣을 수 있다. 이로써 RQ1 §5
+//! 트랙 N이 요구하는 "리스트 > 조건부 > 리스트" 3중 중첩을 **컴파일러가**
+//! 낼 수 있게 됐다(§2.3-1이 손코딩을 금지하므로 이 경로만이 유효하다).
+//!
+//! 기계는 `loom_runtime::RowSpawner`다: 후보 알고리즘은 제네릭 그대로 두고
+//! **row 모양만** 컴파일타임 파라미터로 뺀다. 사이트마다
+//! `RowSite{i}Spawner`(ZST) + `RowSite{i}`(리스트 entity 마커)를 생성하고
+//! `list_reconcile_k_system_with::<String, RowSite{i}Spawner>`를 등록한다.
+//! 한 컴포넌트에 복잡한 row가 하나라도 있으면 **그 컴포넌트의 리스트 사이트
+//! 전부**를 이 경로로 낸다 — 마커 없는 제네릭 K와 섞이면 한 리스트를 두
+//! 시스템이 각각 재조정한다.
+//!
+//! row 안의 조건부/중첩 리스트는 **row 인스턴스마다 자기 entity**를 갖는다.
+//! 값은 컴포넌트 스코프 signal에서 사이트 Resource(`RowSite{i}Ctx`)를 거쳐
+//! 흘러간다:
+//!
+//! - `row_site_{i}_ctx`: 원본 signal → Resource. **리스트 System보다 먼저**
+//!   돌아야 새로 생기는 row가 현재 값으로 만들어진다(음성 대조로 확인:
+//!   이 값을 spawn 시점에 안 쓰면 열린 상태에서 추가된 row가 비어 나온다).
+//! - `row_site_{i}_sync`: Resource → 이미 존재하는 row별 mirror entity들.
+//!   값이 실제로 달라졌을 때만 `DerefMut`이 일어나게 해 불필요한 `Changed`를
+//!   세우지 않는다.
+//! - `cond_reconcile_row_site_{i}`: row별 조건부. 컴포넌트 스코프 조건부의
+//!   생성 함수와 같은 제어 흐름이고, 다른 것은 쿼리가 여러 entity를
+//!   매치한다는 점뿐이다(사이트 = 템플릿, 인스턴스 = row).
+//!
+//! **한계(숨기지 않음)**: 조건부의 술어와 안쪽 리스트의 내용이 row마다
+//! 독립적이지 않다 — row 스코프 파생 signal이 IR에 없기 때문이다. 구조는
+//! 성립하지만 구간 크기가 row마다 같으므로, "구간 크기를 엉뚱한 데서
+//! 계산하는" 결함 중 균일 구간에서 상쇄되는 부류는 이 픽스처가 못 잡는다.
+//! 그리고 row 안 조건부는 `data-loom-id`를 달 수 없어(row가 여럿이라 id가
+//! 유일하지 않다) `resume()`이 선언된 초기값으로 되살린다.
 //!
 //! ## `<input>` two-way binding (2026-07-24)
 //! `<input value={s()} onInput={(e) => s.set(e.target.value)}/>`
@@ -992,7 +1025,13 @@ fn generate_component(
                 writeln!(out, "    app.add_systems(::loom_runtime::patch_text_system::<i32>);").unwrap();
             }
             BindingShape::ListString => {
-                writeln!(out, "    app.add_systems(::loom_runtime::list_reconcile_k_system::<String>);").unwrap();
+                // 사이트별 monomorphize 경로에서는 각 사이트가 자기
+                // `_with::<_, RowSiteN*>`를 등록한다. 여기서 마커 없는
+                // 제네릭 K까지 등록하면 **한 리스트를 두 시스템이** 각각
+                // 재조정한다(`RowSpawner::Marker` 문서 참고).
+                if !has_rich_row_template(&component.root) {
+                    writeln!(out, "    app.add_systems(::loom_runtime::list_reconcile_k_system::<String>);").unwrap();
+                }
             }
             BindingShape::InputString => {
                 writeln!(out, "    app.add_systems(::loom_runtime::patch_input_system);").unwrap();
@@ -1023,6 +1062,10 @@ fn generate_component(
         signal_entities: Vec::new(),
         action_index: 0,
         cond_site_index: 0,
+        row_site_index: 0,
+        monomorphize_rows: has_rich_row_template(&component.root),
+        row_source_signals: Vec::new(),
+        row_site_registrations: Vec::new(),
         cond_site_fns: String::new(),
         cond_site_fn_names: Vec::new(),
         wrapped_in_own_module: island.is_some(),
@@ -1096,7 +1139,14 @@ fn generate_component(
 
     generate_resume_action_by_symbol(&mut out, &actions, &variant_names);
     writeln!(out).unwrap();
-    generate_resume(&mut out, component, &ctx.cond_site_fn_names, has_shared);
+    generate_resume(
+        &mut out,
+        component,
+        &ctx.cond_site_fn_names,
+        &ctx.row_source_signals,
+        &ctx.row_site_registrations,
+        has_shared,
+    );
 
     out
 }
@@ -1210,6 +1260,8 @@ fn generate_resume(
     out: &mut String,
     component: &Component,
     cond_site_fn_names: &[CondSite],
+    row_source_signals: &[(String, String)],
+    row_site_registrations: &[String],
     has_shared: bool,
 ) {
     let resume_sig = if has_shared {
@@ -1220,8 +1272,13 @@ fn generate_resume(
     writeln!(out, "{resume_sig}").unwrap();
     writeln!(out, "    app.add_systems(::loom_runtime::patch_text_system::<i32>);").unwrap();
     let has_list = component.signals.iter().any(|s| matches!(s.init, SignalInit::StringList(_)));
-    if has_list {
+    if has_list && !has_rich_row_template(&component.root) {
         writeln!(out, "    app.add_systems(::loom_runtime::list_reconcile_k_system::<String>);").unwrap();
+    }
+    // 사이트별 row 생성기의 Resource/시스템 등록 — `setup()`이 낸 것과 **같은
+    // 줄들**이어야 한다(같은 문자열을 재사용한다).
+    for reg in row_site_registrations {
+        out.push_str(reg);
     }
     let has_input = component.signals.iter().any(|s| matches!(s.init, SignalInit::Str(_)));
     if has_input {
@@ -1245,6 +1302,32 @@ fn generate_resume(
         let entity_var = format!("{}_entity", s.name);
         // `Some(cond)` = 이 signal은 `cond` 조건부의 지연 서브트리 안에 있다.
         let gate = nested_owner.get(s.name.as_str()).copied();
+        // row 템플릿이 읽는 원본 signal은 **대응하는 DOM 노드가 없다** — 값은
+        // row 인스턴스별 mirror entity에만 나타난다. 그래서 `find_node`를 부를
+        // 수 없고, 선언된 초기값으로 되살린다.
+        //
+        // **한계(숨기지 않음)**: SSR 이후 이 값이 바뀐 이력은 복원되지 않는다.
+        // 조건부의 열림/닫힘도 마찬가지다(row 안 조건부는 `data-loom-id`를 달지
+        // 않는다 — row가 여럿이라 id가 유일하지 않다). RQ3 Q2의 "SSR 스냅샷
+        // 동결" 한계와 같은 성질이고, 트랙 N(네이티브 property test)에는 영향이
+        // 없다. 실제 resume 시나리오에서 필요해지면 row별 상태를 LRef 페이로드에
+        // 싣는 별도 설계가 필요하다.
+        if let Some((_, marker)) = row_source_signals.iter().find(|(n, _)| n == &s.name) {
+            let value = match &s.init {
+                SignalInit::Bool(b) => format!("{b}"),
+                SignalInit::StringList(v) => format!(
+                    "vec![{}]",
+                    v.iter().map(|x| format!("{x:?}.to_string()")).collect::<Vec<_>>().join(", ")
+                ),
+                other => panic!("loomc internal error: row source signal has unexpected init {other:?}"),
+            };
+            writeln!(
+                out,
+                "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({value}), {marker})).id();"
+            )
+            .unwrap();
+            continue;
+        }
         match &s.init {
             SignalInit::I32(initial) => {
                 writeln!(out, "    let {entity_var} = {{").unwrap();
@@ -1564,6 +1647,16 @@ struct CodegenCtx {
     /// desync this arm's `ActionN` naming from `collect_actions`'s.
     action_index: usize,
     cond_site_index: usize,
+    /// 리스트 사이트 인덱스 — `RowSite{i}*` 이름들이 여기서 파생된다.
+    row_site_index: usize,
+    /// 이 컴포넌트에 복잡한 row 템플릿이 하나라도 있는가. 있으면 **모든**
+    /// 리스트 사이트를 마커 + `_with`로 낸다(`RowSpawner::Marker` 문서 참고).
+    monomorphize_rows: bool,
+    /// row 템플릿이 읽는 컴포넌트 스코프 signal들 — `resume()`이 이들을
+    /// DOM에서 복구하려 들면 안 된다(대응하는 노드가 없다).
+    row_source_signals: Vec<(String, String)>,
+    /// 사이트 시스템 등록 줄들 — `resume()`에도 그대로 들어가야 한다.
+    row_site_registrations: Vec<String>,
     /// Source of each `CondBinding` site's generated reconcile function,
     /// appended to `out` once at the end of `generate()` (top-level
     /// functions can't be emitted inline mid-`setup()`).
@@ -1961,6 +2054,446 @@ fn emit_lazy_subtree(
     }
 }
 
+/// row 템플릿이 `<tag>{item}</tag>` 보다 복잡한 사이트가 이 컴포넌트에 하나라도
+/// 있는가. 하나라도 있으면 **그 컴포넌트의 리스트 사이트 전부**를 마커 +
+/// `_with`로 내보낸다 — 마커 없는 제네릭 K와 섞이면 한 리스트를 두 시스템이
+/// 각각 재조정하기 때문이다(`RowSpawner::Marker` 문서 참고).
+fn has_rich_row_template(node: &JsxNode) -> bool {
+    match node {
+        JsxNode::ListBinding { row, .. } => {
+            let JsxNode::Element { children, .. } = row.as_ref() else {
+                return false;
+            };
+            !matches!(children.as_slice(), [JsxNode::RowItemText])
+        }
+        JsxNode::Element { children, .. } => children.iter().any(has_rich_row_template),
+        JsxNode::CondBinding { then_branch, .. } => has_rich_row_template(then_branch),
+        _ => false,
+    }
+}
+
+/// row 템플릿이 읽는 **컴포넌트 스코프 signal**들. row 인스턴스마다 자기
+/// entity를 갖되 값은 여기서 흘러 내려온다(사이트 Resource → sync System).
+struct RowMirrors {
+    cond: Option<String>,
+    list: Option<String>,
+}
+
+/// 한 리스트 사이트의 row 템플릿을 훑어, 어떤 mirror가 필요한지 모은다.
+/// v1 범위(넘으면 명시적으로 거부): 첫 자식은 `{item}`, 그 뒤로 정적 마크업과
+/// **조건부 하나**, 조건부 안에는 정적 마크업과 **리스트 하나**.
+fn collect_row_mirrors(children: &[JsxNode], signal: &str) -> RowMirrors {
+    let mut m = RowMirrors { cond: None, list: None };
+    let [JsxNode::RowItemText, rest @ ..] = children else {
+        panic!(
+            "loomc: `{signal}`의 row 템플릿은 `{{item}}`으로 시작해야 한다 — row 루트 엘리먼트가 아이템 값을 담는 텍스트 노드를 갖는다는 것이 후보 C의 값 교체 경로(`SetText`)가 기대하는 모양이다. 받은 것: {children:?}"
+        );
+    };
+    for child in rest {
+        match child {
+            JsxNode::StaticText(_) => {}
+            JsxNode::CondBinding { cond, then_branch } => {
+                if m.cond.is_some() {
+                    panic!("loomc: row 템플릿 안의 조건부는 아직 하나만 지원한다 (`{signal}`)");
+                }
+                m.cond = Some(cond.clone());
+                let JsxNode::Element { children: inner, .. } = then_branch.as_ref() else {
+                    unreachable!()
+                };
+                if matches!(inner.as_slice(), [JsxNode::ListBinding { .. }] | [JsxNode::TextBinding { .. }])
+                {
+                    panic!(
+                        "loomc: row 안 조건부의 wrapper를 binding 노드로 바로 쓸 수는 없다 (`{signal}`) — 안쪽을 엘리먼트로 한 겹 감쌀 것(예: `{{c() && <div><ul>{{xs().map(...)}}</ul></div>}}`). 이유: row는 런타임에 생기므로 wrapper의 핸들이 방출 시점에 없고, entity로만 지목할 수 있다"
+                    );
+                }
+                for n in inner {
+                    collect_row_mirror_node(n, signal, &mut m);
+                }
+            }
+            other if try_render_fully_static(other).is_some() => {}
+            other => panic!(
+                "loomc: `{signal}`의 row 템플릿에서 아직 지원하지 않는 노드다 — 지원 범위는 `{{item}}`(첫 자식), 정적 마크업, 그리고 조건부 하나다. 받은 것: {other:?}"
+            ),
+        }
+    }
+    m
+}
+
+fn collect_row_mirror_node(node: &JsxNode, signal: &str, m: &mut RowMirrors) {
+    if try_render_fully_static(node).is_some() {
+        return;
+    }
+    match node {
+        JsxNode::StaticText(_) => {}
+        JsxNode::ListBinding { signal: list, row, .. } => {
+            let JsxNode::Element { children, .. } = row.as_ref() else {
+                panic!("loomc: list row template must be a single element");
+            };
+            if !matches!(children.as_slice(), [JsxNode::RowItemText]) {
+                panic!("loomc: row 안 중첩 리스트의 row 템플릿은 `<tag>{{item}}</tag>` 형태여야 한다 (`{signal}`)");
+            }
+            if m.list.is_some() {
+                panic!("loomc: row 안 조건부 속 리스트는 아직 하나만 지원한다 (`{signal}`)");
+            }
+            m.list = Some(list.clone());
+        }
+        JsxNode::Element { action, children, .. } => {
+            if action.is_some() {
+                panic!("loomc: row 템플릿 안의 엘리먼트는 아직 자기 `onClick`을 가질 수 없다 (`{signal}`)");
+            }
+            for c in children {
+                collect_row_mirror_node(c, signal, m);
+            }
+        }
+        other => panic!(
+            "loomc: `{signal}`의 row 안 조건부에서 아직 지원하지 않는 노드다 — 지원 범위는 정적 마크업과 중첩 리스트 하나다. 받은 것: {other:?}"
+        ),
+    }
+}
+
+/// 한 리스트 사이트가 생성하는 식별자들. 사이트 인덱스 하나에서 전부 파생되므로
+/// 생성 지점과 등록 지점이 이름을 두고 어긋날 수 없다.
+struct RowSiteNames {
+    marker: String,
+    cond_marker: String,
+    inner_marker: String,
+    cond_src: String,
+    list_src: String,
+    ctx: String,
+    spawner: String,
+    inner_spawner: String,
+    ctx_fn: String,
+    sync_fn: String,
+    cond_fn: String,
+}
+
+impl RowSiteNames {
+    fn new(i: usize) -> Self {
+        RowSiteNames {
+            marker: format!("RowSite{i}"),
+            cond_marker: format!("RowSite{i}Cond"),
+            inner_marker: format!("RowSite{i}Inner"),
+            cond_src: format!("RowSite{i}CondSrc"),
+            list_src: format!("RowSite{i}ListSrc"),
+            ctx: format!("RowSite{i}Ctx"),
+            spawner: format!("RowSite{i}Spawner"),
+            inner_spawner: format!("RowSite{i}InnerSpawner"),
+            ctx_fn: format!("row_site_{i}_ctx"),
+            sync_fn: format!("row_site_{i}_sync"),
+            cond_fn: format!("cond_reconcile_row_site_{i}"),
+        }
+    }
+}
+
+/// row 서브트리에서 `{item}` 다음에 오는 자식 하나를 방출한다.
+/// `emit_lazy_subtree`(조건부용)와 나뉘어 있는 이유: 여기서 만드는 entity는
+/// **row 인스턴스마다 새로** 생기므로 `CondNested`의 고정 인덱스가 아니라
+/// `out.commands.spawn`으로 만든다.
+fn emit_row_child(out: &mut String, node: &JsxNode, names: &RowSiteNames, indent: &str) {
+    if let Some(html) = try_render_fully_static(node) {
+        writeln!(
+            out,
+            "{indent}out.pending.push(::loom_runtime::DomWrite::AppendStaticHtml {{ parent: ::loom_runtime::WriteParent::Entity(row), html: {html:?}.to_string() }});"
+        )
+        .unwrap();
+        return;
+    }
+    match node {
+        JsxNode::StaticText(text) => {
+            writeln!(
+                out,
+                "{indent}out.pending.push(::loom_runtime::DomWrite::AppendStaticText {{ parent: ::loom_runtime::WriteParent::Entity(row), text: {text:?}.to_string() }});"
+            )
+            .unwrap();
+        }
+        JsxNode::CondBinding { then_branch, .. } => {
+            let JsxNode::Element { tag, class, children, .. } = then_branch.as_ref() else {
+                unreachable!()
+            };
+            let class_arg = match class {
+                Some(c) => format!("Some({c:?})"),
+                None => "None".to_string(),
+            };
+            let n = children.len();
+            // 이 row의 중첩 리스트 entity와 조건부 entity. 값은 사이트 Resource
+            // 에서 온다 — **spawn 시점의 현재 값**이어야 한다(열린 채로 생긴
+            // row가 한 틱 늦게 그려지는 것을 막는다).
+            writeln!(out, "{indent}let inner = out.commands.spawn((").unwrap();
+            writeln!(out, "{indent}    ::loom_runtime::Signal(site.list.clone()),").unwrap();
+            writeln!(out, "{indent}    ::loom_runtime::ListRows::default(),").unwrap();
+            writeln!(out, "{indent}    {},", names.inner_marker).unwrap();
+            writeln!(out, "{indent})).id();").unwrap();
+            // 이미 열려 있는 상태로 생긴 row는 `CondBlock.children`을 채운 채로
+            // 시작한다 — 그래야 조건부 reconcile이 "이미 한 번 채웠다"로 보고
+            // 다음 토글부터 `SetVisible`만 낸다.
+            writeln!(
+                out,
+                "{indent}let cond_children: Vec<::bevy_ecs::entity::Entity> = if site.cond {{ (0..{n}usize).map(|_| out.commands.spawn(()).id()).collect() }} else {{ Vec::new() }};"
+            )
+            .unwrap();
+            writeln!(out, "{indent}let cond = out.commands.spawn((").unwrap();
+            writeln!(out, "{indent}    ::loom_runtime::Signal(site.cond),").unwrap();
+            writeln!(
+                out,
+                "{indent}    ::loom_runtime::CondBlock {{ size: {n}usize, children: cond_children }},"
+            )
+            .unwrap();
+            writeln!(out, "{indent}    {},", names.cond_marker).unwrap();
+            writeln!(out, "{indent}    ::loom_runtime::CondNested(vec![inner]),").unwrap();
+            writeln!(out, "{indent})).id();").unwrap();
+            writeln!(
+                out,
+                "{indent}out.pending.push(::loom_runtime::DomWrite::SpawnElement {{ entity: cond, parent: ::loom_runtime::WriteParent::Entity(row), tag: {tag:?}, class: {class_arg}, loom_id: None, text: None }});"
+            )
+            .unwrap();
+            // 내용을 여기서 내는 이유: 조건부 reconcile은 `&DomTarget`을
+            // 요구하는데 그 `DomTarget`은 지금 이 배치가 적용될 때 붙으므로,
+            // 그 전에 지나간 `Changed` 틱을 관측할 수 없다(조건부 지연 경로와
+            // 같은 근거).
+            writeln!(out, "{indent}if site.cond {{").unwrap();
+            let inner_indent = format!("{indent}    ");
+            for child in children {
+                emit_cond_child(
+                    out,
+                    child,
+                    "::loom_runtime::WriteParent::Entity(cond)",
+                    "site.list",
+                    &inner_indent,
+                );
+            }
+            writeln!(out, "{indent}}}").unwrap();
+        }
+        other => panic!("loomc internal error: unexpected row child {other:?}"),
+    }
+}
+
+/// row 안 조건부의 **내용** 한 조각. `WriteParent`만 다르고 나머지는
+/// `RowSpawner::emit`과 그 조건부의 reconcile 함수에서 똑같이 쓰인다 —
+/// 두 곳이 같은 모양을 내야 "spawn 시점에 열려 있었는가"와 무관하게 결과가
+/// 같다.
+fn emit_cond_child(out: &mut String, node: &JsxNode, parent: &str, items: &str, indent: &str) {
+    if let Some(html) = try_render_fully_static(node) {
+        writeln!(
+            out,
+            "{indent}out.pending.push(::loom_runtime::DomWrite::AppendStaticHtml {{ parent: {parent}, html: {html:?}.to_string() }});"
+        )
+        .unwrap();
+        return;
+    }
+    match node {
+        JsxNode::StaticText(text) => {
+            writeln!(
+                out,
+                "{indent}out.pending.push(::loom_runtime::DomWrite::AppendStaticText {{ parent: {parent}, text: {text:?}.to_string() }});"
+            )
+            .unwrap();
+        }
+        JsxNode::Element { tag, class, children, .. } => {
+            let class_arg = match class {
+                Some(c) => format!("Some({c:?})"),
+                None => "None".to_string(),
+            };
+            match children.as_slice() {
+                [JsxNode::ListBinding { .. }] => {
+                    writeln!(
+                        out,
+                        "{indent}out.pending.push(::loom_runtime::DomWrite::SpawnElement {{ entity: inner, parent: {parent}, tag: {tag:?}, class: {class_arg}, loom_id: None, text: None }});"
+                    )
+                    .unwrap();
+                    writeln!(out, "{indent}let mut rows: Vec<::bevy_ecs::entity::Entity> = Vec::new();").unwrap();
+                    writeln!(out, "{indent}for item in {items}.iter() {{").unwrap();
+                    writeln!(out, "{indent}    let r = out.commands.spawn_empty().id();").unwrap();
+                    writeln!(out, "{indent}    rows.push(r);").unwrap();
+                    writeln!(
+                        out,
+                        "{indent}    out.pending.push(::loom_runtime::DomWrite::SpawnElement {{ entity: r, parent: ::loom_runtime::WriteParent::Entity(inner), tag: \"li\", class: None, loom_id: None, text: Some(item.clone()) }});"
+                    )
+                    .unwrap();
+                    writeln!(out, "{indent}}}").unwrap();
+                    writeln!(out, "{indent}out.commands.entity(inner).insert(::loom_runtime::ListRows(rows));").unwrap();
+                }
+                _ => {
+                    writeln!(out, "{indent}let container = out.commands.spawn_empty().id();").unwrap();
+                    writeln!(
+                        out,
+                        "{indent}out.pending.push(::loom_runtime::DomWrite::SpawnElement {{ entity: container, parent: {parent}, tag: {tag:?}, class: {class_arg}, loom_id: None, text: None }});"
+                    )
+                    .unwrap();
+                    for c in children {
+                        emit_cond_child(out, c, "::loom_runtime::WriteParent::Entity(container)", items, indent);
+                    }
+                }
+            }
+        }
+        other => panic!("loomc internal error: unexpected conditional child {other:?}"),
+    }
+}
+
+/// 사이트의 세 시스템을 낸다.
+///
+/// - `*_ctx`: 컴포넌트 스코프 원본 signal → 사이트 Resource. **리스트 System보다
+///   먼저** 돌아야 새로 생기는 row가 현재 값으로 만들어진다.
+/// - `*_sync`: 사이트 Resource → 이미 존재하는 row별 mirror entity들. 이게
+///   `Changed`를 세우면 그 row의 조건부/중첩 리스트가 평범하게 반응한다.
+/// - `cond_reconcile_row_site_N`: row별 조건부. 컴포넌트 스코프 조건부의
+///   생성 함수와 같은 제어 흐름이고, 다른 것은 쿼리가 **여러 entity를 매치한다**는
+///   점뿐이다(사이트 = 템플릿, 인스턴스 = row).
+fn emit_row_site_systems(out: &mut String, names: &RowSiteNames, mirrors: &RowMirrors, cond_children: &[JsxNode]) {
+    writeln!(out, "fn {}(", names.ctx_fn).unwrap();
+    if mirrors.cond.is_some() {
+        writeln!(
+            out,
+            "    conds: ::bevy_ecs::prelude::Query<&::loom_runtime::Signal<bool>, ::bevy_ecs::prelude::With<{}>>,",
+            names.cond_src
+        )
+        .unwrap();
+    }
+    if mirrors.list.is_some() {
+        writeln!(
+            out,
+            "    lists: ::bevy_ecs::prelude::Query<&::loom_runtime::Signal<Vec<String>>, ::bevy_ecs::prelude::With<{}>>,",
+            names.list_src
+        )
+        .unwrap();
+    }
+    writeln!(out, "    mut site: ::bevy_ecs::prelude::ResMut<{}>,", names.ctx).unwrap();
+    writeln!(out, ") {{").unwrap();
+    if mirrors.cond.is_some() {
+        writeln!(out, "    if let Some(s) = conds.iter().next() {{ if site.cond != s.0 {{ site.cond = s.0; }} }}").unwrap();
+    }
+    if mirrors.list.is_some() {
+        writeln!(out, "    if let Some(s) = lists.iter().next() {{ if site.list != s.0 {{ site.list = s.0.clone(); }} }}").unwrap();
+    }
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "fn {}(", names.sync_fn).unwrap();
+    writeln!(out, "    site: ::bevy_ecs::prelude::Res<{}>,", names.ctx).unwrap();
+    if mirrors.cond.is_some() {
+        writeln!(
+            out,
+            "    mut conds: ::bevy_ecs::prelude::Query<&mut ::loom_runtime::Signal<bool>, ::bevy_ecs::prelude::With<{}>>,",
+            names.cond_marker
+        )
+        .unwrap();
+    }
+    if mirrors.list.is_some() {
+        writeln!(
+            out,
+            "    mut lists: ::bevy_ecs::prelude::Query<&mut ::loom_runtime::Signal<Vec<String>>, ::bevy_ecs::prelude::With<{}>>,",
+            names.inner_marker
+        )
+        .unwrap();
+    }
+    writeln!(out, ") {{").unwrap();
+    if mirrors.cond.is_some() {
+        // `s.0 != ...` 는 `Deref` 경유 읽기라 변경 표시를 세우지 않는다 —
+        // 값이 실제로 달라졌을 때만 `DerefMut`이 일어나게 하는 것이 요점이다.
+        writeln!(out, "    for mut s in &mut conds {{ if s.0 != site.cond {{ s.0 = site.cond; }} }}").unwrap();
+    }
+    if mirrors.list.is_some() {
+        writeln!(out, "    for mut s in &mut lists {{ if s.0 != site.list {{ s.0 = site.list.clone(); }} }}").unwrap();
+    }
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    if mirrors.cond.is_none() {
+        return;
+    }
+    writeln!(out, "fn {}(", names.cond_fn).unwrap();
+    writeln!(
+        out,
+        "    mut q: ::bevy_ecs::prelude::Query<(&::loom_runtime::Signal<bool>, &mut ::loom_runtime::CondBlock, &::loom_runtime::DomTarget, &::loom_runtime::CondNested), (::bevy_ecs::prelude::Changed<::loom_runtime::Signal<bool>>, ::bevy_ecs::prelude::With<{}>)>,",
+        names.cond_marker
+    )
+    .unwrap();
+    if mirrors.list.is_some() {
+        writeln!(
+            out,
+            "    list_signals: ::bevy_ecs::prelude::Query<&::loom_runtime::Signal<Vec<String>>>,"
+        )
+        .unwrap();
+    }
+    writeln!(out, "    mut commands: ::bevy_ecs::prelude::Commands,").unwrap();
+    writeln!(out, "    mut pending: ::bevy_ecs::prelude::ResMut<::loom_runtime::PendingDomWrites>,").unwrap();
+    writeln!(out, ") {{").unwrap();
+    writeln!(out, "    for (cond, mut block, anchor, nested) in &mut q {{").unwrap();
+    writeln!(out, "        if block.children.is_empty() {{").unwrap();
+    writeln!(out, "            if cond.0 {{").unwrap();
+    // `RowSpawner::emit`과 **같은 방출기**를 쓴다 — 두 경로가 같은 모양을 내야
+    // "spawn 시점에 열려 있었는가"와 무관하게 결과가 같다. 다른 것은 부모 지목
+    // (핸들 vs entity)과 아이템 출처(Resource vs 이 entity의 Signal)뿐이다.
+    let mut body = String::new();
+    writeln!(body, "                let inner = nested.0[0usize];").unwrap();
+    writeln!(
+        body,
+        "                let items = list_signals.get(inner).map(|s| s.0.clone()).unwrap_or_default();"
+    )
+    .unwrap();
+    writeln!(body, "                let out = &mut ::loom_runtime::RowSpawnCtx {{ commands: &mut commands, pending: &mut pending.0, row_bindings: 1 }};").unwrap();
+    for child in cond_children {
+        emit_cond_child(&mut body, child, "::loom_runtime::WriteParent::Node(anchor.0)", "items", "                ");
+    }
+    writeln!(
+        body,
+        "                for _ in 0..{}usize {{ block.children.push(out.commands.spawn(()).id()); }}",
+        cond_children.len()
+    )
+    .unwrap();
+    out.push_str(&body);
+    writeln!(out, "            }}").unwrap();
+    writeln!(out, "        }} else {{").unwrap();
+    writeln!(
+        out,
+        "            pending.0.push(::loom_runtime::DomWrite::SetVisible {{ node: anchor.0, visible: cond.0 }});"
+    )
+    .unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
+/// 사이트의 시스템 등록 줄들 — `setup()`과 `resume()` 양쪽에 같은 것이 들어간다.
+fn row_site_registration(names: &RowSiteNames, mirrors: &RowMirrors) -> String {
+    let mut out = String::new();
+    writeln!(out, "    app.world.init_resource::<{}>();", names.ctx).unwrap();
+    writeln!(out, "    app.add_systems({});", names.ctx_fn).unwrap();
+    // `.after(...)`는 트레잇 메서드라 생성 코드에서 트레잇을 스코프에 들일 수
+    // 없다 — UFCS로 부른다.
+    writeln!(
+        out,
+        "    app.add_systems(::bevy_ecs::schedule::IntoScheduleConfigs::after({}, {}));",
+        names.sync_fn, names.ctx_fn
+    )
+    .unwrap();
+    // 바깥 리스트는 `*_ctx` **다음에** — 새로 생기는 row가 현재 값으로 만들어져야
+    // 한다(그렇지 않으면 열린 상태에서 추가된 row만 한 틱 비어 있게 된다).
+    writeln!(
+        out,
+        "    app.add_systems(::bevy_ecs::schedule::IntoScheduleConfigs::after(::loom_runtime::list_reconcile_k_system_with::<String, {}>, {}));",
+        names.spawner, names.ctx_fn
+    )
+    .unwrap();
+    if mirrors.cond.is_some() {
+        writeln!(
+            out,
+            "    app.add_systems(::bevy_ecs::schedule::IntoScheduleConfigs::after({}, {}));",
+            names.cond_fn, names.sync_fn
+        )
+        .unwrap();
+    }
+    if mirrors.list.is_some() {
+        writeln!(
+            out,
+            "    app.add_systems(::bevy_ecs::schedule::IntoScheduleConfigs::after(::loom_runtime::list_reconcile_k_system_with::<String, {}>, {}));",
+            names.inner_spawner, names.sync_fn
+        )
+        .unwrap();
+    }
+    out
+}
+
 fn lower_node(
     out: &mut String,
     node: &JsxNode,
@@ -2011,16 +2544,9 @@ fn lower_node(
             ctx.signal_entities.push((signal.clone(), entity_var));
         }
         JsxNode::ListBinding { signal, row, .. } => {
-            // Phase 1 scope: exactly one supported row shape — a single
-            // element wrapping `RowItemText` (e.g. `<li>{item}</li>`).
-            let JsxNode::Element { children, .. } = row.as_ref() else {
+            let JsxNode::Element { tag: row_tag, children, .. } = row.as_ref() else {
                 panic!("loomc: list row template must be a single element");
             };
-            if !matches!(children.as_slice(), [JsxNode::RowItemText]) {
-                panic!(
-                    "loomc: Phase 1 only supports list rows shaped exactly as `<tag>{{item}}</tag>` (single text child referencing the row variable) — got {children:?}"
-                );
-            }
             let init = &component
                 .signals
                 .iter()
@@ -2030,19 +2556,155 @@ fn lower_node(
             let SignalInit::StringList(items) = init else {
                 panic!("loomc: list binding requires a string-list signal");
             };
-            let entity_var = format!("{signal}_entity");
             let items_rust = items
                 .iter()
                 .map(|s| format!("{s:?}.to_string()"))
                 .collect::<Vec<_>>()
                 .join(", ");
+
+            if !ctx.monomorphize_rows {
+                // 이 컴포넌트에 복잡한 row 템플릿이 하나도 없다 — 2026-08-07
+                // 이전과 **완전히 같은 코드**를 낸다(제네릭 K + 마커 없음).
+                if !matches!(children.as_slice(), [JsxNode::RowItemText]) {
+                    panic!(
+                        "loomc internal error: rich row template reached the default path — got {children:?}"
+                    );
+                }
+                let entity_var = format!("{signal}_entity");
+                writeln!(
+                    out,
+                    "    let {entity_var} = app.world.spawn((::loom_runtime::Signal(vec![{items_rust}]), ::loom_runtime::ListRows::default(), ::loom_runtime::DomTarget({parent_var}))).id();"
+                )
+                .unwrap();
+                writeln!(out, "    dom.set_attribute({parent_var}, \"data-loom-id\", {signal:?});").unwrap();
+                ctx.signal_entities.push((signal.clone(), entity_var));
+                return;
+            }
+
+            // --- 사이트별 monomorphize 경로 ---
+            let i = ctx.row_site_index;
+            ctx.row_site_index += 1;
+            let names = RowSiteNames::new(i);
+            let mirrors = collect_row_mirrors(children, signal);
+
+            let mut decls = String::new();
+            for marker in [&names.marker, &names.cond_marker, &names.inner_marker,
+                           &names.cond_src, &names.list_src] {
+                writeln!(decls, "#[derive(::bevy_ecs::prelude::Component)]").unwrap();
+                writeln!(decls, "struct {marker};").unwrap();
+            }
+            writeln!(decls, "#[derive(::bevy_ecs::prelude::Resource, Default)]").unwrap();
+            writeln!(decls, "struct {} {{ cond: bool, list: Vec<String> }}", names.ctx).unwrap();
+            writeln!(decls).unwrap();
+
+            // row 생성기 본문
+            let mut emit_body = String::new();
+            writeln!(
+                emit_body,
+                "        out.pending.push(::loom_runtime::DomWrite::SpawnRow {{ entity: row, parent, tag: {row_tag:?}, text: text.to_string(), before }});"
+            )
+            .unwrap();
+            let [_, rest @ ..] = children.as_slice() else { unreachable!() };
+            for child in rest {
+                emit_row_child(&mut emit_body, child, &names, "        ");
+            }
+
+            writeln!(decls, "struct {};", names.spawner).unwrap();
+            writeln!(decls, "impl ::loom_runtime::RowSpawner for {} {{", names.spawner).unwrap();
+            writeln!(decls, "    type Ctx = {};", names.ctx).unwrap();
+            writeln!(decls, "    type Marker = {};", names.marker).unwrap();
+            writeln!(
+                decls,
+                "    fn emit(site: &{}, out: &mut ::loom_runtime::RowSpawnCtx, row: ::bevy_ecs::entity::Entity, parent: ::loom_runtime::NodeHandle, text: &str, before: Option<::bevy_ecs::entity::Entity>) {{",
+                names.ctx
+            )
+            .unwrap();
+            writeln!(decls, "        let _ = site;").unwrap();
+            decls.push_str(&emit_body);
+            writeln!(decls, "    }}").unwrap();
+            writeln!(decls, "}}").unwrap();
+            writeln!(decls).unwrap();
+
+            // 중첩 리스트의 row 생성기 — 평범한 `<li>{item}</li>`.
+            if mirrors.list.is_some() {
+                writeln!(decls, "struct {};", names.inner_spawner).unwrap();
+                writeln!(decls, "impl ::loom_runtime::RowSpawner for {} {{", names.inner_spawner).unwrap();
+                writeln!(decls, "    type Ctx = ::loom_runtime::NoRowCtx;").unwrap();
+                writeln!(decls, "    type Marker = {};", names.inner_marker).unwrap();
+                writeln!(
+                    decls,
+                    "    fn emit(_site: &::loom_runtime::NoRowCtx, out: &mut ::loom_runtime::RowSpawnCtx, row: ::bevy_ecs::entity::Entity, parent: ::loom_runtime::NodeHandle, text: &str, before: Option<::bevy_ecs::entity::Entity>) {{"
+                )
+                .unwrap();
+                writeln!(
+                    decls,
+                    "        out.pending.push(::loom_runtime::DomWrite::SpawnRow {{ entity: row, parent, tag: \"li\", text: text.to_string(), before }});"
+                )
+                .unwrap();
+                writeln!(decls, "    }}").unwrap();
+                writeln!(decls, "}}").unwrap();
+                writeln!(decls).unwrap();
+            }
+
+            // 조건부 reconcile 함수는 그 조건부의 내용을 알아야 한다.
+            let cond_children: &[JsxNode] = rest
+                .iter()
+                .find_map(|c| match c {
+                    JsxNode::CondBinding { then_branch, .. } => match then_branch.as_ref() {
+                        JsxNode::Element { children, .. } => Some(children.as_slice()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .unwrap_or(&[]);
+            emit_row_site_systems(&mut decls, &names, &mirrors, cond_children);
+            ctx.cond_site_fns.push_str(&decls);
+
+            // --- setup() 쪽 ---
+            let entity_var = format!("{signal}_entity");
             writeln!(
                 out,
-                "    let {entity_var} = app.world.spawn((::loom_runtime::Signal(vec![{items_rust}]), ::loom_runtime::ListRows::default(), ::loom_runtime::DomTarget({parent_var}))).id();"
+                "    let {entity_var} = app.world.spawn((::loom_runtime::Signal(vec![{items_rust}]), ::loom_runtime::ListRows::default(), ::loom_runtime::DomTarget({parent_var}), {})).id();",
+                names.marker
             )
             .unwrap();
             writeln!(out, "    dom.set_attribute({parent_var}, \"data-loom-id\", {signal:?});").unwrap();
             ctx.signal_entities.push((signal.clone(), entity_var));
+
+            // row 템플릿이 읽는 컴포넌트 스코프 signal들 — DomTarget 없이 즉시
+            // 만든다(조건부 안 중첩 binding과 같은 근거: `Signals`/action/
+            // `resume()`이 "row 안이냐"를 따지지 않게).
+            for (name, marker, is_bool) in [
+                (mirrors.cond.as_deref(), names.cond_src.as_str(), true),
+                (mirrors.list.as_deref(), names.list_src.as_str(), false),
+            ] {
+                let Some(name) = name else { continue };
+                let src_var = format!("{name}_entity");
+                let decl = component
+                    .signals
+                    .iter()
+                    .find(|s| s.name == name)
+                    .unwrap_or_else(|| panic!("loomc internal error: unknown signal {name}"));
+                let value = match (&decl.init, is_bool) {
+                    (SignalInit::Bool(b), true) => format!("{b}"),
+                    (SignalInit::StringList(v), false) => format!(
+                        "vec![{}]",
+                        v.iter().map(|s| format!("{s:?}.to_string()")).collect::<Vec<_>>().join(", ")
+                    ),
+                    _ => panic!("loomc: row 템플릿의 `{name}`가 기대한 종류의 signal이 아니다"),
+                };
+                writeln!(
+                    out,
+                    "    let {src_var} = app.world.spawn((::loom_runtime::Signal({value}), {marker})).id();"
+                )
+                .unwrap();
+                ctx.signal_entities.push((name.to_string(), src_var));
+                ctx.row_source_signals.push((name.to_string(), marker.to_string()));
+            }
+
+            let reg = row_site_registration(&names, &mirrors);
+            out.push_str(&reg);
+            ctx.row_site_registrations.push(reg);
         }
         // `{cond() && <tag>...</tag>}` — RQ1 Track T candidate F
         // (`cond_reconcile_f_system`), but this compiler-generated site
