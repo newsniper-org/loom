@@ -293,6 +293,30 @@ pub trait DomOps {
 /// in emission order and resolving anchors just-in-time makes that safe —
 /// see candidates D/E in `list.rs`.
 pub enum DomWrite {
+    /// 컴파일러가 생성한 **지연 서브트리**의 엘리먼트 하나
+    /// (loom-compiler codegen.rs의 `emit_lazy_subtree`). `SpawnRow`와 같은
+    /// 계약이다 — entity는 이미 `Commands`나 `setup()`이 할당해 뒀고, 드라이버가
+    /// 실제 엘리먼트를 만들어 `DomTarget`을 붙인다. 다른 점 셋:
+    ///
+    /// 1. 부모가 `WriteParent` — 이미 해석된 핸들일 수도, **같은 배치에서 바로
+    ///    앞에 만든 entity**일 수도 있다. 중첩 서브트리는 부모가 자식보다 항상
+    ///    먼저 방출되므로, 적용 시점엔 부모의 `DomTarget`이 이미 붙어 있다
+    ///    (`SpawnRow`의 `before` 앵커 해석과 정확히 같은 근거).
+    /// 2. `class`/`loom_id`를 싣는다 — 지연 생성된 노드도 `data-loom-id`가
+    ///    있어야 `resume()`이 SSR된 DOM에서 자기 노드를 다시 찾는다.
+    /// 3. `text`가 `Option` — 컨테이너 엘리먼트(`<ul>` 등)에 빈 텍스트 노드를
+    ///    만들지 않기 위해서다. `Some`일 때 값을 **생성 시점에 굽는** 이유는
+    ///    `SpawnRow`와 같다: 이 entity의 `DomTarget`은 지금 이 write가 적용될
+    ///    때 비로소 붙으므로, 그 전에 지나간 `Changed` 틱은 patch System이
+    ///    관측할 수 없다. 초기값은 반드시 여기서 실려야 한다.
+    SpawnElement {
+        entity: Entity,
+        parent: WriteParent,
+        tag: &'static str,
+        class: Option<&'static str>,
+        loom_id: Option<&'static str>,
+        text: Option<String>,
+    },
     SetText {
         target: NodeHandle,
         text: String,
@@ -355,7 +379,17 @@ pub enum DomWrite {
     /// conditional's wrapper element) was created directly via
     /// `DomOps::create_element` before any reconcile System ever ran, so it
     /// already has a real `NodeHandle` by the time this write is emitted.
-    AppendStaticText { parent: NodeHandle, text: String },
+    ///
+    /// **2026-08-07**: `parent`가 `NodeHandle`에서 `WriteParent`로 넓어졌다 —
+    /// 조건부 안에 중첩된 엘리먼트가 생기면서, 정적 텍스트의 부모가 *같은
+    /// 배치에서 방금 만들어진* 노드일 수 있게 됐기 때문이다(`SpawnElement`
+    /// 참고). 기존 방출부는 전부 `WriteParent::Node(...)`로, 의미 무변경.
+    AppendStaticText { parent: WriteParent, text: String },
+    /// 지연 서브트리 안의 **완전 정적** 부분트리 하나를 통째로. `setup()` 쪽
+    /// `try_render_fully_static` → `append_static_html` 접기와 같은 최적화를
+    /// 지연 경로에도 적용한 것이다 — HTML 문자열은 컴파일타임에 완성되고
+    /// 런타임에는 호출 한 번만 남는다.
+    AppendStaticHtml { parent: WriteParent, html: String },
     /// R2 축: 이미 만들어진 파생 binding들의 텍스트를 **다시 쓴다**. 슬롯의
     /// 아이템이 바뀌면 그 아이템에서 파생된 binding이 전부 바뀌므로, 후보 C의
     /// 재정렬(= 슬롯 값 교체)은 이 write를 row마다 한 번씩 내게 된다 —
@@ -377,6 +411,32 @@ pub enum DomWrite {
     /// resolution.
     SetInputValue { node: NodeHandle, value: String },
 }
+
+/// `DomWrite`가 부모를 지목하는 두 가지 방식. **이미 해석된 핸들**(`setup()`이
+/// 직접 만든 노드)과 **아직 만들어지지 않았을 수 있는 entity**(같은 배치의 앞선
+/// write가 만들 노드)를 한 타입으로 합친다. 후자는 `SpawnRow`의 `before` 앵커가
+/// 이미 쓰던 규약과 동일하다 — write는 방출 순서대로 적용되고, 부모는 자식보다
+/// 항상 먼저 방출되므로 해석은 항상 성공한다.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteParent {
+    Node(NodeHandle),
+    Entity(Entity),
+}
+
+/// 조건부 사이트가 **자기 지연 서브트리 안의 binding entity들**을 순서대로
+/// 들고 있는 사이드테이블. 컴파일러가 사이트마다 고정한 순서이고, 생성된
+/// reconcile 함수는 `nested.0[<컴파일타임 상수>]`로만 접근한다 — 런타임 탐색이
+/// 없다(이름 조회도, 트리 순회도 아니다).
+///
+/// **왜 entity를 미리 만들어 두는가**: 조건부 안의 signal도 `Signals` 구조체와
+/// action/`resume()` 경로에 그대로 참여해야 한다. 그래서 entity 자체는 `setup()`
+/// 이 항상 즉시 spawn하되 **`DomTarget`은 붙이지 않는다** — patch System들의
+/// 쿼리가 `&DomTarget`을 요구하므로, DOM에 아직 없는 동안에는 archetype 수준에서
+/// (= 런타임 분기 없이) 자동으로 제외된다. 조건부가 처음 `true`가 될 때
+/// `SpawnElement`가 `DomTarget`을 붙이면 그때부터 평범한 binding이 된다.
+/// CLAUDE.md 금지 4 유지: 여기 들어가는 것은 `Entity`(정수 쌍)뿐이다.
+#[derive(Component, Debug, Clone, Default)]
+pub struct CondNested(pub Vec<Entity>);
 
 /// `detach_to_fragment`가 돌려주는 보관함 식별자. `NodeHandle`과 같은 정수
 /// 스킴이지만 **다른 테이블**을 가리키므로 타입을 분리한다 — 섞으면 분리된
@@ -638,6 +698,26 @@ impl LoomApp {
         dom.begin_batch();
         for write in writes {
             match write {
+                DomWrite::SpawnElement {
+                    entity,
+                    parent,
+                    tag,
+                    class,
+                    loom_id,
+                    text,
+                } => {
+                    let Some(parent_handle) = self.resolve_parent(parent) else {
+                        continue;
+                    };
+                    let handle = dom.create_element(parent_handle, tag, class);
+                    if let Some(id) = loom_id {
+                        dom.set_attribute(handle, "data-loom-id", id);
+                    }
+                    if let Some(text) = text {
+                        dom.set_text_content(handle, &text);
+                    }
+                    self.world.entity_mut(entity).insert(DomTarget(handle));
+                }
                 DomWrite::SetText { target, text } => dom.set_text_content(target, &text),
                 DomWrite::ClearChildren { parent } => dom.clear_children(parent),
                 DomWrite::SpawnRow {
@@ -702,7 +782,16 @@ impl LoomApp {
                     dom.attach_from_fragment(parent, frag.0);
                     self.world.entity_mut(block).remove::<DetachedFragment>();
                 }
-                DomWrite::AppendStaticText { parent, text } => dom.append_static_text(parent, &text),
+                DomWrite::AppendStaticText { parent, text } => {
+                    if let Some(handle) = self.resolve_parent(parent) {
+                        dom.append_static_text(handle, &text);
+                    }
+                }
+                DomWrite::AppendStaticHtml { parent, html } => {
+                    if let Some(handle) = self.resolve_parent(parent) {
+                        dom.append_static_html(handle, &html);
+                    }
+                }
                 DomWrite::SetInputValue { node, value } => dom.set_input_value(node, &value),
             }
         }
@@ -715,5 +804,16 @@ impl LoomApp {
 
     fn dom_target(&self, entity: Entity) -> Option<NodeHandle> {
         self.world.get::<DomTarget>(entity).map(|t| t.0)
+    }
+
+    /// `WriteParent`를 실제 핸들로. `Entity` 쪽이 `None`이 되는 경우는 부모를
+    /// 만드는 write가 같은 배치의 **앞**에 없었다는 뜻이므로 방출 측 버그다 —
+    /// 여기서 조용히 넘기고(`continue`) 자식만 유실시키는 대신, 나머지 배치는
+    /// 계속 적용한다(다른 arm들의 `dom_target` 실패 처리와 같은 관례).
+    fn resolve_parent(&self, parent: WriteParent) -> Option<NodeHandle> {
+        match parent {
+            WriteParent::Node(handle) => Some(handle),
+            WriteParent::Entity(entity) => self.dom_target(entity),
+        }
     }
 }

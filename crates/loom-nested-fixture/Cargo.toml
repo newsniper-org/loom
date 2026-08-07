@@ -1,0 +1,15 @@
+[package]
+name = "loom-nested-fixture"
+edition.workspace = true
+version.workspace = true
+
+# 네이티브 전용 — 이 크레이트의 존재 이유는 "컴파일러가 낸 중첩 코드가 실제로
+# 빌드되고 실제로 옳은 DOM을 만드는가"를 브라우저 없이 확인하는 것이다.
+# (문자열 비교만 하는 loom-compiler의 단위 테스트로는 그걸 알 수 없다.)
+
+[dependencies]
+bevy_ecs.workspace = true
+loom-runtime = { path = "../loom-runtime" }
+
+[build-dependencies]
+loom-compiler = { path = "../loom-compiler" }

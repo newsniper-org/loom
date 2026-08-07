@@ -33,7 +33,7 @@ fn product_details_reconcile_system(
         if block.children.is_empty() {
             if cond.0 {
                 pending.0.push(loom_runtime::DomWrite::AppendStaticText {
-                    parent: anchor.0,
+                    parent: loom_runtime::WriteParent::Node(anchor.0),
                     text: "Free shipping on orders over $50.".to_string(),
                 });
                 block.children.push(commands.spawn(()).id());

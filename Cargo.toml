@@ -19,6 +19,7 @@ members = [
     "crates/loom-largeapp-axis-flat",
     "crates/loom-largeapp-axis-island-target",
     "crates/loom-fic",
+    "crates/loom-nested-fixture",
 ]
 
 [workspace.package]

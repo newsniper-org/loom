@@ -784,10 +784,24 @@ fn lower_expr_container(
             let JsxNode::Element { children, .. } = &then_branch else {
                 unreachable!()
             };
-            if !children.iter().all(|c| matches!(c, JsxNode::StaticText(_))) {
-                panic!(
-                    "loomc: Phase 1 conditional content must be static-only (no nested {{...}} bindings yet) — got {children:?}"
-                );
+            // **2026-08-07**: 여기 있던 "정적 자식만 허용" 거부를 걷었다.
+            // 조건부 안의 `{signal()}`/`{signal().map(...)}`/중첩 엘리먼트는
+            // 이제 codegen이 사이트별 전용 함수로 방출한다(codegen.rs의
+            // `emit_lazy_subtree`). 거부가 남아 있으면 RQ1 §5 트랙 N이 요구하는
+            // 3중 중첩 픽스처를 **컴파일러가 생성할 수 없고**, §2.3-1이
+            // "컴파일러가 생성할 수 없는 형태의 코드 금지"라 손코딩 우회도
+            // 막혀 있었다.
+            //
+            // 아직 못 받는 것들은 codegen 쪽에서 각각 이유를 붙여 거부한다
+            // (`collect_lazy_slots_node`/`emit_lazy_subtree`의 패닉 문구):
+            // 조건부 안의 중첩 조건부, `<input>` 양방향 binding, 자체 `onClick`,
+            // `<Component/>` 참조, `sharedValue(...)`.
+            for child in children {
+                if matches!(child, JsxNode::CondBinding { .. }) {
+                    panic!(
+                        "loomc: `{{{cond_name}() && ...}}` 안에 또 조건부를 넣는 것은 아직 지원하지 않는다 — 안쪽 사이트도 자기 marker/전용 함수/`CondNested`가 필요한데, 그 중첩 생성 경로가 아직 없다(codegen.rs의 `CondBinding` arm 참고)"
+                    );
+                }
             }
             JsxNode::CondBinding {
                 cond: cond_name,

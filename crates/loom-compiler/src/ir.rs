@@ -69,10 +69,14 @@ pub enum JsxNode {
     /// (`cond_reconcile_f_system`, already implemented/tested/benchmarked —
     /// see codegen.rs's module doc comment for why this reuses it rather
     /// than deriving a new mechanism). `cond` must name a declared `Bool`
-    /// signal. Phase 1 scope (stated, not hidden): `then_branch` must be a
-    /// single root `Element` whose children are all `StaticText` — no
-    /// nested `{...}` bindings inside a conditional yet (see lower.rs's
-    /// parsing rule for this restriction's enforcement).
+    /// signal. `then_branch` must be a single root `Element`.
+    ///
+    /// **2026-08-07**: 그 아래로 정적 마크업 / `{signal()}` /
+    /// `{signal().map(...)}` / 그것들을 감싸는 엘리먼트를 넣을 수 있게 됐다
+    /// (그 전까지는 `StaticText`만 허용). 왜 풀었고 어떻게 동작하는지는
+    /// codegen.rs 모듈 문서의 "중첩 (2026-08-07)" 절. 아직 못 받는 것도
+    /// 거기 적혀 있다 — 특히 **리스트 row 템플릿 안의 조건부**는 아직이고,
+    /// 그것이 RQ1 §5 트랙 N에 남은 마지막 조각이다.
     CondBinding {
         cond: String,
         then_branch: Box<JsxNode>,

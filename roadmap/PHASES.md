@@ -340,7 +340,8 @@ plan.md §3.1 "1차 재검토" 그대로:**
   스냅샷은 이 파이프라인이 아예 만들 수 없는 상태 — 코드젠 주석에 명시, 조용히
   누락한 게 아님). `format_i32_capture_for_action`은 `Bool` 시그널을 무조건
   캡처 없음으로 처리(`StringList`와 동일 근거 — DOM 복구형).
-- **의도적 스코프 제한(숨기지 않음)**: `then_branch`는 정적 텍스트 자식만 허용
+- **의도적 스코프 제한(숨기지 않음)** — **2026-08-07 부분 해소, 아래 "조건부
+  내용의 중첩 지원" 절 참고**: `then_branch`는 정적 텍스트 자식만 허용
   (중첩 `{...}` 바인딩 불가, `lower.rs`가 거부) + **자기 자신의 `onClick`도 불가**
   (`codegen.rs`가 명시적으로 panic) — 토글 버튼은 항상 별도 형제 엘리먼트여야 함.
   내부에 자기 `Signal<i32>` 상태를 갖는 조건부(F가 "토글에도 상태 보존" 주장을
@@ -1051,3 +1052,83 @@ Task #27이 M1-M5/M9를, Task #29가 마지막 공백(H-Qwik 팔의 M6/M7/M8)을
 
 이관 방법(i/ii/iii) 자체는 여전히 병익님의 결정 대기 — 이 축은 그 결정에 필요한
 데이터를 하나 더 채운 것이지, §11의 결정 자체를 대신하지 않음.
+
+## 조건부 내용의 중첩 지원 (2026-08-07) — 트랙 N을 막고 있던 컴파일러 벽 제거
+
+**왜 지금**: RQ1 §5 트랙 N은 "리스트 > 조건부 > 리스트" 3중 중첩 위에서
+property test를 돌리라고 요구한다. 그런데 `lower.rs`가 조건부 내용을 **정적
+텍스트만**으로 제한하고 있었고(`"Phase 1 conditional content must be
+static-only"`), §2.3-1이 "사이트별 반복 부분은 기계적 복제 가능 형태 —
+**컴파일러가 생성할 수 없는 형태의 코드 금지**"라 손코딩 픽스처로 우회하는
+길도 규약상 막혀 있었다. 즉 **컴파일러가 먼저 중첩을 배워야만** 트랙 N을
+시작할 수 있는 상태였다.
+
+두 라운드에 걸친 트랙 N 설계(8개 안)가 전부 반려됐던 이유도 여기 있었다 —
+런타임 쪽에서 우회하려다 다른 조항과 충돌한 것이 아니라, **애초에 컴파일러
+쪽이 정답**이었다. 병익님의 방향 지시("컴파일 시간이 좀 오래 걸리더라도
+런타임이 가볍고 빠르면 감수할 만하다")와도 정확히 같은 방향이다.
+
+**된 것**: 조건부 안에 정적 마크업 / `{signal()}` / `{signal().map(...)}` /
+그것들을 감싸는 엘리먼트를 넣을 수 있다.
+
+- **설계의 핵심은 entity와 노드의 수명 분리**다. 중첩 binding의 `Entity`는
+  `setup()`이 항상 즉시 만들되 **`DomTarget`은 붙이지 않는다**. patch System의
+  쿼리가 `&DomTarget`을 요구하므로, DOM에 없는 동안은 **archetype 수준에서**
+  (런타임 분기 없이) 자동 제외된다 — Bevy의 접근 선언 기반 스케줄링 재사용
+  (CLAUDE.md 2-1). 조건부가 처음 `true`가 될 때 새 `DomWrite::SpawnElement`가
+  노드를 만들고 `DomTarget`을 붙이면 그때부터 평범한 binding이 된다.
+- entity를 항상 즉시 만드는 이유는 `Signals` 구조체·action·`resume()`이
+  "조건부 안이냐 밖이냐"를 런타임에 따지지 않게 하기 위함이다.
+- 사이트 함수가 안쪽 entity를 찾는 방법은 새 `CondNested`(entity 벡터) +
+  **컴파일타임에 고정된 리터럴 인덱스**뿐이다 — 이름 조회도 트리 순회도
+  런타임에 남지 않는다. 완전 정적 부분트리는 컴파일타임에 HTML 한 문자열로
+  접혀 `AppendStaticHtml` 호출 한 번이 된다(`setup()` 쪽 접기와 동형).
+- 런타임 추가는 최소한이다: `WriteParent`(핸들 | entity), `DomWrite::
+  SpawnElement`, `DomWrite::AppendStaticHtml`, `CondNested`. `AppendStaticText`의
+  `parent`가 `NodeHandle` → `WriteParent`로 넓어졌다(기존 방출부는 전부
+  `WriteParent::Node(...)`, 의미 무변경).
+
+**설계 도중 실제로 걸렸고 피해 간 함정(음성 대조로 확인)**: 지연 생성되는
+binding의 초기값을 제네릭 System에 맡기면 **영영 그려지지 않는다**. 그 entity의
+`DomTarget`은 write가 적용될 때 붙으므로, `Signal`이 변경 표시된 틱에는 쿼리가
+매치하지 않았고 `DomTarget`이 생긴 다음 틱에는 이미 `Changed`가 지나가 있다.
+그래서 텍스트는 `SpawnElement.text`에, 리스트의 초기 row는 사이트 함수가 직접
+방출하고 `ListRows`를 시드한다(`SpawnRow`가 텍스트를 생성 시점에 굽는 것과 같은
+근거). 이후 변경은 평범하게 제네릭 K가 이어받는다.
+
+**resume**: 조건부 안의 signal은 **SSR 시점에 그 조건부가 보였는지**에 따라
+갈린다. 숨겨진 채 SSR됐다면 안쪽 노드가 아예 없으므로 `find_node`를 부르면 안
+된다 — `DomTarget` 없이 spawn하고 첫 열림에 지연 경로가 이어받는다. 보였다면
+`data-loom-id`(지연 생성 시점에 `SpawnElement`가 단다)로 평범하게 찾는다.
+그래서 `resume()`은 조건부(Bool)를 먼저 전부 처리해 `<cond>_shown`을 세운 뒤
+나머지 signal을 처리하고, `CondNested`는 루프가 끝난 뒤 붙인다.
+**한계(숨기지 않음)**: 숨겨진 채 SSR된 리스트는 **선언된 초기값**으로 seed된다 —
+그 사이의 편집 내역은 SSR HTML에 흔적이 없어 복원할 수 없다(RQ3 Q2의 "SSR 스냅샷
+동결" 한계와 같은 성질).
+
+**아직 못 받는 것(명시)**: 조건부 안의 또 다른 조건부, `<input>` 양방향 binding,
+지연 노드의 자체 `onClick`, `<Component/>` 참조, `sharedValue(...)`. 그리고
+**리스트 row 템플릿 안의 조건부** — 트랙 N이 요구하는 *바깥쪽* 중첩이며,
+row 템플릿을 사이트별로 monomorphize하는 별도 작업이다(다음 단계). 즉 이번
+라운드로 트랙 N이 열린 것은 아니고, **막고 있던 두 벽 중 안쪽 하나가
+치워졌다**.
+
+**검증**: 새 크레이트 `crates/loom-nested-fixture` — `demo/nested-conditional.tsx`를
+실제 loomc로 컴파일해 네이티브 `TreeDom` 위에서 돌린다(문자열 단언만 하는
+loom-compiler 단위 테스트로는 "rustc를 통과하는가"도 "돌렸을 때 옳은가"도 알 수
+없기 때문). 8개 통합 테스트 + loom-compiler 신규 단위 테스트 3개.
+**음성 대조 3건 전부 확인**: (1) 초기 row 방출 제거 → 조건부를 열어도 리스트가
+비어 있음, (2) 텍스트 초기값 굽기 제거 → 열었을 때 값이 안 보임, (3) resume의
+shown 게이트 제거 → 숨겨진 조건부 resume이 없는 노드를 찾아 패닉.
+`cargo test --workspace` 157 통과, wasm32 빌드 통과.
+
+**실브라우저 검증 범위(정확히)**: 기존 `demo/index.html`을 wasm-pack으로 다시
+빌드해 Playwright Chromium으로 전 기능(카운터 +1×2, append, rotate, 조건부
+토글 3회) 무회귀 확인 — `AppendStaticText`의 `parent` 타입 변경과 조건부 코드젠
+재작성이 배포 경로를 깨지 않았음을 확인한 것이다. **중첩 조건부 자체는 아직
+실브라우저에서 돌려 보지 않았다** — 네이티브 `TreeDom` 테스트 8개 + 음성 대조
+3건으로만 확인됐다. 위험이 낮다고 판단한 근거는 `SpawnElement`가 쓰는 DOM
+연산(`create_element`/`set_attribute`/`set_text_content`/`append_static_html`)이
+전부 `setup()`과 `SpawnRow`가 이미 브라우저에서 쓰고 있는 것들이고 새 DOM
+의미가 하나도 없다는 것이다. 다음 단계(row 템플릿 monomorphize)에서 어차피
+중첩 픽스처의 wasm 데모가 필요하므로 그때 함께 붙인다.

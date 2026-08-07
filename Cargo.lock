@@ -1027,6 +1027,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-nested-fixture"
+version = "0.0.1-phase1"
+dependencies = [
+ "bevy_ecs",
+ "loom-compiler",
+ "loom-runtime",
+]
+
+[[package]]
 name = "loom-resume-demo"
 version = "0.0.1-phase1"
 dependencies = [

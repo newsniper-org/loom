@@ -322,9 +322,14 @@ mod tests {
                 "{rust}"
             );
             // Each site's spawn (in setup() AND resume()) must carry its
-            // OWN marker.
-            assert_eq!(rust.matches(", CondSite0)).id();").count(), 2, "{rust}"); // setup() + resume()
-            assert_eq!(rust.matches(", CondSite1)).id();").count(), 2, "{rust}");
+            // OWN marker. `setup()`'s spawn additionally carries this site's
+            // `CondNested` (empty here — no nested bindings in this fixture);
+            // `resume()` attaches it after the loop instead, so its spawn
+            // ends at the marker.
+            assert!(rust.contains("CondSite0, ::loom_runtime::CondNested(vec![]))).id();"), "{rust}"); // setup()
+            assert_eq!(rust.matches(", CondSite0)).id();").count(), 1, "{rust}"); // resume()
+            assert!(rust.contains("CondSite1, ::loom_runtime::CondNested(vec![]))).id();"), "{rust}");
+            assert_eq!(rust.matches(", CondSite1)).id();").count(), 1, "{rust}");
         }
 
         #[test]
@@ -366,13 +371,83 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "must be static-only")]
-        fn rejects_nested_bindings_inside_conditional_content() {
+        fn conditional_wrapper_can_itself_be_a_text_binding() {
+            // 2026-08-07까지 이 형태는 lower.rs가 "must be static-only"로
+            // 거부했다. 이제는 컴파일된다 — wrapper(`<p>`)가 곧 binding 노드인
+            // 특수한 경우라 새 노드를 만들지 않고, 조건부가 처음 열릴 때
+            // `DomTarget`만 뒤늦게 붙이고 현재 값을 한 번 써넣는다.
             let source = r#"
                 export function App() {
                   const details = signal(false);
-                  const count = signal(0);
-                  return <div>{details() && <p>{count()}</p>}</div>;
+                  const count = signal(7);
+                  return (
+                    <div>
+                      <button onClick={() => details.toggle()}>toggle</button>
+                      {details() && <p>{count()}</p>}
+                    </div>
+                  );
+                }
+            "#;
+            let rust = compile_tsx_to_rust(source);
+            // 중첩 signal의 entity는 `setup()`에서 **즉시** 만들어지되
+            // `DomTarget` 없이 — 그래야 patch System의 쿼리가 archetype
+            // 수준에서 알아서 제외한다.
+            assert!(rust.contains("let count_entity = app.world.spawn((::loom_runtime::Signal(7_i32),)).id();"), "{rust}");
+            // 그리고 조건부 entity가 그것을 고정 순서로 들고 있다.
+            assert!(rust.contains("CondSite0, ::loom_runtime::CondNested(vec![count_entity]))).id();"), "{rust}");
+            // 사이트 함수는 이름 조회 없이 리터럴 인덱스로만 접근한다.
+            assert!(rust.contains("let slot_0 = nested.0[0usize];"), "{rust}");
+            assert!(rust.contains("commands.entity(slot_0).insert(::loom_runtime::DomTarget(anchor.0));"), "{rust}");
+            assert!(rust.contains("::loom_runtime::DomWrite::SetText { target: anchor.0"), "{rust}");
+            // 숨겨진 채 SSR된 경우 `find_node`를 부르면 안 된다 — 그 노드는
+            // 아직 존재하지 않는다.
+            assert!(rust.contains("if details_shown {"), "{rust}");
+            assert!(rust.contains("app.world.spawn((::loom_runtime::Signal(value),)).id()"), "{rust}");
+        }
+
+        #[test]
+        fn conditional_can_contain_a_nested_element_tree_with_a_list() {
+            // RQ1 §5 트랙 N이 요구하는 "조건부 안의 리스트"가 실제로
+            // 컴파일되는지 — 손코딩 픽스처는 §2.3-1 위반이므로 컴파일러가
+            // 낼 수 있어야만 한다.
+            let source = r#"
+                export function App() {
+                  const open = signal(false);
+                  const items = signal(["a", "b"]);
+                  return (
+                    <div>
+                      <button onClick={() => open.toggle()}>toggle</button>
+                      {open() && <section class="panel">
+                        <h3>inner</h3>
+                        <ul>{items().map((it) => <li>{it}</li>)}</ul>
+                      </section>}
+                    </div>
+                  );
+                }
+            "#;
+            let rust = compile_tsx_to_rust(source);
+            // 완전 정적인 `<h3>inner</h3>`는 컴파일타임에 HTML 한 덩어리로
+            // 접힌다 — 지연 경로에도 setup() 쪽과 같은 접기가 적용된다.
+            assert!(rust.contains(r#"AppendStaticHtml { parent: ::loom_runtime::WriteParent::Node(anchor.0), html: "<h3>inner</h3>".to_string() }"#), "{rust}");
+            // 리스트 노드는 지연 생성되고 `data-loom-id`를 그때 단다.
+            assert!(rust.contains(r#"tag: "ul", class: None, loom_id: Some("items"), text: None"#), "{rust}");
+            // 초기 row는 사이트 함수가 직접 방출한다 — 제네릭 K에 맡기면
+            // `DomTarget`이 붙는 시점과 `Changed`가 엇갈려 영영 안 그려진다.
+            assert!(rust.contains("commands.entity(slot_0).insert(::loom_runtime::ListRows(lazy_0));"), "{rust}");
+            assert!(rust.contains("parent: ::loom_runtime::WriteParent::Entity(slot_0)"), "{rust}");
+            // 그리고 이후 변경은 평범하게 제네릭 K가 처리해야 하므로 System이
+            // 등록돼 있어야 한다(조건부 안만 훑지 않으면 빠지던 부분).
+            assert!(rust.contains("app.add_systems(::loom_runtime::list_reconcile_k_system::<String>);"), "{rust}");
+        }
+
+        #[test]
+        #[should_panic(expected = "안에 또 조건부를 넣는 것은 아직 지원하지 않는다")]
+        fn rejects_a_conditional_nested_directly_inside_another_conditional() {
+            let source = r#"
+                export function App() {
+                  const outer = signal(false);
+                  const inner = signal(false);
+                  return <div>{outer() && <p>{inner() && <span>x</span>}</p>}</div>;
                 }
             "#;
             let module = parse_tsx(source);

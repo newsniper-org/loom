@@ -87,6 +87,41 @@
 //! state this pipeline's SSR can actually produce, not just today's
 //! observed cases).
 //!
+//! ### 중첩 (2026-08-07) — 사이트별 특수화를 한 겹 더
+//! 2026-08-07까지 조건부 내용은 **정적 텍스트만** 허용됐다(lower.rs가 거부).
+//! 그 제약은 RQ1 §5 트랙 N("리스트 > 조건부 > 리스트" property test)을
+//! 원천 봉쇄하고 있었다 — §2.3-1이 "컴파일러가 생성할 수 없는 형태의 코드
+//! 금지"라 픽스처 손코딩으로 우회할 수도 없었기 때문이다. 이제 조건부 안에
+//! 정적 마크업 / `{signal()}` / `{signal().map(...)}` / 그것들을 감싸는
+//! 엘리먼트를 넣을 수 있다.
+//!
+//! 설계의 핵심은 **entity와 노드의 수명을 분리**한 것이다:
+//!
+//! - 중첩 binding의 `Entity`는 `setup()`이 **항상 즉시** 만든다. 그래야
+//!   `Signals` 구조체·action·`resume()`이 "조건부 안이냐 밖이냐"를 따지지
+//!   않는다.
+//! - 다만 `DomTarget`은 붙이지 않는다. patch System들의 쿼리가 `&DomTarget`을
+//!   요구하므로, DOM에 없는 동안은 **archetype 수준에서**(런타임 분기 없이)
+//!   자동으로 제외된다 — Bevy의 접근 선언 기반 스케줄링 재사용(CLAUDE.md 2-1).
+//! - 조건부가 처음 `true`가 될 때 `DomWrite::SpawnElement`가 노드를 만들고
+//!   `DomTarget`을 붙인다. 그 순간부터는 평범한 binding이다.
+//!
+//! 사이트 함수가 안쪽 entity를 찾는 방법은 `CondNested`(entity 벡터) +
+//! **컴파일타임에 고정된 리터럴 인덱스**뿐이다. 이름 조회도 트리 순회도
+//! 런타임에 남지 않는다.
+//!
+//! 초기값을 `SpawnElement`/초기 row로 **구워서** 보내는 것은 편의가 아니라
+//! 필수다: 이 entity의 `DomTarget`은 그 write가 적용될 때 붙으므로, 그
+//! 전에 지나간 `Changed` 틱은 어떤 patch System도 관측할 수 없다. 제네릭
+//! `list_reconcile_k_system`에 초기 렌더를 맡기면 안쪽 리스트가 **영영
+//! 그려지지 않는다**(`crates/loom-nested-fixture`의 음성 대조로 확인됨).
+//!
+//! 아직 못 받는 것(숨기지 않고 적어 둠): 조건부 안의 또 다른 조건부,
+//! `<input>` 양방향 binding, 지연 노드의 자체 `onClick`, `<Component/>`
+//! 참조, `sharedValue(...)`. 그리고 **리스트 row 템플릿 안의 조건부** —
+//! 트랙 N이 요구하는 바깥쪽 중첩이며, row 템플릿을 사이트별로
+//! monomorphize하는 별도 작업이다.
+//!
 //! ## `<input>` two-way binding (2026-07-24)
 //! `<input value={s()} onInput={(e) => s.set(e.target.value)}/>`
 //! (`JsxNode::InputBinding`) synthesizes a `ClickAction::SetString` action
@@ -109,7 +144,7 @@
 use crate::ir::{
     ClickAction, Component, ComponentGraph, IslandActivation, JsxNode, SharedBinding, SignalDecl, SignalInit,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 /// Which physical Island chunk/constructor a compiled unit corresponds to —
@@ -1174,7 +1209,7 @@ fn generate_resume_action_by_symbol(out: &mut String, actions: &[ClickAction], v
 fn generate_resume(
     out: &mut String,
     component: &Component,
-    cond_site_fn_names: &[(String, String, String)],
+    cond_site_fn_names: &[CondSite],
     has_shared: bool,
 ) {
     let resume_sig = if has_shared {
@@ -1192,8 +1227,24 @@ fn generate_resume(
     if has_input {
         writeln!(out, "    app.add_systems(::loom_runtime::patch_input_system);").unwrap();
     }
-    for s in &component.signals {
+    // 조건부 안에 사는 signal은 **그 조건부가 SSR 시점에 보였는지**에 따라
+    // resume 방식이 갈린다(아래 각 arm의 `gate` 처리). 그래서 조건부(Bool)를
+    // 먼저 전부 처리해 `<cond>_shown`을 스코프에 올려 둔다 — 선언 순서와
+    // 무관하게. `Signals` 구조체는 이 루프 뒤에 따로 조립되므로 순서를 바꿔도
+    // 관측 가능한 차이는 없다.
+    let nested_owner: HashMap<&str, &str> = cond_site_fn_names
+        .iter()
+        .flat_map(|site| site.nested.iter().map(|slot| (slot.signal(), site.signal.as_str())))
+        .collect();
+    let bool_first = component
+        .signals
+        .iter()
+        .filter(|s| matches!(s.init, SignalInit::Bool(_)))
+        .chain(component.signals.iter().filter(|s| !matches!(s.init, SignalInit::Bool(_))));
+    for s in bool_first {
         let entity_var = format!("{}_entity", s.name);
+        // `Some(cond)` = 이 signal은 `cond` 조건부의 지연 서브트리 안에 있다.
+        let gate = nested_owner.get(s.name.as_str()).copied();
         match &s.init {
             SignalInit::I32(initial) => {
                 writeln!(out, "    let {entity_var} = {{").unwrap();
@@ -1203,12 +1254,31 @@ fn generate_resume(
                     s.name
                 )
                 .unwrap();
-                writeln!(
-                    out,
-                    "        app.world.spawn((::loom_runtime::Signal(value), ::loom_runtime::DomTarget(find_node({:?})))).id()",
-                    s.name
-                )
-                .unwrap();
+                match gate {
+                    // 숨겨진 채 SSR됐다면 이 binding의 노드는 **아직 존재하지
+                    // 않는다** — `find_node`를 부르면 안 된다. `DomTarget` 없이
+                    // spawn하면 `setup()` 경로와 정확히 같은 상태가 되고,
+                    // 조건부가 처음 열릴 때 `SpawnElement`가 노드를 만들며
+                    // `DomTarget`을 붙인다.
+                    Some(cond) => {
+                        writeln!(out, "        if {cond}_shown {{").unwrap();
+                        writeln!(
+                            out,
+                            "            app.world.spawn((::loom_runtime::Signal(value), ::loom_runtime::DomTarget(find_node({:?})))).id()",
+                            s.name
+                        )
+                        .unwrap();
+                        writeln!(out, "        }} else {{").unwrap();
+                        writeln!(out, "            app.world.spawn((::loom_runtime::Signal(value),)).id()").unwrap();
+                        writeln!(out, "        }}").unwrap();
+                    }
+                    None => writeln!(
+                        out,
+                        "        app.world.spawn((::loom_runtime::Signal(value), ::loom_runtime::DomTarget(find_node({:?})))).id()",
+                        s.name
+                    )
+                    .unwrap(),
+                }
                 writeln!(out, "    }};").unwrap();
             }
             SignalInit::Bool(_) => {
@@ -1251,11 +1321,14 @@ fn generate_resume(
                 // filters on `With<CondSiteN>` (see the `CondBinding` arm's
                 // doc comment), so a resumed entity missing this marker
                 // would never be seen by its own site's system at all.
-                let (fn_name, marker_name) = cond_site_fn_names
+                let site = cond_site_fn_names
                     .iter()
-                    .find(|(signal, _, _)| signal == &s.name)
-                    .map(|(_, f, m)| (f.clone(), m.clone()))
+                    .find(|site| site.signal == s.name)
                     .unwrap_or_else(|| panic!("loomc internal error: no reconcile function recorded for conditional `{}`", s.name));
+                let (fn_name, marker_name) = (&site.fn_name, &site.marker);
+                // `CondNested`는 여기서 붙일 수 없다 — 중첩 binding entity들은
+                // 아래(비-Bool 패스)에서야 생긴다. 루프가 끝난 뒤 한꺼번에
+                // 붙인다(바로 아래 `nested_inserts`).
                 writeln!(
                     out,
                     "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({}_shown), ::loom_runtime::CondBlock {{ size: {}_children.len(), children: {}_children }}, ::loom_runtime::DomTarget({}_node), {marker_name})).id();",
@@ -1274,37 +1347,62 @@ fn generate_resume(
                 // current content, not an empty Vec, or the settle tick
                 // below (which re-derives DOM rows from *this* signal) would
                 // silently drop everything adopt_children just recovered.
-                writeln!(out, "    let {}_node = find_node({:?});", s.name, s.name).unwrap();
+                //
+                // 조건부 안의 리스트는 여기에 한 가지가 더 붙는다: 숨겨진 채
+                // SSR됐다면 `<ul>` 자체가 없으므로 adopt할 것도 없다. 그때는
+                // **선언된 초기값**으로 seed하고 `DomTarget` 없이 둔다 —
+                // 조건부가 열릴 때 생성 함수가 초기 row를 방출한다. 이것은
+                // "SSR 시점에 숨겨져 있던 리스트의 편집 내역은 복원되지
+                // 않는다"는 뜻이고(그런 편집은 SSR HTML에 흔적이 없다), RQ3 Q2의
+                // "SSR 스냅샷 동결" 한계와 같은 성질이다 — 숨기지 않고 적어 둔다.
+                writeln!(out, "    let {entity_var} = {{").unwrap();
+                let indent = if gate.is_some() { "            " } else { "        " };
+                if let Some(cond) = gate {
+                    writeln!(out, "        if {cond}_shown {{").unwrap();
+                }
+                writeln!(out, "{indent}let node = find_node({:?});", s.name).unwrap();
                 writeln!(
                     out,
-                    "    let {}_adopted: Vec<(::loom_runtime::NodeHandle, String)> = dom.adopt_children({}_node);",
-                    s.name, s.name
+                    "{indent}let adopted: Vec<(::loom_runtime::NodeHandle, String)> = dom.adopt_children(node);"
                 )
                 .unwrap();
                 writeln!(
                     out,
-                    "    let {}_rows: Vec<::bevy_ecs::entity::Entity> = {}_adopted.iter().map(|(handle, text)| {{",
-                    s.name, s.name
+                    "{indent}let rows: Vec<::bevy_ecs::entity::Entity> = adopted.iter().map(|(handle, text)| {{"
                 )
                 .unwrap();
                 writeln!(
                     out,
-                    "        app.world.spawn((::loom_runtime::Signal(text.clone()), ::loom_runtime::DomTarget(*handle))).id()"
+                    "{indent}    app.world.spawn((::loom_runtime::Signal(text.clone()), ::loom_runtime::DomTarget(*handle))).id()"
                 )
                 .unwrap();
-                writeln!(out, "    }}).collect();").unwrap();
+                writeln!(out, "{indent}}}).collect();").unwrap();
                 writeln!(
                     out,
-                    "    let {}_values: Vec<String> = {}_adopted.into_iter().map(|(_, text)| text).collect();",
-                    s.name, s.name
+                    "{indent}let values: Vec<String> = adopted.into_iter().map(|(_, text)| text).collect();"
                 )
                 .unwrap();
                 writeln!(
                     out,
-                    "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({}_values), ::loom_runtime::ListRows({}_rows), ::loom_runtime::DomTarget({}_node))).id();",
-                    s.name, s.name, s.name
+                    "{indent}app.world.spawn((::loom_runtime::Signal(values), ::loom_runtime::ListRows(rows), ::loom_runtime::DomTarget(node))).id()"
                 )
                 .unwrap();
+                if gate.is_some() {
+                    let SignalInit::StringList(items) = &s.init else { unreachable!() };
+                    let items_rust = items
+                        .iter()
+                        .map(|s| format!("{s:?}.to_string()"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    writeln!(out, "        }} else {{").unwrap();
+                    writeln!(
+                        out,
+                        "            app.world.spawn((::loom_runtime::Signal(vec![{items_rust}]), ::loom_runtime::ListRows::default())).id()"
+                    )
+                    .unwrap();
+                    writeln!(out, "        }}").unwrap();
+                }
+                writeln!(out, "    }};").unwrap();
             }
             SignalInit::Str(_) => {
                 // DOM-recovered, same reasoning as list/cond resume above —
@@ -1328,6 +1426,24 @@ fn generate_resume(
                 .unwrap();
             }
         }
+    }
+    // 이제서야 모든 중첩 binding entity가 존재하므로 각 조건부에 `CondNested`를
+    // 붙인다 — `setup()`이 spawn 시점에 함께 넣는 것과 **같은 순서**(각 사이트의
+    // `LazySlot` 순서)여야 한다. 생성된 reconcile 함수가 그 순서를 리터럴
+    // 인덱스로 박아 두고 있기 때문이다.
+    for site in cond_site_fn_names {
+        let nested = site
+            .nested
+            .iter()
+            .map(|slot| format!("{}_entity", slot.signal()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            out,
+            "    app.world.entity_mut({}_entity).insert(::loom_runtime::CondNested(vec![{nested}]));",
+            site.signal
+        )
+        .unwrap();
     }
     // Every signal this `LoomApp` just spawned looks "Changed" to a patch
     // System that has never run before (Bevy's Added-counts-as-Changed —
@@ -1387,7 +1503,12 @@ fn collect_binding_shapes(node: &JsxNode) -> Vec<BindingShape> {
             // inline in `lower_node` (each site's spawned content differs,
             // so there's no single shared System to add here the way
             // `list_reconcile_k_system` is for every `ListBinding`).
-            JsxNode::CondBinding { .. } => {}
+            // **다만 안쪽은 훑어야 한다**(2026-08-07): 조건부 안의
+            // `{signal()}`/`{signal().map(...)}`도 결국 `patch_text_system` /
+            // `list_reconcile_k_system`이 돌봐야 하는 평범한 binding이고,
+            // 그 등록은 여기서 모은 shape 목록으로 결정된다. 안 훑으면 조건부
+            // 안에만 리스트가 있는 컴포넌트에서 System이 아예 등록되지 않는다.
+            JsxNode::CondBinding { then_branch, .. } => walk(then_branch, shapes),
             // A referenced component's own patch systems are registered by
             // *its own* generated `setup()`, called via the emitted
             // `<mod>_generated::setup(...)` line — contributes nothing to
@@ -1454,7 +1575,7 @@ struct CodegenCtx {
     /// the same `CondSiteN` marker its own spawned entity needs — see
     /// `generate_resume`'s `Bool` arm and the `CondBinding` arm's own doc
     /// comment for why every site needs a distinct marker.
-    cond_site_fn_names: Vec<(String, String, String)>,
+    cond_site_fn_names: Vec<CondSite>,
     /// `true` while generating a non-root Island component (wrapped in its
     /// own `pub mod <name>_generated { ... }` by `generate_islands`). Every
     /// other Island's own generated module is a **flat sibling** at that
@@ -1559,6 +1680,284 @@ fn try_render_fully_static(node: &JsxNode) -> Option<String> {
             Some(html)
         }
         _ => None,
+    }
+}
+
+/// 조건부의 **지연 서브트리** 안에서 자기 entity를 가져야 하는 binding 하나.
+/// `loom_runtime::CondNested`의 원소 하나에 1:1 대응하고, 순서는
+/// `collect_lazy_slots`의 pre-order 순회로 컴파일타임에 고정된다 — 생성된
+/// reconcile 함수는 `nested.0[<리터럴>]`로만 접근하므로 이름 조회도, 트리
+/// 순회도 런타임에 남지 않는다.
+#[derive(Clone, Debug)]
+enum LazySlot {
+    /// `{signal()}` — i32 텍스트 binding.
+    Text { signal: String, initial: i32 },
+    /// `{signal().map((row) => <li>{row}</li>)}` — 문자열 리스트 binding.
+    List { signal: String, initial: Vec<String> },
+}
+
+impl LazySlot {
+    fn signal(&self) -> &str {
+        match self {
+            LazySlot::Text { signal, .. } | LazySlot::List { signal, .. } => signal,
+        }
+    }
+}
+
+/// 조건부 사이트 하나에 대해 `generate_resume`이 알아야 하는 것 전부.
+/// (2026-08-07 이전에는 `(String, String, String)` 튜플이었는데, 중첩 binding이
+/// 생기면서 resume이 "이 사이트 안에 어떤 signal이 들어 있나"를 알아야 하게
+/// 됐다 — 그 목록이 `nested`.)
+struct CondSite {
+    /// 조건 자체의 signal 이름.
+    signal: String,
+    fn_name: String,
+    marker: String,
+    /// `CondNested`의 순서와 정확히 같다.
+    nested: Vec<LazySlot>,
+}
+
+/// 조건부 wrapper의 자식들을 pre-order로 훑어 `LazySlot`을 모은다.
+/// `emit_lazy_subtree`가 **같은 순회를 같은 순서로** 하며 슬롯을 하나씩 소비
+/// 하므로 인덱스가 어긋날 수 없다 — 그래도 어긋나면 `LazyEmit::take_slot`이
+/// signal 이름 불일치로 그 자리에서 패닉한다(조용히 잘못된 entity를 쓰는 대신).
+fn collect_lazy_slots(children: &[JsxNode], component: &Component, cond: &str) -> Vec<LazySlot> {
+    let mut slots = Vec::new();
+    for child in children {
+        collect_lazy_slots_node(child, component, cond, &mut slots);
+    }
+    slots
+}
+
+fn collect_lazy_slots_node(node: &JsxNode, component: &Component, cond: &str, slots: &mut Vec<LazySlot>) {
+    // 완전 정적 부분트리는 컴파일타임에 HTML 한 덩어리가 되므로 entity를
+    // 하나도 만들지 않는다 — `emit_lazy_subtree`의 같은 위치 조기 반환과 짝.
+    if matches!(node, JsxNode::Element { .. }) && try_render_fully_static(node).is_some() {
+        return;
+    }
+    let lookup = |signal: &str| {
+        &component
+            .signals
+            .iter()
+            .find(|s| s.name == signal)
+            .unwrap_or_else(|| panic!("loomc internal error: unknown signal {signal}"))
+            .init
+    };
+    match node {
+        JsxNode::StaticText(_) => {}
+        JsxNode::TextBinding { signal } => {
+            let SignalInit::I32(initial) = lookup(signal) else {
+                panic!("loomc: `{{{signal}()}}` text binding requires an I32 signal");
+            };
+            slots.push(LazySlot::Text { signal: signal.clone(), initial: *initial });
+        }
+        JsxNode::ListBinding { signal, row, .. } => {
+            let JsxNode::Element { children, .. } = row.as_ref() else {
+                panic!("loomc: list row template must be a single element");
+            };
+            if !matches!(children.as_slice(), [JsxNode::RowItemText]) {
+                panic!(
+                    "loomc: Phase 1 only supports list rows shaped exactly as `<tag>{{item}}</tag>` (single text child referencing the row variable) — got {children:?}"
+                );
+            }
+            let SignalInit::StringList(initial) = lookup(signal) else {
+                panic!("loomc: list binding requires a string-list signal");
+            };
+            slots.push(LazySlot::List { signal: signal.clone(), initial: initial.clone() });
+        }
+        JsxNode::Element { action, children, .. } => {
+            if action.is_some() {
+                panic!(
+                    "loomc: `{{{cond}() && ...}}` 안의 엘리먼트는 아직 자기 `onClick`을 가질 수 없다 — 지연 생성된 노드에 LRef 속성을 심는 경로가 아직 없다(codegen.rs의 `emit_lazy_subtree` 참고)"
+                );
+            }
+            for c in children {
+                collect_lazy_slots_node(c, component, cond, slots);
+            }
+        }
+        other => panic!(
+            "loomc: `{{{cond}() && ...}}` 안에서 아직 지원하지 않는 노드다 — 지원 범위는 정적 마크업, `{{signal()}}`, `{{signal().map(...)}}`, 그리고 그것들을 감싸는 엘리먼트다. 받은 것: {other:?}"
+        ),
+    }
+}
+
+/// `emit_lazy_subtree`가 들고 다니는 상태. 어떤 보조 쿼리가 필요한지를 본문
+/// 생성 도중에 누적하므로, 함수 시그니처는 본문을 다 쓴 **뒤에** 만들어야 한다.
+struct LazyEmit<'a> {
+    slots: &'a [LazySlot],
+    cursor: usize,
+    tmp: usize,
+    needs_i32: bool,
+    needs_list: bool,
+}
+
+impl<'a> LazyEmit<'a> {
+    fn new(slots: &'a [LazySlot]) -> Self {
+        LazyEmit { slots, cursor: 0, tmp: 0, needs_i32: false, needs_list: false }
+    }
+
+    fn fresh_tmp(&mut self) -> String {
+        let name = format!("lazy_{}", self.tmp);
+        self.tmp += 1;
+        name
+    }
+
+    /// 다음 슬롯을 소비하고, 그 entity를 담은 지역 변수 이름을 돌려준다.
+    /// `signal`이 어긋나면 즉시 패닉 — `collect_lazy_slots`와 이 방출기의
+    /// 순회가 갈라졌다는 뜻이고, 조용히 넘기면 엉뚱한 entity에 노드가 붙는다.
+    fn take_slot(&mut self, out: &mut String, signal: &str, indent: &str) -> String {
+        let idx = self.cursor;
+        let slot = self.slots.get(idx).unwrap_or_else(|| {
+            panic!("loomc internal error: lazy slot {idx} for `{signal}` is missing — collect_lazy_slots and emit_lazy_subtree disagree")
+        });
+        assert_eq!(
+            slot.signal(),
+            signal,
+            "loomc internal error: lazy slot {idx} is `{}` but the emitter wants `{signal}`",
+            slot.signal()
+        );
+        if matches!(slot, LazySlot::List { .. }) {
+            self.needs_list = true;
+        }
+        self.cursor += 1;
+        let var = format!("slot_{idx}");
+        writeln!(out, "{indent}let {var} = nested.0[{idx}usize];").unwrap();
+        var
+    }
+
+    /// 지연 생성된 리스트의 **초기 row들을 직접 방출**하고 `ListRows`를 시드한다.
+    ///
+    /// 왜 제네릭 `list_reconcile_k_system`에 맡기지 않는가: 그 System의 쿼리는
+    /// `&DomTarget`을 요구하는데, 이 리스트의 `DomTarget`은 지금 이 배치가
+    /// 적용될 때 비로소 붙는다. 그러니 `Signal`이 변경 표시된 틱(= `setup()`의
+    /// spawn 틱)에는 쿼리가 매치하지 않았고, `DomTarget`이 생긴 다음 틱에는
+    /// 이미 `Changed`가 지나가 있다 — 즉 초기 내용이 **영원히 렌더되지 않는다**.
+    /// `SpawnRow`가 텍스트를 생성 시점에 굽는 것과 같은 이유로, 초기 상태는
+    /// 여기서 실어 보내야 한다. 이후의 변경은 평범하게 K가 처리한다(그때는
+    /// `DomTarget`이 이미 있다).
+    fn emit_initial_rows(&mut self, out: &mut String, list_var: &str, parent_expr: &str, indent: &str) {
+        self.needs_list = true;
+        let rows = self.fresh_tmp();
+        writeln!(out, "{indent}let mut {rows}: Vec<::bevy_ecs::entity::Entity> = Vec::new();").unwrap();
+        writeln!(out, "{indent}if let Ok(list) = list_signals.get({list_var}) {{").unwrap();
+        writeln!(out, "{indent}    for item in list.0.iter() {{").unwrap();
+        writeln!(out, "{indent}        let row = commands.spawn_empty().id();").unwrap();
+        writeln!(out, "{indent}        {rows}.push(row);").unwrap();
+        writeln!(
+            out,
+            "{indent}        pending.0.push(::loom_runtime::DomWrite::SpawnElement {{ entity: row, parent: {parent_expr}, tag: \"li\", class: None, loom_id: None, text: Some(item.clone()) }});"
+        )
+        .unwrap();
+        writeln!(out, "{indent}    }}").unwrap();
+        writeln!(out, "{indent}}}").unwrap();
+        writeln!(out, "{indent}commands.entity({list_var}).insert(::loom_runtime::ListRows({rows}));").unwrap();
+    }
+
+    fn finish(&self, slots: &[LazySlot]) {
+        assert_eq!(
+            self.cursor,
+            slots.len(),
+            "loomc internal error: {} lazy slots collected but {} emitted",
+            slots.len(),
+            self.cursor
+        );
+    }
+}
+
+/// 조건부가 처음 `true`가 될 때 실행될 문장들을 만든다. `lower_node`와 달리
+/// 여기서 나오는 코드는 `setup()` 본문이 아니라 **생성된 reconcile System의
+/// 본문**이다: `dom`이 없으므로 노드는 전부 `DomWrite`로 만들고, 아직 핸들이
+/// 없는 부모는 `WriteParent::Entity`로 지목한다(같은 배치에서 부모가 자식보다
+/// 먼저 방출되므로 적용 시점엔 항상 해석된다 — `SpawnRow`의 `before` 앵커와
+/// 같은 규약).
+fn emit_lazy_subtree(
+    out: &mut String,
+    node: &JsxNode,
+    parent_expr: &str,
+    cond: &str,
+    emit: &mut LazyEmit,
+    indent: &str,
+) {
+    // 완전 정적 부분트리는 컴파일타임에 HTML 한 문자열로 굽고 런타임 호출은
+    // 한 번만 남긴다 — `lower_node`의 `try_render_fully_static` 접기와 동형.
+    if matches!(node, JsxNode::Element { .. }) {
+        if let Some(html) = try_render_fully_static(node) {
+            writeln!(
+                out,
+                "{indent}pending.0.push(::loom_runtime::DomWrite::AppendStaticHtml {{ parent: {parent_expr}, html: {html:?}.to_string() }});"
+            )
+            .unwrap();
+            return;
+        }
+    }
+    match node {
+        JsxNode::StaticText(text) => {
+            writeln!(
+                out,
+                "{indent}pending.0.push(::loom_runtime::DomWrite::AppendStaticText {{ parent: {parent_expr}, text: {text:?}.to_string() }});"
+            )
+            .unwrap();
+        }
+        JsxNode::Element {
+            tag,
+            class,
+            action,
+            children,
+        } => {
+            if action.is_some() {
+                panic!(
+                    "loomc: `{{{cond}() && ...}}` 안의 엘리먼트는 아직 자기 `onClick`을 가질 수 없다 (codegen.rs의 `emit_lazy_subtree` 참고)"
+                );
+            }
+            let class_arg = match class {
+                Some(c) => format!("Some({c:?})"),
+                None => "None".to_string(),
+            };
+            match children.as_slice() {
+                // 이 엘리먼트 자체가 binding 노드다 — `lower_node`의 eager
+                // 경로에서 `TextBinding`이 **부모 엘리먼트의 핸들**에 붙는 것과
+                // 같은 의미다(엘리먼트에 동적 자식이 있으면 그 하나뿐이라는 것은
+                // `Element` arm이 이미 강제한다).
+                [JsxNode::TextBinding { signal }] => {
+                    let var = emit.take_slot(out, signal, indent);
+                    emit.needs_i32 = true;
+                    writeln!(
+                        out,
+                        "{indent}pending.0.push(::loom_runtime::DomWrite::SpawnElement {{ entity: {var}, parent: {parent_expr}, tag: {tag:?}, class: {class_arg}, loom_id: Some({signal:?}), text: Some(i32_signals.get({var}).map(|s| s.0.to_string()).unwrap_or_default()) }});"
+                    )
+                    .unwrap();
+                }
+                [JsxNode::ListBinding { signal, .. }] => {
+                    let var = emit.take_slot(out, signal, indent);
+                    writeln!(
+                        out,
+                        "{indent}pending.0.push(::loom_runtime::DomWrite::SpawnElement {{ entity: {var}, parent: {parent_expr}, tag: {tag:?}, class: {class_arg}, loom_id: Some({signal:?}), text: None }});"
+                    )
+                    .unwrap();
+                    let child_parent = format!("::loom_runtime::WriteParent::Entity({var})");
+                    emit.emit_initial_rows(out, &var, &child_parent, indent);
+                }
+                // 그 밖은 순수 컨테이너 — 자기 signal이 없으므로 임시 entity를
+                // 하나 만들어 자식들의 부모 지목에만 쓴다(이 분기는 사이트당
+                // 한 번만 실행되므로 누적되지 않는다).
+                _ => {
+                    let tmp = emit.fresh_tmp();
+                    writeln!(out, "{indent}let {tmp} = commands.spawn_empty().id();").unwrap();
+                    writeln!(
+                        out,
+                        "{indent}pending.0.push(::loom_runtime::DomWrite::SpawnElement {{ entity: {tmp}, parent: {parent_expr}, tag: {tag:?}, class: {class_arg}, loom_id: None, text: None }});"
+                    )
+                    .unwrap();
+                    let child_parent = format!("::loom_runtime::WriteParent::Entity({tmp})");
+                    for child in children {
+                        emit_lazy_subtree(out, child, &child_parent, cond, emit, indent);
+                    }
+                }
+            }
+        }
+        other => panic!(
+            "loomc: `{{{cond}() && ...}}` 안에서 아직 지원하지 않는 노드다 — 지원 범위는 정적 마크업, `{{signal()}}`, `{{signal().map(...)}}`, 그리고 그것들을 감싸는 엘리먼트다. 받은 것: {other:?}"
+        ),
     }
 }
 
@@ -1672,15 +2071,13 @@ fn lower_node(
                     "loomc: Phase 1 conditional content may not carry its own `onClick` — `{{{cond}() && <{tag} onClick=...>}}` is out of scope (the toggle button must be a separate sibling element, see codegen.rs's CondBinding arm)"
                 );
             }
-            let texts: Vec<&str> = children
-                .iter()
-                .map(|c| match c {
-                    JsxNode::StaticText(t) => t.as_str(),
-                    other => panic!(
-                        "loomc internal error: conditional content must be static-only (lower.rs should already reject this) — got {other:?}"
-                    ),
-                })
-                .collect();
+
+            // 이 사이트의 지연 서브트리 안에서 **entity가 필요한 binding**들을
+            // 컴파일타임에 순서까지 확정한다 — 생성되는 reconcile 함수는 이
+            // 순서를 `nested.0[<상수>]`로 그대로 인덱싱하므로 런타임 조회가
+            // 하나도 남지 않는다(2026-08-07 "컴파일타임에 무겁게, 런타임은
+            // 가볍게" 방향 결정).
+            let slots = collect_lazy_slots(children, component, cond);
 
             let init = &component
                 .signals
@@ -1742,23 +2139,137 @@ fn lower_node(
             writeln!(marker_decl).unwrap();
             ctx.cond_site_fns.push_str(&marker_decl);
 
+            // 중첩 binding의 entity는 조건부가 보이든 안 보이든 **여기서 즉시**
+            // 만든다. `DomTarget`만 빼고. 이유 두 가지:
+            //
+            //  (1) 조건부 안의 signal도 `Signals` 구조체·action·`resume()`에
+            //      평범하게 참여해야 한다 — entity가 나중에 생기면 그 전부가
+            //      "조건부 안이냐 밖이냐"를 런타임에 따져야 한다.
+            //  (2) `DomTarget`이 없으면 patch System들의 쿼리(`&DomTarget` 요구)
+            //      가 **archetype 수준에서** 이 entity를 제외한다 — 즉 "아직 DOM에
+            //      없음"이 런타임 분기가 아니라 컴파일된 쿼리 필터로 처리된다
+            //      (Bevy의 접근 선언 기반 스케줄링 재사용, CLAUDE.md 2-1).
+            //
+            // 조건부가 처음 `true`가 될 때 `DomWrite::SpawnElement`가 실제 노드를
+            // 만들고 `DomTarget`을 붙이며, 그 순간부터 평범한 binding이 된다.
+            let mut nested_vars: Vec<String> = Vec::new();
+            for slot in &slots {
+                let signal = slot.signal();
+                let var = format!("{signal}_entity");
+                match slot {
+                    LazySlot::Text { initial, .. } => writeln!(
+                        out,
+                        "    let {var} = app.world.spawn((::loom_runtime::Signal({initial}_i32),)).id();"
+                    )
+                    .unwrap(),
+                    LazySlot::List { initial, .. } => {
+                        let items_rust = initial
+                            .iter()
+                            .map(|s| format!("{s:?}.to_string()"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        writeln!(
+                            out,
+                            "    let {var} = app.world.spawn((::loom_runtime::Signal(vec![{items_rust}]), ::loom_runtime::ListRows::default())).id();"
+                        )
+                        .unwrap();
+                    }
+                }
+                ctx.signal_entities.push((signal.to_string(), var.clone()));
+                nested_vars.push(var);
+            }
+
             let entity_var = format!("{cond}_entity");
             writeln!(
                 out,
-                "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({initial}), ::loom_runtime::CondBlock::with_size({size}), ::loom_runtime::DomTarget({node_var}), {marker_name})).id();",
-                size = texts.len()
+                "    let {entity_var} = app.world.spawn((::loom_runtime::Signal({initial}), ::loom_runtime::CondBlock::with_size({size}), ::loom_runtime::DomTarget({node_var}), {marker_name}, ::loom_runtime::CondNested(vec![{nested}]))).id();",
+                size = children.len(),
+                nested = nested_vars.join(", ")
             )
             .unwrap();
             ctx.signal_entities.push((cond.clone(), entity_var));
 
             let fn_name = ctx.fresh_cond_site_fn();
+            // 본문을 먼저 만든다 — 어떤 보조 쿼리가 필요한지(`i32_signals`/
+            // `list_signals`)는 본문을 다 써 봐야 알 수 있고, 안 쓰는 쿼리를
+            // 시그니처에 남기면 경고가 난다.
+            let mut body = String::new();
+            let mut emit = LazyEmit::new(&slots);
+            match children.as_slice() {
+                // wrapper 자신이 binding 노드인 경우(`{c() && <p>{n()}</p>}`) —
+                // 노드는 이미 eager하게 있으므로 새로 만들지 않고 `DomTarget`만
+                // 뒤늦게 붙인다. `SpawnElement`가 필요 없는 유일한 경우다.
+                [JsxNode::TextBinding { signal }] => {
+                    let var = emit.take_slot(&mut body, signal, "                ");
+                    emit.needs_i32 = true;
+                    writeln!(
+                        body,
+                        "                commands.entity({var}).insert(::loom_runtime::DomTarget(anchor.0));"
+                    )
+                    .unwrap();
+                    writeln!(
+                        body,
+                        "                pending.0.push(::loom_runtime::DomWrite::SetText {{ target: anchor.0, text: i32_signals.get({var}).map(|s| s.0.to_string()).unwrap_or_default() }});"
+                    )
+                    .unwrap();
+                }
+                [JsxNode::ListBinding { signal, .. }] => {
+                    let var = emit.take_slot(&mut body, signal, "                ");
+                    writeln!(
+                        body,
+                        "                commands.entity({var}).insert(::loom_runtime::DomTarget(anchor.0));"
+                    )
+                    .unwrap();
+                    emit.emit_initial_rows(&mut body, &var, "::loom_runtime::WriteParent::Node(anchor.0)", "                ");
+                }
+                _ => {
+                    for child in children {
+                        emit_lazy_subtree(
+                            &mut body,
+                            child,
+                            "::loom_runtime::WriteParent::Node(anchor.0)",
+                            cond,
+                            &mut emit,
+                            "                ",
+                        );
+                    }
+                }
+            }
+            emit.finish(&slots);
+            // `CondBlock.children`는 이 사이트의 생성 함수에서는 "이미 한 번
+            // 채웠는가"(`is_empty()`)로만 쓰인다. 실제 binding entity를 여기
+            // 넣지 않고 빈 entity를 자식 수만큼 넣는 것은 의도적이다 — 이
+            // 벡터는 후보 B(`cond_reconcile_b_system`)에서 **despawn 대상**
+            // 이기도 해서, signal entity가 섞여 들어가면 다른 경로에서
+            // 살아 있어야 할 entity가 지워질 수 있다.
+            writeln!(
+                body,
+                "                for _ in 0..{}usize {{ block.children.push(commands.spawn(()).id()); }}",
+                children.len()
+            )
+            .unwrap();
+
             let mut site_fn = String::new();
             writeln!(site_fn, "fn {fn_name}(").unwrap();
             writeln!(
                 site_fn,
-                "    mut q: ::bevy_ecs::prelude::Query<(&::loom_runtime::Signal<bool>, &mut ::loom_runtime::CondBlock, &::loom_runtime::DomTarget), (::bevy_ecs::prelude::Changed<::loom_runtime::Signal<bool>>, ::bevy_ecs::prelude::With<{marker_name}>)>,"
+                "    mut q: ::bevy_ecs::prelude::Query<(&::loom_runtime::Signal<bool>, &mut ::loom_runtime::CondBlock, &::loom_runtime::DomTarget, &::loom_runtime::CondNested), (::bevy_ecs::prelude::Changed<::loom_runtime::Signal<bool>>, ::bevy_ecs::prelude::With<{marker_name}>)>,"
             )
             .unwrap();
+            if emit.needs_i32 {
+                writeln!(
+                    site_fn,
+                    "    i32_signals: ::bevy_ecs::prelude::Query<&::loom_runtime::Signal<i32>>,"
+                )
+                .unwrap();
+            }
+            if emit.needs_list {
+                writeln!(
+                    site_fn,
+                    "    list_signals: ::bevy_ecs::prelude::Query<&::loom_runtime::Signal<Vec<String>>>,"
+                )
+                .unwrap();
+            }
             writeln!(site_fn, "    mut commands: ::bevy_ecs::prelude::Commands,").unwrap();
             writeln!(
                 site_fn,
@@ -1766,17 +2277,16 @@ fn lower_node(
             )
             .unwrap();
             writeln!(site_fn, ") {{").unwrap();
-            writeln!(site_fn, "    for (cond, mut block, anchor) in &mut q {{").unwrap();
+            writeln!(site_fn, "    for (cond, mut block, anchor, nested) in &mut q {{").unwrap();
+            if slots.is_empty() {
+                // 중첩 binding이 없는 사이트에서는 `nested`를 읽지 않는다 —
+                // 쿼리에는 남기되(모든 사이트가 같은 shape이면 `resume()`도
+                // 한 갈래로 끝난다) 미사용 경고만 막는다.
+                writeln!(site_fn, "        let _ = nested;").unwrap();
+            }
             writeln!(site_fn, "        if block.children.is_empty() {{").unwrap();
             writeln!(site_fn, "            if cond.0 {{").unwrap();
-            for text in &texts {
-                writeln!(
-                    site_fn,
-                    "                pending.0.push(::loom_runtime::DomWrite::AppendStaticText {{ parent: anchor.0, text: {text:?}.to_string() }});"
-                )
-                .unwrap();
-                writeln!(site_fn, "                block.children.push(commands.spawn(()).id());").unwrap();
-            }
+            site_fn.push_str(&body);
             writeln!(site_fn, "            }}").unwrap();
             writeln!(site_fn, "        }} else {{").unwrap();
             writeln!(
@@ -1789,7 +2299,12 @@ fn lower_node(
             writeln!(site_fn, "}}").unwrap();
             writeln!(site_fn).unwrap();
             ctx.cond_site_fns.push_str(&site_fn);
-            ctx.cond_site_fn_names.push((cond.clone(), fn_name.clone(), marker_name.clone()));
+            ctx.cond_site_fn_names.push(CondSite {
+                signal: cond.clone(),
+                fn_name: fn_name.clone(),
+                marker: marker_name.clone(),
+                nested: slots,
+            });
 
             writeln!(out, "    app.add_systems({fn_name});").unwrap();
         }
