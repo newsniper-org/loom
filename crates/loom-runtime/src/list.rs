@@ -31,9 +31,11 @@ pub struct SlotValue(pub String);
 /// entity/DOM-node ever moves. This is the reason C's opt-in scope (RQ1)
 /// exists: row-local state (e.g. focus) is bound to the *slot*, not the
 /// item, which is surprising if the caller expects keyed semantics.
-pub fn list_reconcile_c_system<T>(
-    mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
+fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
+    site: &R::Ctx,
+    mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), F>,
     mut slots: Query<(&mut SlotValue, &DomTarget)>,
+    owned: Query<&crate::RowOwned>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
@@ -74,6 +76,21 @@ pub fn list_reconcile_c_system<T>(
                     // 컴포넌트 교체(archetype move)형"으로 사전 고정했으므로
                     // marker를 교체한다 — 이 Commands가 sync point에서 적용되며
                     // archetype 이동을 일으키고, §9 C 기각 (ii)가 그 구간을 잰다.
+                    // 사이트별 row 생성기의 파생값 재계산 (2026-08-08).
+                    // C는 아이템이 제자리에서 바뀌는 유일한 후보이므로, row에서
+                    // 파생된 값과 그 mirror entity가 여기서 갱신돼야 한다.
+                    // `DefaultRow`에서는 no-op이라 트랙 L 측정에 영향이 없다.
+                    {
+                        let owned_slice: &[Entity] =
+                            owned.get(entity).map(|o| o.0.as_slice()).unwrap_or(&[]);
+                        let mut out = crate::RowSpawnCtx {
+                            commands: &mut commands,
+                            pending: &mut pending.0,
+                            row_bindings: row_bindings.0,
+                            row_variants: variant_mode.0,
+                        };
+                        R::revalue(site, &mut out, entity, owned_slice, &new_text);
+                    }
                     if variant_mode.0 {
                         let was_a = crate::row_variant_is_a(&old_text);
                         let now_a = crate::row_variant_is_a(&new_text);
@@ -97,24 +114,19 @@ pub fn list_reconcile_c_system<T>(
             for item in &items.0[old_len..new_len] {
                 let text = item.to_string();
                 let entity = commands.spawn(SlotValue(text.clone())).id();
-                if variant_mode.0 {
-                    if crate::row_variant_is_a(&text) {
-                        commands.entity(entity).insert(crate::RowVariantA);
-                    } else {
-                        commands.entity(entity).insert(crate::RowVariantB);
-                    }
-                }
                 rows.0.push(entity);
-                pending.0.push(DomWrite::SpawnRow {
-                    entity,
-                    parent: anchor.0,
-                    tag: "li",
-                    text: text.clone(),
-                    before: None, // growing the tail always appends.
-                });
-                let extra = crate::extra_binding_texts(row_bindings.0, &text);
-                if !extra.is_empty() {
-                    pending.0.push(DomWrite::AppendStaticChildren { row: entity, texts: extra });
+                // R3 브랜치 marker와 R2 추가 binding은 `DefaultRow::emit`이
+                // 함께 낸다 — 여기 인라인으로 두면 사이트별 생성기를 쓸 때
+                // 두 번 붙는다. 방출되는 write 열은 동일하다.
+                {
+                    let mut out = crate::RowSpawnCtx {
+                        commands: &mut commands,
+                        pending: &mut pending.0,
+                        row_bindings: row_bindings.0,
+                        row_variants: variant_mode.0,
+                    };
+                    // 꼬리 성장은 항상 append이므로 앵커 없음.
+                    R::emit(site, &mut out, entity, anchor.0, &text, None);
                 }
             }
         } else if new_len < old_len {
@@ -953,3 +965,47 @@ keyed_candidate_systems!(
     OrderKeyMembers,
     Query<(&OrderedKey, &mut OrderKey)>
 );
+
+/// 후보 C — 접미사 없는 판본과 사이트별 monomorphize 판본.
+/// 위 keyed 후보들의 매크로와 같은 구조이지만 C는 쿼리 구성이 달라 따로 쓴다
+/// (슬롯 값 채널 `SlotValue`, 그리고 파생값 재계산에 필요한 `RowOwned`).
+pub fn list_reconcile_c_system<T>(
+    lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
+    slots: Query<(&mut SlotValue, &DomTarget)>,
+    owned: Query<&crate::RowOwned>,
+    commands: Commands,
+    pending: ResMut<PendingDomWrites>,
+    row_bindings: Res<crate::RowBindings>,
+    variant_mode: Res<crate::RowVariantMode>,
+) where
+    T: Send + Sync + Clone + ToString + 'static,
+{
+    c_body::<T, crate::DefaultRow, _>(
+        &crate::NoRowCtx,
+        lists,
+        slots,
+        owned,
+        commands,
+        pending,
+        row_bindings,
+        variant_mode,
+    );
+}
+
+pub fn list_reconcile_c_system_with<T, R: crate::RowSpawner>(
+    lists: Query<
+        (&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget),
+        (Changed<Signal<Vec<T>>>, With<R::Marker>),
+    >,
+    slots: Query<(&mut SlotValue, &DomTarget)>,
+    owned: Query<&crate::RowOwned>,
+    commands: Commands,
+    pending: ResMut<PendingDomWrites>,
+    row_bindings: Res<crate::RowBindings>,
+    variant_mode: Res<crate::RowVariantMode>,
+    site: Res<R::Ctx>,
+) where
+    T: Send + Sync + Clone + ToString + 'static,
+{
+    c_body::<T, R, _>(&site, lists, slots, owned, commands, pending, row_bindings, variant_mode);
+}

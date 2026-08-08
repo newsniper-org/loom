@@ -920,6 +920,10 @@ fn generate_stub_for_component_ref(ref_name: &str, has_shared: bool) -> String {
 pub enum ListCandidate {
     /// 전면 재생성(대조군). Phase 1 데모/Island/FIC 산출물 전부 이것.
     K,
+    /// 값 관통 — 슬롯은 자리에 고정되고 값만 바뀐다. **아이템이 제자리에서
+    /// 바뀌는 유일한 후보**라, row에서 파생된 값(술어·slice 길이)을 다시
+    /// 계산해야 한다(`RowSpawner::revalue`).
+    C,
     /// Keyed 시퀀스 동기화 — controller-Vec 저장.
     D,
     /// D + LIS 이동 최소화.
@@ -934,6 +938,7 @@ impl ListCandidate {
     fn system(&self) -> &'static str {
         match self {
             ListCandidate::K => "::loom_runtime::list_reconcile_k_system",
+            ListCandidate::C => "::loom_runtime::list_reconcile_c_system",
             ListCandidate::D => "::loom_runtime::list_reconcile_d_system",
             ListCandidate::DLis => "::loom_runtime::list_reconcile_d_lis_system",
             ListCandidate::E => "::loom_runtime::list_reconcile_e_system",
@@ -969,6 +974,7 @@ impl ListCandidate {
     fn row_identity(&self, idx: &str) -> String {
         match self {
             ListCandidate::K => "()".to_string(),
+            ListCandidate::C => "(::loom_runtime::SlotValue(item.clone()),)".to_string(),
             ListCandidate::D | ListCandidate::DLis => {
                 "(::loom_runtime::RowKey(item.clone()),)".to_string()
             }
@@ -2428,6 +2434,14 @@ fn emit_row_child(
             writeln!(out, "{indent}    {},", names.cond_marker).unwrap();
             writeln!(out, "{indent}    ::loom_runtime::CondNested(vec![inner]),").unwrap();
             writeln!(out, "{indent})).id();").unwrap();
+            // row → 소유 entity. 후보 C의 값 관통에서 파생값을 다시 계산하려면
+            // row에서 이것들을 찾아갈 수 있어야 한다(`RowSpawner::revalue`).
+            // 순서는 컴파일타임 고정: [조건부, 중첩 리스트].
+            writeln!(
+                out,
+                "{indent}out.commands.entity(row).insert(::loom_runtime::RowOwned(vec![cond, inner]));"
+            )
+            .unwrap();
             writeln!(
                 out,
                 "{indent}out.pending.push(::loom_runtime::DomWrite::SpawnElement {{ entity: cond, parent: ::loom_runtime::WriteParent::Entity(row), tag: {tag:?}, class: {class_arg}, loom_id: None, text: None }});"
@@ -2694,42 +2708,39 @@ fn emit_row_site_systems(
 }
 
 /// 사이트의 시스템 등록 줄들 — `setup()`과 `resume()` 양쪽에 같은 것이 들어간다.
+///
+/// **`.chain()`으로 묶는 이유(2026-08-08, 트랙 N에서 후보 C가 잡아냄)**:
+/// 이 시스템들은 서로의 `Commands` 결과에 의존한다. 특히 후보 C의 값 관통은
+/// `RowSpawner::revalue`로 mirror entity의 `Signal`을 **Commands로** 갈아
+/// 끼우는데, 같은 스케줄 안에 sync point가 없으면 그 삽입은 스케줄이 끝난 뒤에야
+/// 적용된다 — 그러면 그 row의 조건부·중첩 리스트가 **한 틱 늦게** 반응한다.
+/// `.chain()`은 순서를 걸면서 deferred 버퍼를 가진 시스템 사이에 sync point를
+/// 자동 삽입하므로(`chain_ignore_deferred`는 그러지 않는다) 이 의존이 같은
+/// 틱 안에서 닫힌다.
+///
+/// 순서의 근거: (1) `*_ctx` 원본 signal → Resource(리스트 System보다 먼저여야
+/// 새 row가 현재 값으로 태어난다) → (2) 바깥 리스트(`revalue`가 여기서 나온다)
+/// → (3) `*_sync`(위 Commands 적용 후, 값이 실제로 바뀐 틱에만 — N3 게이팅)
+/// → (4) 조건부 reconcile → (5) 중첩 리스트.
 fn row_site_registration(names: &RowSiteNames, mirrors: &RowMirrors, candidate: ListCandidate) -> String {
     let mut out = String::new();
     writeln!(out, "    app.world.init_resource::<{}>();", names.ctx).unwrap();
-    writeln!(out, "    app.add_systems({});", names.ctx_fn).unwrap();
-    // `.after(...)`는 트레잇 메서드라 생성 코드에서 트레잇을 스코프에 들일 수
-    // 없다 — UFCS로 부른다.
-    writeln!(
-        out,
-        "    app.add_systems(::bevy_ecs::schedule::IntoScheduleConfigs::after({}, {}));",
-        names.sync_fn, names.ctx_fn
-    )
-    .unwrap();
-    // 바깥 리스트는 `*_ctx` **다음에** — 새로 생기는 row가 현재 값으로 만들어져야
-    // 한다(그렇지 않으면 열린 상태에서 추가된 row만 한 틱 비어 있게 된다).
-    writeln!(
-        out,
-        "    app.add_systems(::bevy_ecs::schedule::IntoScheduleConfigs::after({}::<String, {}>, {}));",
-        candidate.system_with(), names.spawner, names.ctx_fn
-    )
-    .unwrap();
+    let mut chain = vec![
+        names.ctx_fn.clone(),
+        format!("{}::<String, {}>", candidate.system_with(), names.spawner),
+        names.sync_fn.clone(),
+    ];
     if mirrors.cond.is_some() {
-        writeln!(
-            out,
-            "    app.add_systems(::bevy_ecs::schedule::IntoScheduleConfigs::after({}, {}));",
-            names.cond_fn, names.sync_fn
-        )
-        .unwrap();
+        chain.push(names.cond_fn.clone());
     }
     if mirrors.list.is_some() {
-        writeln!(
-            out,
-            "    app.add_systems(::bevy_ecs::schedule::IntoScheduleConfigs::after({}::<String, {}>, {}));",
-            candidate.system_with(), names.inner_spawner, names.sync_fn
-        )
-        .unwrap();
+        chain.push(format!("{}::<String, {}>", candidate.system_with(), names.inner_spawner));
     }
+    writeln!(out, "    app.add_systems(::bevy_ecs::schedule::IntoScheduleConfigs::chain((").unwrap();
+    for step in &chain {
+        writeln!(out, "        {step},").unwrap();
+    }
+    writeln!(out, "    )));").unwrap();
     out
 }
 
@@ -2862,6 +2873,47 @@ fn lower_node(
             writeln!(decls, "        let _ = site;").unwrap();
             decls.push_str(&emit_body);
             writeln!(decls, "    }}").unwrap();
+            // `revalue` — 슬롯의 아이템이 제자리에서 바뀌었을 때(후보 C).
+            // 파생값을 다시 계산해 mirror entity의 Signal을 갈아 끼운다.
+            // Signal을 `insert`로 덮어쓰면 변경 표시가 서므로 그 row의 조건부/
+            // 중첩 리스트가 평범하게 반응한다.
+            if mirrors.cond.is_some() || mirrors.list.is_some() {
+                writeln!(
+                    decls,
+                    "    fn revalue(site: &{}, out: &mut ::loom_runtime::RowSpawnCtx, row: ::bevy_ecs::entity::Entity, owned: &[::bevy_ecs::entity::Entity], text: &str) {{",
+                    names.ctx
+                )
+                .unwrap();
+                writeln!(decls, "        let _ = row;").unwrap();
+                writeln!(decls, "        if owned.len() < 2 {{ return; }}").unwrap();
+                writeln!(decls, "        let (cond, inner) = (owned[0], owned[1]);").unwrap();
+                let (flag_expr, cond_value) = match mirrors.predicate {
+                    Some(RowPredicate::LenGt(k)) => (
+                        format!("text.chars().count() > {k}usize"),
+                        "site.cond && derived_flag".to_string(),
+                    ),
+                    None => ("true".to_string(), "site.cond".to_string()),
+                };
+                let items_expr = match mirrors.slice {
+                    Some(RowSlice::PrefixByItemLen) => {
+                        "site.list.iter().take(derived_take).cloned().collect::<Vec<String>>()"
+                    }
+                    None => "site.list.clone()",
+                };
+                writeln!(decls, "        let derived_flag = {flag_expr};").unwrap();
+                writeln!(decls, "        let derived_take = text.chars().count();").unwrap();
+                writeln!(
+                    decls,
+                    "        out.commands.entity(cond).insert((::loom_runtime::RowDerivedFlag(derived_flag), ::loom_runtime::Signal({cond_value})));"
+                )
+                .unwrap();
+                writeln!(
+                    decls,
+                    "        out.commands.entity(inner).insert((::loom_runtime::RowDerivedTake(derived_take), ::loom_runtime::Signal({items_expr})));"
+                )
+                .unwrap();
+                writeln!(decls, "    }}").unwrap();
+            }
             writeln!(decls, "}}").unwrap();
             writeln!(decls).unwrap();
 

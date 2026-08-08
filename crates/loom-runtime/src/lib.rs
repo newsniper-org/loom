@@ -33,7 +33,7 @@ use bevy_ecs::schedule::Schedule;
 
 pub mod list;
 pub use list::{
-    list_reconcile_c_system, list_reconcile_d_lis_system, list_reconcile_d_lis_system_with,
+    list_reconcile_c_system, list_reconcile_c_system_with, list_reconcile_d_lis_system, list_reconcile_d_lis_system_with,
     list_reconcile_d_system, list_reconcile_d_system_with, list_reconcile_e_lis_system,
     list_reconcile_e_lis_system_with, list_reconcile_e_system, list_reconcile_e_system_with,
     OrderKey, OrderKeyMembers, OrderedKey, RowKey, SlotValue,
@@ -429,6 +429,15 @@ pub struct RowDerivedFlag(pub bool);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RowDerivedTake(pub usize);
 
+/// row가 소유한 **사이트 고유 entity들**, 컴파일타임에 고정된 순서.
+/// (2026-08-08 신설) 후보 C는 슬롯의 아이템이 **제자리에서 바뀌는** 유일한
+/// 후보라, row에서 파생된 값(`RowDerivedFlag`/`RowDerivedTake`)과 그 값을 담은
+/// mirror entity를 다시 계산해야 한다 — 그러려면 row에서 그것들을 찾아갈 수
+/// 있어야 한다. keyed 후보(D/E)는 retained row의 키(=텍스트)가 그대로라 이
+/// 경로를 타지 않는다. POD(`Vec<Entity>`)이므로 금지 4 유지.
+#[derive(Component, Debug, Clone, Default)]
+pub struct RowOwned(pub Vec<Entity>);
+
 /// `DomWrite`가 부모를 지목하는 두 가지 방식. **이미 해석된 핸들**(`setup()`이
 /// 직접 만든 노드)과 **아직 만들어지지 않았을 수 있는 entity**(같은 배치의 앞선
 /// write가 만들 노드)를 한 타입으로 합친다. 후자는 `SpawnRow`의 `before` 앵커가
@@ -579,6 +588,23 @@ pub trait RowSpawner: Send + Sync + 'static {
         text: &str,
         before: Option<Entity>,
     );
+
+    /// 슬롯의 아이템이 **제자리에서 바뀌었을 때** row의 파생값을 다시 계산한다.
+    /// 후보 C의 값 관통 경로에서만 불린다 — keyed 후보는 retained row의 키가
+    /// 그대로여서 파생값도 그대로다(그 비대칭이 RQ1의 예측이다).
+    /// `owned`는 이 row의 `RowOwned`(없으면 빈 슬라이스).
+    ///
+    /// 기본 구현이 no-op인 것은 `DefaultRow`가 파생값을 갖지 않기 때문이다 —
+    /// 사이트별 생성기만 이것을 구현한다.
+    fn revalue(
+        site: &Self::Ctx,
+        out: &mut RowSpawnCtx,
+        row: Entity,
+        owned: &[Entity],
+        text: &str,
+    ) {
+        let _ = (site, out, row, owned, text);
+    }
 }
 
 /// `RowSpawner::Ctx`가 필요 없는 사이트용 빈 입력.

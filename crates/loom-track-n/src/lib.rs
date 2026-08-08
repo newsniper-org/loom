@@ -47,6 +47,9 @@ pub mod arms {
     pub mod k {
         include!(concat!(env!("OUT_DIR"), "/arm_k.rs"));
     }
+    pub mod c {
+        include!(concat!(env!("OUT_DIR"), "/arm_c.rs"));
+    }
     pub mod d {
         include!(concat!(env!("OUT_DIR"), "/arm_d.rs"));
     }
@@ -64,6 +67,7 @@ pub mod arms {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arm {
     K,
+    C,
     D,
     DLis,
     E,
@@ -71,11 +75,12 @@ pub enum Arm {
 }
 
 impl Arm {
-    pub const ALL: [Arm; 5] = [Arm::K, Arm::D, Arm::DLis, Arm::E, Arm::ELis];
+    pub const ALL: [Arm; 6] = [Arm::K, Arm::C, Arm::D, Arm::DLis, Arm::E, Arm::ELis];
 
     pub fn name(&self) -> &'static str {
         match self {
             Arm::K => "K",
+            Arm::C => "C",
             Arm::D => "D",
             Arm::DLis => "D-LIS",
             Arm::E => "E",
@@ -87,6 +92,7 @@ impl Arm {
     fn identity(&self) -> RowIdentity {
         match self {
             Arm::K => RowIdentity::Recreated,
+            Arm::C => RowIdentity::Slots,
             _ => RowIdentity::Retained,
         }
     }
@@ -350,6 +356,7 @@ macro_rules! run_arm {
 pub fn run(arm: Arm, ops: &[Op]) -> Outcome {
     match arm {
         Arm::K => run_arm!(arm, ops, crate::arms::k),
+        Arm::C => run_arm!(arm, ops, crate::arms::c),
         Arm::D => run_arm!(arm, ops, crate::arms::d),
         Arm::DLis => run_arm!(arm, ops, crate::arms::d_lis),
         Arm::E => run_arm!(arm, ops, crate::arms::e),

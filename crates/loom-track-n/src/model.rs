@@ -26,6 +26,10 @@ pub enum RowIdentity {
     Retained,
     /// K — 리스트가 바뀔 때마다 전부 despawn 후 재생성.
     Recreated,
+    /// C — 슬롯이 **자리에 고정**되고 값만 관통한다. row 정체성 = 위치.
+    /// 그래서 이 후보만 "같은 row의 아이템이 바뀐다"가 일어나고, 아이템에서
+    /// 파생된 술어·slice 길이도 함께 바뀐다(`RowSpawner::revalue`).
+    Slots,
 }
 
 #[derive(Debug, Clone)]
@@ -81,7 +85,34 @@ impl Model {
 
     /// 외부 리스트가 바뀌었다.
     pub fn set_outer(&mut self, next: Vec<String>) {
+        if self.identity == RowIdentity::Slots {
+            // 슬롯 고정: 공통 구간은 값만 관통하고, 꼬리만 늘거나 줄어든다.
+            // 값이 바뀌면 그 row의 술어·slice 길이도 바뀌므로 조건 전이를
+            // 다시 적용한다(구현 쪽 `revalue`가 하는 일과 같은 규칙).
+            let mut events = 0;
+            let common = self.rows.len().min(next.len());
+            for i in 0..common {
+                let before = self.open && predicate(&self.rows[i].item);
+                if self.rows[i].item != next[i] {
+                    self.rows[i].item = next[i].clone();
+                }
+                let want = self.open && predicate(&self.rows[i].item);
+                events += Self::apply_want(&mut self.rows[i], before, want);
+            }
+            if next.len() > self.rows.len() {
+                for item in &next[common..] {
+                    self.rows.push(self.fresh_row(item));
+                }
+            } else {
+                self.rows.truncate(next.len());
+            }
+            self.catch_up_events += events;
+            self.catch_up_this_step = events > 0;
+            self.outer = next;
+            return;
+        }
         self.rows = match self.identity {
+            RowIdentity::Slots => unreachable!("위에서 처리했다"),
             RowIdentity::Recreated => next.iter().map(|it| self.fresh_row(it)).collect(),
             RowIdentity::Retained => {
                 // 키(=아이템 텍스트) 매칭. 같은 키가 여러 번 나오면 앞에서부터
@@ -100,6 +131,30 @@ impl Model {
         self.outer = next;
     }
 
+    /// row 하나의 실효 조건이 `before`에서 `want`로 바뀌었을 때의 전이.
+    /// 토글(전 row 동시)과 값 관통(C, row 하나)이 **같은 규칙**을 타야 하므로
+    /// 한 곳에 둔다 — 두 벌로 두면 한쪽만 고치는 사고가 난다.
+    fn apply_want(row: &mut Row, before: bool, want: bool) -> usize {
+        if want == before {
+            return 0;
+        }
+        if !row.materialized {
+            if want {
+                row.materialized = true;
+                row.visible = true;
+            }
+            return 0;
+        }
+        let mut events = 0;
+        if want && row.stale_while_hidden {
+            // 숨은 동안 바뀐 내용이 이제 보인다 — 불변식 4의 시나리오.
+            events += 1;
+            row.stale_while_hidden = false;
+        }
+        row.visible = want;
+        events
+    }
+
     /// 조건부가 토글됐다. row별 실효값은 `open && predicate(item)`이고,
     /// **그 값이 바뀐 row에서만** 생성/표시 전환이 일어난다(생성 함수의 쿼리가
     /// `Changed<Signal<bool>>`이므로).
@@ -109,22 +164,7 @@ impl Model {
         let mut events = 0;
         for (i, row) in self.rows.iter_mut().enumerate() {
             let want = open && predicate(&row.item);
-            if want == before[i] {
-                continue;
-            }
-            if !row.materialized {
-                if want {
-                    row.materialized = true;
-                    row.visible = true;
-                }
-            } else {
-                if want && row.stale_while_hidden {
-                    // 숨은 동안 바뀐 내용이 이제 보인다 — 불변식 4의 시나리오.
-                    events += 1;
-                    row.stale_while_hidden = false;
-                }
-                row.visible = want;
-            }
+            events += Self::apply_want(row, before[i], want);
         }
         self.catch_up_events += events;
         self.catch_up_this_step = events > 0;
