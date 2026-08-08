@@ -21,6 +21,7 @@ E 기각 (i)의 M2 결정 규칙, E 기각 (ii). 조항이 있는데 계산되�
 """
 
 import json
+import os
 import random
 import statistics
 from collections import defaultdict
@@ -31,6 +32,16 @@ random.seed(20260802)
 
 DATA = "/home/ybi/loom-research/research-questions/data"
 VERSION = "v18"
+# §11-2 개정 #8로 **R3 셀만** 무효화됐고(축이 C 외 다섯 후보에 적용되지 않았다),
+# 다른 조합의 방출 write 열이 불변임은 `write_identity` 골든으로 확인됐다.
+# 그래서 R3 조합만 새 기반에서 다시 수집해 덮어쓴다.
+#
+# §2.5의 "상이한 기반의 측정치를 같은 판정에 혼용 금지"에 대해: R3 셀을 읽는
+# §9 조항은 C 기각 뒷 분기 하나뿐이고 그것은 **C 자신의 절대 임계값**
+# (archetype move 구간이 스크립트 시간의 50% 이상)이라, 새 기반 R3 셀과 옛 기반
+# 비-R3 셀이 한 판정식 안에서 만나지 않는다. 만약 앞으로 두 기반을 섞어 읽는
+# 조항이 생기면 이 오버레이는 성립하지 않으므로 전면 재수집으로 가야 한다.
+R3_OVERLAY = "v19-r3"
 
 # §3.1 워크로드 이름 ↔ 하네스 이름.
 W = {"W1": "swap", "W2": "shuffle", "W3": "shuffle10", "W4": "head_insert",
@@ -105,13 +116,32 @@ def at_least_equal(v):
 # 데이터 적재
 # ---------------------------------------------------------------------------
 
-def load(browser):
-    path = f"{DATA}/rq1-phase1-track-l-core-grid-{VERSION}-{browser}.json"
+def _read(path, base_tag):
     payload = json.load(open(path))
     # v16부터 stock 브라우저 수집 경로가 `{track_l, track_t}`로 감싸 보낸다
     # (§11 개정 #4 — Playwright 번들 Firefox가 대표 빌드가 아니어서 신설한 경로).
     # v15 이하는 트랙 L 배열 그대로다.
     rows = payload["track_l"] if isinstance(payload, dict) else payload
+    for r in rows:
+        r["_base"] = base_tag
+    return rows
+
+
+def load(browser):
+    rows = _read(f"{DATA}/rq1-phase1-track-l-core-grid-{VERSION}-{browser}.json", VERSION)
+    if R3_OVERLAY:
+        path = f"{DATA}/rq1-phase1-track-l-core-grid-{R3_OVERLAY}-{browser}.json"
+        if os.path.exists(path):
+            # 옛 R3 셀은 §11-2 개정 #8로 **무효**다 — 남기지 않고 걷어낸다.
+            # 남겨 두면 어느 것이 쓰였는지가 조용해진다.
+            dropped = sum(1 for r in rows if r.get("row_variants"))
+            rows = [r for r in rows if not r.get("row_variants")]
+            added = [r for r in _read(path, R3_OVERLAY) if r.get("row_variants")]
+            rows.extend(added)
+            print(f"  [{browser}] R3 오버레이: 옛 셀 {dropped}건 제거(개정 #8), "
+                  f"새 기반 {R3_OVERLAY}에서 {len(added)}건 적재")
+        else:
+            print(f"  [{browser}] R3 오버레이 파일 없음 — R3 셀은 여전히 개정 #8로 **무효**다")
     idx = {}
     for r in rows:
         key = (r["item_type"], r["n"], r["row_bindings"], r["row_variants"],
