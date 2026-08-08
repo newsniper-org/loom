@@ -763,6 +763,12 @@ fn k_body<T, R: RowSpawner, F: bevy_ecs::query::QueryFilter>(
 pub struct LoomApp {
     pub world: World,
     schedule: Schedule,
+    /// 앵커/부모 entity가 해석되지 않아 **적용되지 못하고 버려진 write 수**.
+    /// 평소에는 0이어야 한다 — write는 방출 순서대로 적용되고 부모/앵커는
+    /// 항상 먼저 방출되므로(`DomWrite` 문서). 0이 아니면 flush 규약이 깨진
+    /// 것이고, RQ1 §5 트랙 N 불변식 5("앵커 dangling 없음")가 재는 값이다.
+    /// 그 전까지 이 실패는 `continue`로 조용히 삼켜지고 있었다.
+    pub dropped_writes: usize,
 }
 
 impl Default for LoomApp {
@@ -783,6 +789,7 @@ impl LoomApp {
         Self {
             world,
             schedule: Schedule::default(),
+            dropped_writes: 0,
         }
     }
 
@@ -883,6 +890,7 @@ impl LoomApp {
                     text,
                 } => {
                     let Some(parent_handle) = self.resolve_parent(parent) else {
+                        self.dropped_writes += 1;
                         continue;
                     };
                     let handle = dom.create_element(parent_handle, tag, class);
@@ -916,6 +924,7 @@ impl LoomApp {
                     before,
                 } => {
                     let Some(handle) = self.dom_target(entity) else {
+                        self.dropped_writes += 1;
                         continue;
                     };
                     let before_handle = before.and_then(|e| self.dom_target(e));
@@ -925,6 +934,7 @@ impl LoomApp {
                 DomWrite::SetVisible { node, visible } => dom.set_visible(node, visible),
                 DomWrite::AppendStaticChildren { row, texts } => {
                     let Some(handle) = self.dom_target(row) else {
+                        self.dropped_writes += 1;
                         continue;
                     };
                     // 2026-07-28: `append_static_text`(핸들 없는 텍스트 노드)
@@ -941,6 +951,7 @@ impl LoomApp {
                 }
                 DomWrite::SetRowBindingTexts { row, texts } => {
                     let Some(targets) = self.world.get::<RowBindingTargets>(row).cloned() else {
+                        self.dropped_writes += 1;
                         continue;
                     };
                     for (handle, text) in targets.0.iter().zip(texts.iter()) {
@@ -953,21 +964,20 @@ impl LoomApp {
                 }
                 DomWrite::AttachFromFragment { block, parent } => {
                     let Some(frag) = self.world.get::<DetachedFragment>(block).copied() else {
+                        self.dropped_writes += 1;
                         continue;
                     };
                     dom.attach_from_fragment(parent, frag.0);
                     self.world.entity_mut(block).remove::<DetachedFragment>();
                 }
-                DomWrite::AppendStaticText { parent, text } => {
-                    if let Some(handle) = self.resolve_parent(parent) {
-                        dom.append_static_text(handle, &text);
-                    }
-                }
-                DomWrite::AppendStaticHtml { parent, html } => {
-                    if let Some(handle) = self.resolve_parent(parent) {
-                        dom.append_static_html(handle, &html);
-                    }
-                }
+                DomWrite::AppendStaticText { parent, text } => match self.resolve_parent(parent) {
+                    Some(handle) => dom.append_static_text(handle, &text),
+                    None => self.dropped_writes += 1,
+                },
+                DomWrite::AppendStaticHtml { parent, html } => match self.resolve_parent(parent) {
+                    Some(handle) => dom.append_static_html(handle, &html),
+                    None => self.dropped_writes += 1,
+                },
                 DomWrite::SetInputValue { node, value } => dom.set_input_value(node, &value),
             }
         }

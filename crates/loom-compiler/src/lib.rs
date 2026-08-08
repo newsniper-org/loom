@@ -2,7 +2,7 @@ mod codegen;
 mod ir;
 mod lower;
 
-pub use codegen::GraphMode;
+pub use codegen::{GraphMode, ListCandidate};
 
 use swc_common::sync::Lrc;
 use swc_common::{FileName, SourceFile, SourceMap};
@@ -37,6 +37,23 @@ pub fn compile_tsx_to_rust(source: &str) -> String {
     let module = parse_tsx(source);
     let graph = lower::lower_module(&module);
     codegen::generate(graph.root_component())
+}
+
+/// `compile_tsx_to_rust`의 **트랙 L 후보 선택** 판본 (2026-08-08 신설).
+///
+/// RQ1 §5 트랙 N의 불변식 2는 D의, 불변식 3은 E의 성질을 재는 것이라, 그
+/// 후보로 컴파일된 픽스처가 없으면 애초에 잴 대상이 없다(공허해진다).
+/// `ListCandidate::K`를 넘기면 `compile_tsx_to_rust`와 **바이트 동일한** 코드가
+/// 나온다 — 기존 build.rs는 전부 그쪽을 계속 쓴다.
+///
+/// **비-K 산출물은 네이티브 전용이다**: `resume()`은 후보별 저장 Component와
+/// row 키/순서 태그를 SSR DOM에서 되살려야 하는데 그 복구가 후보마다 다르고
+/// 트랙 N은 resume을 쓰지 않는다. 조용히 K 모양으로 되살리는 대신 부른 쪽에서
+/// 즉시 터지게 해 뒀다(codegen의 `generate_resume` 참고).
+pub fn compile_tsx_to_rust_with_candidate(source: &str, candidate: ListCandidate) -> String {
+    let module = parse_tsx(source);
+    let graph = lower::lower_module(&module);
+    codegen::generate_with_candidate(graph.root_component(), candidate)
 }
 
 /// 증분 4 (Task #25) multi-component path — compiles the module's full

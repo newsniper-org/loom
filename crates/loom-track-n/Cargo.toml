@@ -1,0 +1,20 @@
+[package]
+name = "loom-track-n"
+edition.workspace = true
+version.workspace = true
+
+# RQ1 §5 트랙 N — 중첩 정합성 property test.
+# 네이티브 전용(브라우저 없음). 후보 다섯을 **같은 TSX 한 소스**에서 파생시켜
+# 같은 조작 시퀀스로 돌린다 — §2.3-1의 "컴파일러가 생성할 수 없는 형태 금지"와
+# §4.1의 정체성 통제를 동시에 만족시키는 유일한 방법이다.
+
+[dependencies]
+bevy_ecs.workspace = true
+loom-runtime = { path = "../loom-runtime" }
+
+[build-dependencies]
+loom-compiler = { path = "../loom-compiler" }
+
+[[bin]]
+name = "track-n"
+path = "src/main.rs"
