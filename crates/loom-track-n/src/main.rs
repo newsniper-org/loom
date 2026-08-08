@@ -20,9 +20,17 @@ fn arg(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// §2.5 "공유 기반 동결": 이 실행이 어느 커밋에서 돌았는지가 원장에 남아야
+/// 한다. 남기지 않으면 나중에 "그때 코드가 무엇이었나"를 재구성할 수 없고,
+/// 상이한 기반의 측정치를 같은 판정에 혼용하지 않았다는 것도 보일 수 없다.
+fn str_arg(name: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+}
+
 fn out_path() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
-    args.iter().position(|a| a == "--out").and_then(|i| args.get(i + 1)).cloned()
+    str_arg("--out")
 }
 
 fn json_escape(s: &str) -> String {
@@ -128,8 +136,9 @@ fn main() {
 
     if let Some(path) = out_path() {
         let body = format!(
-            "{{\n  \"track\": \"N\",\n  \"registered_cycle\": {},\n  \"cycle\": {cycle},\n  \"cases\": {cases},\n  \"seq_len\": {SEQ_LEN},\n  \"seed_base\": {seed_base},\n  \"fixture\": \"demo/nested-list-derived.tsx\",\n  \"arms\": [\n{}\n  ]\n}}\n",
+            "{{\n  \"track\": \"N\",\n  \"registered_cycle\": {},\n  \"cycle\": {cycle},\n  \"cases\": {cases},\n  \"seq_len\": {SEQ_LEN},\n  \"seed_base\": {seed_base},\n  \"determinism_every\": {determinism_every},\n  \"frozen_base_commit\": \"{}\",\n  \"fixture\": \"demo/nested-list-derived.tsx\",\n  \"arms\": [\n{}\n  ]\n}}\n",
             registered,
+            str_arg("--base").unwrap_or_else(|| "unrecorded".to_string()),
             ledger.join(",\n")
         );
         std::fs::write(&path, body).unwrap_or_else(|e| panic!("시드 원장 쓰기 실패 {path}: {e}"));
