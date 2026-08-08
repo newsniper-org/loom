@@ -31,8 +31,16 @@ rm -f "$OUT" "$ROOT/bench/collected/$NAME.progress.json" "$PARTS"
 # 하나씩 돌고 스스로 다음 그룹으로 이동한다. 전 그룹(6 조합 × 7 워크로드 = 42)이
 # 오면 합친다.
 # `GROUPS`는 bash 내장 특수 변수(사용자 그룹 ID 배열)라 대입이 먹지 않는다.
-TOTAL_GROUPS=42
-URL="http://localhost:$PORT/demo/list_bench.html?collect=$NAME&group=0"
+# 부분 재수집(2026-08-08): 조합 하나만 다시 재야 할 때가 있다 — §11-2 개정 #8이
+# R3 조합(variants=true)만 무효화했고, 다른 조합의 방출 write 열이 불변임은
+# `crates/loom-runtime/tests/write_identity.rs`의 골든 비교로 확인됐다.
+# `FIRST_GROUP`/`TOTAL_GROUPS`를 주면 그 구간만 돈다.
+#   조합 인덱스: 0~2 POD n∈{100,1000,10000} / 3 String / 4 R2 / 5 R3
+#   그룹 = 조합*7 + 워크로드  (워크로드 7종)
+# 예) R3만: FIRST_GROUP=35 TOTAL_GROUPS=42 bench/collect-stock.sh ...
+FIRST_GROUP="${FIRST_GROUP:-0}"
+TOTAL_GROUPS="${TOTAL_GROUPS:-42}"
+URL="http://localhost:$PORT/demo/list_bench.html?collect=$NAME&group=$FIRST_GROUP"
 
 case "$BIN" in
   *firefox*)
@@ -61,7 +69,9 @@ trap cleanup EXIT
 echo "[collect-stock] $NAME 시작 (pid=$PID, 상한 ${TIMEOUT}초)"
 START=$(date +%s)
 count_parts() { grep -c '"group":' "$PARTS" 2>/dev/null || echo 0; }
-while [ "$(count_parts)" -lt "$TOTAL_GROUPS" ]; do
+# 부분 재수집이면 기대 조각 수는 구간 길이다 — 전체 수와 비교하면 영원히 안 끝난다.
+EXPECTED=$((TOTAL_GROUPS - FIRST_GROUP))
+while [ "$(count_parts)" -lt "$EXPECTED" ]; do
   if ! kill -0 $PID 2>/dev/null; then
     echo "[collect-stock] **브라우저가 죽었다** — 결과 없음" >&2
     exit 1
@@ -74,7 +84,7 @@ while [ "$(count_parts)" -lt "$TOTAL_GROUPS" ]; do
   if [ $((EL % 60)) -eq 0 ] && [ "$EL" -gt 0 ]; then
     DONE="$(count_parts)"
     PROG="$(tail -1 "$ROOT/bench/collected/$NAME.progress.json" 2>/dev/null || echo '')"
-    echo "[collect-stock] $((EL/60))분 경과 — 그룹 $DONE/$TOTAL_GROUPS  $PROG"
+    echo "[collect-stock] $((EL/60))분 경과 — 그룹 $DONE/$EXPECTED  $PROG"
   fi
   sleep 5
 done
