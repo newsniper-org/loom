@@ -102,6 +102,10 @@ pub struct Outcome {
     pub violations: Vec<Violation>,
     pub op_log_hash: u64,
     pub dropped_writes: usize,
+    /// §5 불변식 4의 **시나리오가 몇 번 실제로 일어났는가**("숨은 동안 바뀐
+    /// 내부 리스트가 다시 보였다"). 0이면 그 불변식은 검사된 적이 없고,
+    /// 그 실행을 "불변식 4 통과"로 읽으면 공허한 확인이다.
+    pub catch_up_events: usize,
 }
 
 impl Outcome {
@@ -184,6 +188,7 @@ where
         ops::apply(op, &mut outer, &mut open, &mut inner);
 
         // 앱과 모델에 **같은 해석**을 먹인다.
+        m.clear_step_flag();
         if outer != before_outer {
             app.world.get_mut::<loom_runtime::Signal<Vec<String>>>(outer_e).unwrap().0 =
                 outer.clone();
@@ -219,6 +224,7 @@ where
         violations,
         op_log_hash: fnv(&dom.op_log),
         dropped_writes: app.dropped_writes,
+        catch_up_events: m.catch_up_events,
     }
 }
 
@@ -239,33 +245,27 @@ fn check_after_tick(
             family: Family::ReferenceModel,
             detail: format!("step {step}: DOM ≠ 참조 모델\n  기대: {expected}\n  실제: {actual}"),
         });
+        if m.catch_up_this_step {
+            out.push(Violation {
+                family: Family::CatchUp,
+                detail: format!(
+                    "step {step}: 이 tick은 **숨은 동안 바뀐 내용이 다시 보인** 전이였다 \
+                     — 위 불일치를 불변식 4에도 귀속한다"
+                ),
+            });
+        }
         return;
     }
 
-    // ── 불변식 4(약한 형태): 지금 보이는 row의 안쪽 내용이 최신인가 ────────
-    // 위 비교에 이미 포함되지만, 계열 귀속을 위해 따로 확인한다 — 어느 계열이
-    // 재발했는지가 §5의 귀결을 정하기 때문. (이 arm에 "동결"이 없다는 진술은
-    // 모듈 문서 참고.)
-    for item in m.visible_rows() {
-        let take = model::take_count(&item).min(m.inner.len());
-        let want: String =
-            m.inner[..take].iter().map(|x| format!("<li>{x}</li>")).collect();
-        let marker = format!("<li>{item}<div class=\"panel\"><ul class=\"inner\">");
-        if let Some(i) = actual.find(&marker) {
-            let rest = &actual[i + marker.len()..];
-            let end = rest.find("</ul>").unwrap_or(0);
-            if rest[..end] != want {
-                out.push(Violation {
-                    family: Family::CatchUp,
-                    detail: format!(
-                        "step {step}: row `{item}`이 보이는데 안쪽 내용이 최신이 아니다 \
-                         (기대 {want}, 실제 {})",
-                        &rest[..end]
-                    ),
-                });
-            }
-        }
-    }
+    // ── 불변식 4(약한 형태) — 계열 귀속만 한다 ───────────────────────────
+    // **중요**: 이 계열은 불변식 1과 **독립적으로 발동할 수 없다**. 숨은 동안의
+    // 변경이 반영되지 않았다는 것은 곧 DOM ≠ 참조 모델이기 때문이다. 그래서
+    // 별도 비교를 두는 대신, 불변식 1이 깨진 tick이 **catch-up 전이가 일어난
+    // tick이면** 그 계열을 함께 귀속한다(위 분기에서 처리).
+    //
+    // 그리고 통과했을 때 의미가 있으려면 그 전이가 실제로 몇 번 일어났는지가
+    // 남아야 한다 — `Outcome::catch_up_events`. 0인 실행을 "불변식 4 통과"로
+    // 읽으면 공허하다.
 
     // ── 불변식 3: E의 순서 수렴 ────────────────────────────────────────────
     if matches!(arm, Arm::E | Arm::ELis) {

@@ -35,6 +35,11 @@ struct Row {
     materialized: bool,
     /// 만들어진 뒤의 표시 상태.
     visible: bool,
+    /// **숨겨져 있는 동안 내부 리스트가 바뀌었는가.** §5 불변식 4가 겨냥하는
+    /// 시나리오가 실제로 일어났는지 세기 위한 것 — 이 플래그가 켜진 채 다시
+    /// 보이게 되는 전이가 한 번도 없으면, 불변식 4는 **검사된 적이 없다**.
+    /// 그것을 "통과"로 보고하면 공허한 확인이 된다.
+    stale_while_hidden: bool,
 }
 
 /// 앱 상태의 참조 모델. 조작을 그대로 먹이면 기대 DOM을 낸다.
@@ -45,11 +50,24 @@ pub struct Model {
     pub open: bool,
     pub inner: Vec<String>,
     rows: Vec<Row>,
+    /// 이 실행에서 "숨은 동안 바뀐 내부 리스트가 다시 보였다" 전이가 몇 번
+    /// 일어났는가. 0이면 불변식 4의 시나리오가 한 번도 안 나온 것이다.
+    pub catch_up_events: usize,
+    /// 방금 tick에서 그 전이가 일어났는가(계열 귀속용).
+    pub catch_up_this_step: bool,
 }
 
 impl Model {
     pub fn new(identity: RowIdentity, outer: Vec<String>, open: bool, inner: Vec<String>) -> Self {
-        let mut m = Model { identity, outer, open, inner, rows: Vec::new() };
+        let mut m = Model {
+            identity,
+            outer,
+            open,
+            inner,
+            rows: Vec::new(),
+            catch_up_events: 0,
+            catch_up_this_step: false,
+        };
         m.rows = m.outer.iter().map(|it| m.fresh_row(it)).collect();
         m
     }
@@ -58,7 +76,7 @@ impl Model {
     /// `site.cond && derived_flag`로 `CondBlock`을 채운 채/빈 채 만들기 때문.
     fn fresh_row(&self, item: &str) -> Row {
         let want = self.open && predicate(item);
-        Row { item: item.to_string(), materialized: want, visible: true }
+        Row { item: item.to_string(), materialized: want, visible: true, stale_while_hidden: false }
     }
 
     /// 외부 리스트가 바뀌었다.
@@ -88,6 +106,7 @@ impl Model {
     pub fn set_open(&mut self, open: bool) {
         let before: Vec<bool> = self.rows.iter().map(|r| self.open && predicate(&r.item)).collect();
         self.open = open;
+        let mut events = 0;
         for (i, row) in self.rows.iter_mut().enumerate() {
             let want = open && predicate(&row.item);
             if want == before[i] {
@@ -99,13 +118,32 @@ impl Model {
                     row.visible = true;
                 }
             } else {
+                if want && row.stale_while_hidden {
+                    // 숨은 동안 바뀐 내용이 이제 보인다 — 불변식 4의 시나리오.
+                    events += 1;
+                    row.stale_while_hidden = false;
+                }
                 row.visible = want;
             }
         }
+        self.catch_up_events += events;
+        self.catch_up_this_step = events > 0;
     }
 
     pub fn set_inner(&mut self, inner: Vec<String>) {
+        if inner != self.inner {
+            for row in &mut self.rows {
+                if row.materialized && !row.visible {
+                    row.stale_while_hidden = true;
+                }
+            }
+        }
         self.inner = inner;
+    }
+
+    /// 이번 tick에 catch-up 전이가 없었음을 표시(다른 조작 뒤 초기화).
+    pub fn clear_step_flag(&mut self) {
+        self.catch_up_this_step = false;
     }
 
     /// `<ul class="outer">`의 자식들. 테스트가 비교하는 문자열.

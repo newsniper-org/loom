@@ -1,0 +1,18 @@
+{
+  "track": "N",
+  "registered_cycle": true,
+  "cycle": 1,
+  "cases": 10000,
+  "seq_len": 200,
+  "seed_base": 20260808,
+  "determinism_every": 50,
+  "frozen_base_commit": "1f34be2ad4506282929ea1bb9daf6ed7f65efc6e",
+  "fixture": "demo/nested-list-derived.tsx",
+  "arms": [
+    {"arm": "K", "result": "pass", "cases": 10000, "determinism_checks": 200},
+    {"arm": "D", "result": "pass", "cases": 10000, "determinism_checks": 200},
+    {"arm": "D-LIS", "result": "pass", "cases": 10000, "determinism_checks": 200},
+    {"arm": "E", "result": "pass", "cases": 10000, "determinism_checks": 200},
+    {"arm": "E-LIS", "result": "pass", "cases": 10000, "determinism_checks": 200}
+  ]
+}

@@ -59,6 +59,8 @@ fn main() {
     for arm in Arm::ALL {
         let mut first_fail: Option<(u64, Vec<ops::Op>, Family, String, Vec<Family>)> = None;
         let mut det_checked = 0usize;
+        let mut catch_up_total = 0usize;
+        let mut catch_up_cases = 0usize;
         for case in 0..cases {
             // 시드 = 기저 ⊕ (사이클, arm, 케이스) — 사이클마다 **새 독립 시드**를
             // 쓰라는 §5 수리 사이클 규정 그대로.
@@ -69,6 +71,10 @@ fn main() {
                 .wrapping_add(case as u64);
             let ops = ops::sequence(seed, SEQ_LEN, INITIAL_OUTER.len(), INITIAL_INNER.len());
             let outcome = loom_track_n::run(arm, &ops);
+            catch_up_total += outcome.catch_up_events;
+            if outcome.catch_up_events > 0 {
+                catch_up_cases += 1;
+            }
             if !outcome.ok() {
                 let family = outcome.primary_family().unwrap();
                 let detail = outcome
@@ -99,9 +105,19 @@ fn main() {
 
         match first_fail {
             None => {
-                println!("  {:6} 통과 — {cases}케이스, 결정성 재현 {det_checked}건", arm.name());
+                let cov = 100.0 * catch_up_cases as f64 / cases as f64;
+                println!(
+                    "  {:6} 통과 — {cases}케이스, 결정성 재현 {det_checked}건, \
+                     불변식4 시나리오 {catch_up_total}회({cov:.0}%의 케이스에서 발생)",
+                    arm.name()
+                );
+                if catch_up_total == 0 {
+                    println!("      ⚠️  불변식 4의 시나리오가 **한 번도 일어나지 않았다** — 그 계열은 미검사다");
+                }
                 ledger.push(format!(
-                    "    {{\"arm\": \"{}\", \"result\": \"pass\", \"cases\": {cases}, \"determinism_checks\": {det_checked}}}",
+                    "    {{\"arm\": \"{}\", \"result\": \"pass\", \"cases\": {cases}, \
+                     \"determinism_checks\": {det_checked}, \
+                     \"catch_up_events\": {catch_up_total}, \"catch_up_cases\": {catch_up_cases}}}",
                     arm.name()
                 ));
             }
