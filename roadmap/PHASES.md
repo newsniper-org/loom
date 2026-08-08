@@ -883,7 +883,10 @@ Sound`)하고, 현재 IR의 실제 제약("시그널당 액션 최대 1개", `Si
 (v1.1 — D-1)"가 별도 도입한 **flush 규약 v0의 순서 보장 검증**이고, 조문 자체가
 "FV 항목은 특정 후보가 아니라 **공통 인프라(flush 규약 v0)의 검증 항목**"이라고
 못박고 있다. 확인 결과 `formal-verification/` 전체에 flush 관련 산출물이 **0건**
-이고, 이 문서에서도 위 97행("§5 FV 계류")이 **유일한 언급**이다. 즉 "Phase 5
+이고, 이 문서에서도 위 97행("§5 FV 계류")이 **유일한 언급**이다.
+(**2026-08-08 주기**: 이 "0건"과 "유일한 언급"은 2026-07-31 시점의 확인 결과다.
+지금은 `formal-verification/verus/flush_order.rs`(28 verified)와
+`crates/loom-flush-core`(47 verified)가 있다.) 즉 "Phase 5
 완료"와 "D/E를 막는 FV 미착수"가 문서 사이에 모순으로 끼어 있었다 — 후보 표에
 없으니 우선순위 논의에도 Phase 5 실행에도 한 번도 올라오지 않았던 것.
 
@@ -891,8 +894,20 @@ Sound`)하고, 현재 IR의 실제 제약("시그널당 액션 최대 1개", `Si
 두 갈래(anchor 선행성 / 순서 수렴)로 구체화해 두었다. **Phase 5는 후보 #4가
 끝나기 전까지 "완료"가 아니다** — 이 절의 상태를 그렇게 읽을 것.
 
+> **2026-08-08 정정 — 후보 #4의 두 증명 의무는 이행됐다.** anchor 선행성
+> (2026-07-31), 순서 수렴(2026-08-01, `plan_writes_converging`의 `ensures`로
+> **실제 exec 함수**에 대해). 실측(2026-08-08, `/usr/bin/verus` + Z3 4.12.5):
+> `verus formal-verification/verus/flush_order.rs` → 28 verified, 0 errors /
+> `verus --crate-type=lib crates/loom-flush-core/src/lib.rs` → 47 verified,
+> 0 errors. 남은 것은 **LIS 변형(`plan_writes`)의 수렴**이고, 그 사전조건 P는
+> 2026-08-08에 `requires`로 올라갔다.
+
 **도구 선택(2026-07-28, 병익님 제안)**: 후보 #4는 **Verus**(시스템에 업스트림
-설치됨, `cargo-verus` + `vstd` + Z3 확인)로 진행한다. 이유는 #1/#3과 대상의
+설치됨, `cargo-verus` + `vstd` + Z3 확인)로 진행한다.
+(**2026-08-08 주기 — 실행 명령 정정**: `cargo verus verify`는 업스트림 Verus와
+crates.io `vstd`의 불일치로 지금은 실행되지 않는다. 실제 검증 명령은
+`verus formal-verification/verus/flush_order.rs`와
+`verus --crate-type=lib crates/loom-flush-core/src/lib.rs` 두 줄이다.) 이유는 #1/#3과 대상의
 성질이 다르기 때문 — 저 둘은 Lean4 안에 상태 기계·축소 모델을 **손으로 다시 써서**
 증명했으므로 "모델이 실제 코드와 같은가"가 증명 밖에 남지만(두 파일 모두 자인),
 #4의 대상은 `LoomApp::tick`의 적용 루프와 `Vec<DomWrite>`라는 **구체 자료구조**라

@@ -55,7 +55,21 @@ formal-verification/README.md와 함께 볼 것. 여기서는 "무엇을 검증�
 
 **남은 과제**: `SupervisionNode`의 Entity/DOM 소유권 모델링, `ResumabilitySoundness`를
 StringList/Bool/Str(DOM-복구형 재개)로 확장, IR의 "시그널당 액션 1개" 제약을 실제
-정적 검사로 강제(현재는 저작자 규율 의존). 상세는 `formal-verification/README.md` +
+정적 검사로 강제(현재는 저작자 규율 의존).
+
+> **정정(Task #28에서 이행, 2026-08-08 감사에서 확인)**: 이 세 항목은 전부
+> 이행됐다 — `SupervisionNode.ownedEntities` 추가(#28-d),
+> `dom_recovered_resumability_sound`로 StringList/Bool/Str 확장(#28-e),
+> `lower.rs`의 `check_one_action_per_signal`로 i32 시그널에 한해 정적 강제(#28-f).
+> 따라서 "현재는 저작자 규율 의존"은 더 이상 성립하지 않는다.
+>
+> **2026-08-08 — 4번(flush 규약 v0)도 진행됨**: 모델 `verus/flush_order.rs`
+> **28 verified, 0 errors**, 실행 코드 `crates/loom-flush-core`
+> **47 verified, 0 errors**(`verus --crate-type=lib`, `/usr/bin/verus` + Z3
+> 4.12.5). 증명 의무 (1) anchor 선행성·(2) 순서 수렴은 **실행 코드의 사후조건**
+> 으로 충족됐고, LIS 변형(`plan_writes`)의 **수렴**은 여전히 미증명이다 —
+> 다만 그 사전조건 P는 2026-08-08에 `requires`로 올라갔다. 상세 경위는
+> `formal-verification/verus/README.md`. 상세는 `formal-verification/README.md` +
 `roadmap/PHASES.md` Phase 5 절.
 
 ---
@@ -78,6 +92,9 @@ StringList/Bool/Str(DOM-복구형 재개)로 확장, IR의 "시그널당 액션 
 현재 상태(확인함):
 
 - `formal-verification/` 전체에 flush 관련 산출물 **0건**(`grep -rl flush` 무결과).
+  - **2026-08-08 정정**: 이 수치는 2026-07-28 시점의 것이다. 지금 같은 명령은
+    `verus/README.md`·`verus/flush_order.rs`·`verus/lis-keep-exhaustive.py`
+    3건을 반환한다.
 - `roadmap/PHASES.md`에서 flush FV 언급은 **단 1회**, 그것도 "D의 계류 사유"로서만.
 - 그런데 Phase 5는 위 세 후보를 근거로 **완료 선언**됨.
 
@@ -87,7 +104,7 @@ StringList/Bool/Str(DOM-복구형 재개)로 확장, IR의 "시그널당 액션 
 
 | # | 정리 후보 | 대상 | 난이도(추정) | 가치 |
 |---|---|---|---|---|
-| 4 | **flush 규약 v0의 순서 보장**: 구조 변경 Commands와 DOM op를 단일 순서 큐로 병합 flush할 때, (a) 적용 순서가 방출 순서와 일치하고, (b) 이동 기준 anchor가 같은 배치에서 아직 spawn되지 않은 row인 인터리빙에서도 최종 DOM 순서가 목표 순서로 **결정적으로** 수렴한다 | 순수 Rust(`Vec<DomWrite>` 적용 루프) — **Verus 적합** | 중 | **가장 시급** — D·E 채택의 유일한 남은 선결 조건이고, 트랙 N 불변식 5와 동일한 성질 |
+| 4 | **flush 규약 v0의 순서 보장**: 구조 변경 Commands와 DOM op를 단일 순서 큐로 병합 flush할 때, (a) 적용 순서가 방출 순서와 일치하고, (b) 이동 기준 anchor가 같은 배치에서 아직 spawn되지 않은 row인 인터리빙에서도 최종 DOM 순서가 목표 순서로 **결정적으로** 수렴한다 | 순수 Rust(`Vec<DomWrite>` 적용 루프) — **Verus 적합** | 중 | **가장 시급** — D·E 채택의 유일한 남은 선결 조건이고, 트랙 N 불변식 5와 동일한 성질 *(2026-08-08: 착수·상당 부분 완료 — 위 "상태" 절 참고)* |
 
 **왜 Verus가 이 항목에 특히 맞는가**(#1/#3이 Lean4인 것과 대비):
 
@@ -111,7 +128,12 @@ StringList/Bool/Str(DOM-복구형 재개)로 확장, IR의 "시그널당 액션 
 **전제 조건(정직하게)**: 오늘의 `list.rs`/`lib.rs`는 Bevy 쿼리·`Commands`와
 얽혀 있어 Verus를 그대로 겨눌 수 없다. 실무 경로는 **순수 알고리즘 코어를
 분리 추출**(이동 집합 계산, LIS, flush 적용 순서 결정)한 뒤 그 함수에 spec을
-붙이고, Bevy System은 그 함수를 호출만 하게 만드는 것이다 — 검증 가능성과
+붙이고, Bevy System은 그 함수를 호출만 하게 만드는 것이다
+
+> **2026-08-08 정정**: 여기 적은 "실무 경로"는 실제로 실행됐다 —
+> `crates/loom-flush-core`가 신설되어 순서 결정 루프와 `Chain`이 이관됐고
+> `list.rs`는 `emit_plan`으로 호출만 한다. 리팩터링 비용이 선행한다는 지적은
+> 유효했고, 그 비용은 이미 지불됐다. — 검증 가능성과
 별개로 테스트 용이성도 올라가지만, **리팩터링이라는 비용이 선행**한다는 점을
 숨기지 않는다.
 
@@ -161,7 +183,12 @@ DomWrite::Reposition { …, before } =>
 
 **구현상 장애물(정직하게)**: `place_in_order`의 `Chain`은 `std::collections::
 HashMap` 두 개로 O(1) 인접성 질의를 한다. Verus는 std `HashMap`을 그대로 추론하지
-못하므로, 그대로 겨눌 수 없다. 선택지는 —
+못하므로, 그대로 겨눌 수 없다.
+(**2026-08-08 정정**: 이 장애물은 해소됐다 — `vstd::hash_map::HashMapWithView`가
+std `HashMap`에 `Map` 뷰 계약을 제공하므로 아래 (b) 노선을 그 위에서 구현했다.
+인덱스 링크드리스트 재작성은 불필요했다. 현재 `Chain`은 `loom-flush-core`에 있고
+"Chain ↔ adjacent" 4정리로 표기 시퀀스와 결선돼 있다.)
+선택지는 —
 
 - (a) 검증 대상을 **방출 시퀀스의 성질**로 한정하고 `Chain`은 "이미 적용된
   writes로부터 유도되는 순서"의 캐시로 취급해, `Chain` 없는 참조 구현과의

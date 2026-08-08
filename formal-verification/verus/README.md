@@ -41,8 +41,10 @@ crates.io의 어떤 vstd 릴리스보다 앞서 있어(버전 문자열이 같�
 시끄럽게 실패하므로 조용한 불일치는 생기지 않는다.
 
 현재 결과(2026-08-08 실측): **28 verified, 0 errors**(모델 파일
-`flush_order.rs`) + **44 verified, 0 errors**(`crates/loom-flush-core`,
-`verus --crate-type=lib`). Verus 업스트림 설치본 `/usr/bin/verus`, Z3 4.12.5.
+`flush_order.rs`) + **45 verified, 0 errors**(`crates/loom-flush-core`,
+`verus --crate-type=lib`, **4.7초**). Verus 업스트림 설치본 `/usr/bin/verus`,
+Z3 4.12.5. (45번째는 사전조건 P와 그 음성 대조 — 아래 "P를 `requires`로
+올렸다" 절.)
 
 **주의**: 이 줄에 한동안 `25 + 22`가 적혀 있었고 `cargo verus verify` 기준이라고
 쓰여 있었다 — 둘 다 틀렸다. 그 명령은 위 31행이 설명한 vstd 불일치로 **실행조차
@@ -201,8 +203,13 @@ list.rs`의 `place_in_order`/`place_in_order_lis`가 이것을 호출한다 — 
 | `Chain::next_is` | 반환값 ⟺ `adjacent(표기, e, a)` |
 | `Chain::is_tail` | 반환값 ⟺ 표기의 마지막이 `e` |
 
-`cargo verus verify` → **12 verified, 0 errors**. 같은 소스가 일반
-`cargo build`로도 컴파일된다(ghost 소거) — **wasm32 포함**.
+`cargo verus verify` → **12 verified, 0 errors**(2026-07-31 당시, 업스트림
+마이그레이션 이전 기준). 같은 소스가 일반 `cargo build`로도 컴파일된다
+(ghost 소거) — **wasm32 포함**.
+
+> **2026-08-08 정정**: 이 명령은 2026-08-02 마이그레이션 이후 vstd 불일치로
+> **실행되지 않는다**(위 "실행" 절 참고). 같은 크레이트의 현재 수치는
+> `verus --crate-type=lib crates/loom-flush-core/src/lib.rs` 기준이다.
 
 **`vstd` 의존이 wasm에 짐을 남기지 않는가**: 남기지 않는다. ghost가 컴파일
 시점에 지워지므로 `wasm32-unknown-unknown` 빌드가 정상 통과하고, 데모 청크
@@ -452,8 +459,16 @@ P를 `kept_order_preserved`라는 `spec fn`으로 쓰고 `plan_writes`의 `requi
 단독으로 돌리면 나오고, 아니면 크래시한다. 이 사실을 숨기지 않는다 — B1 성공을
 기록할 때 이 조건을 몰랐고, 이번에 P를 넣으려다 드러났다.
 
+> **2026-08-08 정정**: 이 조건은 사라졌다. 위 표의 마지막 줄("다른 verus와
+> 동시 실행 → 크래시")과 이 문단은 **그 시점의 관측**으로 읽을 것. 지금은 같은
+> 명령 2개를 동시에 돌려도 두 인스턴스 모두 통과한다(아래 "rlimit 여유 확보"
+> 절, 그리고 `Chain::well_formed` 불투명화 이후 모듈 전체가 3.4초).
+
 **남은 최우선 항목**은 P의 증명이 아니라 **이 여유(headroom)를 만드는 것**이다.
-그게 되기 전에는 어떤 추가 명세도 같은 벽에 부딪힌다. (B1에서 `no_duplicates`를
+그게 되기 전에는 어떤 추가 명세도 같은 벽에 부딪힌다.
+
+> **2026-08-08 정정**: 이 항목은 수행됐고, 그 다음 단계였던 **P를 `requires`로
+> 올리는 것까지 끝났다**(아래 두 절). 이 문장을 현재 지침으로 읽지 말 것. (B1에서 `no_duplicates`를
 불투명화해 88%를 걷어냈듯, 다음으로 큰 인스턴스화 원인을 찾아야 하는데 —
 크래시 상태에서는 프로파일이 안 나오므로 부담을 먼저 조금 덜어 "깨끗한 rlimit
 초과"를 만든 뒤 프로파일하는 순서가 필요하다.)
@@ -518,6 +533,12 @@ B를 스킵하는 순간 뒤쪽 1개는 `[C]`지 `[B]`가 아니다. 그런데�
 target 순서로 수렴함이 실제 코드에 대해 증명됐다"가 아니다 — 수렴은 모델
 수준(위 남은 것 1번).
 
+> **2026-08-08 정정**: 이 서술은 2026-08-01 이전 상태다. **비-LIS 경로**는
+> `plan_writes_converging`이 수렴을 **실행 코드의 사후조건으로** 갖는다(위
+> "수렴 사후조건" 절). 지금 미증명으로 남은 것은 **LIS 변형(`plan_writes`)의
+> 수렴**이고, 참조는 "남은 것" 1번이 아니라 그 항목이다. 과장 방지 취지 자체는
+> 유효하다 — 다만 대상이 좁아졌다.
+
 ---
 
 ## rlimit 여유 확보 — `plan_writes`의 부담을 114배 줄였다 (2026-08-08)
@@ -571,9 +592,156 @@ target 순서로 수렴함이 실제 코드에 대해 증명됐다"가 아니다
 `plan_writes_converging`이 이제 가장 무겁다(단독 264초 / rlimit 3.21B). 그 루프
 불변식은 이미 `seq_nodup`을 쓰지만 `chain.well_formed()`가 raw
 `no_duplicates`를 다시 들여온다 — 가설 ②가 겨냥한 지점이고, 단순 불투명화로는
-안 됐다. 다음 시도는 **그 함수만 프로파일해** 무엇이 812만 번씩 터지는지 먼저
+안 됐다. 다음 시도는 **그 함수만 프로파일해** 무엇이 몇 백만 번씩 터지는지 먼저
 확정하는 것이다(이번에 `plan_writes`에서 그렇게 해서 풀렸다).
+
+> **2026-08-08 정정 둘**: (1) 여기 처음에 "812만 번"이라고 적었는데 **출처가
+> 없는 수치**였다 — 측정한 것은 `plan_writes`의 8,535,321건(수리 **전**)이고
+> 이 함수의 값이 아니다. 근거 없는 수치를 남기지 않기 위해 지웠다. (2) 그리고
+> 이 "다음 시도"는 실제로 수행됐다 — 아래 두 절 참고. 원인은 `chain_denotes`가
+> 아니라 그것을 감싼 **`Chain::well_formed`가 불투명하지 않았던 것**이었다.
 
 그리고 이 여유의 목적이었던 **P(`keep`의 사전조건)를 `plan_writes`의 `requires`로
 올리는 시도**는 아직 하지 않았다. 그 함수의 부담이 114배 줄었으므로 이제
 가능성이 생겼다는 것까지가 이번 결과다 — 실제로 되는지는 해 봐야 안다.
+
+## P를 `requires`로 올렸다 — 그리고 "크래시"의 원인 하나가 OOM이었다 (2026-08-08, 같은 날 후속)
+
+바로 위 절이 "해 봐야 안다"로 남긴 것을 했다. 결과: **45 verified, 0 errors,
+4.7초**. `plan_writes`의 사전조건에 P가 들어 있다.
+
+```rust
+#[verifier::opaque]
+pub open spec fn kept_order_preserved(
+    current: Seq<u64>, target_ids: Seq<u64>, target_fresh: Seq<bool>, keep: Seq<bool>,
+) -> bool {
+    forall|a: int, b: int| #![trigger keep[a], keep[b]]
+        0 <= a < b < target_ids.len()
+            && keep[a] && !target_fresh[a] && keep[b] && !target_fresh[b]
+            ==> pos(current, target_ids[a]) < pos(current, target_ids[b])
+}
+```
+
+`pos(s, x) == s.index_of_first(x).unwrap()` — `Option` 언랩을 한 곳에 가둔
+정수 위치 함수다. `pos`는 `open`이지만 P가 불투명해서 `reveal` 전에는 `pos(..)`
+항 자체가 문맥에 뜨지 않는다(정의 공리가 매칭될 대상이 없다).
+
+### 이 "크래시"는 Verus 버그도 rlimit도 아니었다 — **커널 OOM 킬러**였다
+
+이게 이번의 진짜 발견이다. P를 넣고 전체 모듈을 돌리자 README에 적혀 있던 그
+증상이 **글자 그대로 재현**됐다:
+
+```
+crates/loom-flush-core/src/lib.rs:1257:5: (#43) expected rlimit-count in smt statistics
+thread '<unnamed>' panicked at rust_verify/src/verifier.rs:2178:29: worker thread panicked
+```
+
+추정하지 않고 커널 로그를 봤다:
+
+```
+Out of memory: Killed process 2604232 (rust_verify)
+  total-vm:48259240kB, anon-rss:16937576kB, oom_score_adj:200
+```
+
+**`rust_verify`가 16.9GB를 쓰다 OOM 킬러에게 죽은 것이다.** Verus는 죽은
+프로세스에서 SMT 통계를 읽으려다 "expected rlimit-count"를 뱉는다. 즉 그
+메시지는 원인이 아니라 **증상**이고, 지금까지 "rlimit 경계"라고 부른 것은
+정확히는 **메모리 경계**였다. 이것으로 README가 남긴 다른 관찰들이 한 번에
+설명된다:
+
+- "HEAD도 **다른 verus와 동시 실행**하면 크래시" — 두 인스턴스가 같은 RAM을 두고
+  경쟁하니 당연하다. CPU 경쟁이 아니었다.
+- "낮은 rlimit에서는 깨끗한 초과가 나온다" — rlimit에 먼저 걸리면 메모리를 더
+  쓰기 전에 멈추니 당연하다.
+- 크래시할 때 `--profile`이 안 나온다 — 프로세스가 죽었으니 당연하다.
+
+**교훈**: 도구가 이상한 메시지를 내면 도구 탓하기 전에 `journalctl -k`를 볼 것.
+이 프로젝트가 이미 배운 "추정 전에 프로파일"의 형제 조항이다.
+
+> **과일반화하지 말 것 (같은 날, 적대적 검토에서 나온 반례)**: 위 진단은
+> **그날 실측된 그 크래시**에 대한 것이고, `expected rlimit-count in smt
+> statistics`가 **항상** OOM이라는 뜻은 아니다. 반례가 있다 — 유휴 머신(가용
+> 약 20GB 유지, `rust_verify` RSS 371MB, `z3` RSS 최대 약 2.2GB, 커널 OOM
+> 메시지 **없음**)에서 다른 정식화 시도가 **같은 메시지로** 두 번 패닉했다.
+> 정확한 서술은 "이 메시지는 솔버가 죽었거나 통계를 잘려서 돌려줬다는 뜻이고,
+> OOM은 그 원인 중 하나"다. `journalctl -k`를 보라는 조언은 그대로 유효하다 —
+> 다만 로그가 비어 있다고 OOM이 아니었다고 결론 내릴 수는 있어도, 그것으로
+> 원인이 밝혀진 것은 아니다.
+
+### 진짜 수리 — `Chain::well_formed`를 불투명으로
+
+P를 넣을 자리를 만들려면 `plan_writes_converging`의 메모리를 줄여야 했고, 위
+"남은 것"이 지목한 지점이 맞았다. 다만 **가설 ②가 겨눈 곳이 한 칸 얕았다**:
+
+- 그때 시도: `chain_denotes` **안쪽**의 `no_duplicates`만 불투명화 → 나머지 7개
+  논리곱(그중 3개가 양화자)은 그대로 루프에 남는다. 실패.
+- 이번: **`well_formed()` 자체**를 `#[verifier::opaque]`로. 8개 논리곱 전부가
+  루프에서 사라진다.
+
+핵심은 **`closed`가 같은 모듈 안에서는 아무것도 가리지 않는다**는 것이다.
+`pub closed spec fn well_formed`은 *모듈 밖*에서만 본문을 숨기는데 이 크레이트는
+전부 한 모듈이라, 두 루프의 불변식에 있는 `chain.well_formed()`가 매 반복
+`chain_denotes(...)`로 펼쳐지고 있었다. B1에서 걷어낸 그 2변수 양화자가
+**`well_formed()`라는 뒷문으로 되돌아와 있었던 것**이다.
+
+펼치는 것은 그것이 실제로 필요한 `Chain`의 메서드 7곳뿐이고
+(`reveal(Chain::well_formed)` — 연관 함수에도 쓸 수 있다), 그쪽은 루프가 아니라
+직선 코드라 감당된다. `from_slice`는 `new`/`push_back`의 계약만으로 충분해
+`reveal`이 필요 없었다 — 캡슐화가 실제로 작동한다는 증거다.
+
+| `verus --crate-type=lib` 전체 모듈 | 수리 전 | 수리 후 |
+|---|---|---|
+| 벽시계 | 157.9초 | **4.7초** (33×) |
+| 결과 | 44 verified (P 없이) | **45 verified** (P 포함) |
+| 동시 2개 실행 | 크래시 | **둘 다 45 verified** |
+
+`reveal`을 `proof { }` 블록 **안**이 아니라 함수 본문 최상위에 두어야 한다는
+점에 주의(`reveal`은 블록 스코프라, 블록 안에 두면 함수 종료 시점의 사후조건
+검사에는 미치지 않는다).
+
+부작용으로 `plan_writes_converging`에 두 줄이 필요해졌다: `place_before`의 첫
+단계 `remove_value(e)`가 항등이라는 사실(`!d_mid.contains(e)`)을 전에는
+프루버가 펼쳐진 `chain_denotes`에서 곁다리로 주웠는데, 이제는 명시해야 한다.
+**수렴 사후조건은 그대로다** — 약화된 정리는 없다.
+
+### 명세가 공허하지 않음을 확인한 음성 대조
+
+`requires`는 **약할수록 통과하기 쉽다**. 항상 참인 술어를 사전조건에 얹는 것은
+아무것도 하지 않는 것과 같으므로, P가 실제로 무언가를 *거절*하는지 못박았다 —
+`lemma_kept_order_rejects_inversion`: `current = [7, 9]`, `target = [9, 7]`,
+둘 다 Retained·`keep` 표시면 P는 **거짓**이다(45번째 항목).
+
+### 그래도 아직 증명되지 **않은** 것 — 숨기지 않음
+
+**P는 지금 `plan_writes`의 사전조건으로 "적혀" 있을 뿐, 그것으로부터 수렴이
+유도되지는 않았다.** `plan_writes`의 사후조건은 여전히 인덱스 유효성뿐이다.
+"P ⟹ 수렴"에는 위 "왜 'P ⟹ 수렴'을 지금 증명하지 않는가" 절이 적어 둔
+J1/J2(접미사가 아니라 **부분수열** 형태의 불변식)가 그대로 필요하다. 이번에
+바뀐 것은 **자원 조건**이다 — 그 절이 "그 전에 여유부터 만들어야 한다"고 적은
+전제가 해소됐고(4.7초, 33배 여유), P가 문맥에 올라가 있으므로 J1/J2 시도는 이제
+자원이 아니라 증명 설계의 문제다.
+
+`lis_indices`가 P를 세운다는 것(LIS 건전성)도 여전히 미증명이다 — 비검증
+`place_in_order_lis`의 디버그 빌드 검사와 무작위 속성 검사가 지키고 있다.
+
+### 공허성 대조를 양방향으로 (2026-08-08, 채택 직후 보강)
+
+채택 시점에는 **음성 대조만** 있었다(`lemma_kept_order_rejects_inversion` —
+역전된 입력에서 P가 거짓). 그것만으로는 **항상 거짓인 술어**와 구별되지 않고,
+항상 거짓인 `requires`는 `plan_writes`를 검증 코드에서 호출 불가능하게 만드는
+또 다른 종류의 공허다. 적대적 검토가 지적한 그대로라 둘을 더 넣었다:
+
+- `lemma_kept_order_accepts_increasing` — **같은 `current`/`target_ids`** 위에서
+  `keep`만 바꾸면 P가 참이 된다. 값이 실제로 갈린다는 것이 요점이다.
+- `lemma_kept_order_ignores_fresh` — `!fresh` 조항이 실제로 쌍을 제외하는지.
+  이것이 없으면 P의 정의에서 `&& !target_fresh[a] && !target_fresh[b]`를 통째로
+  지워도 다른 모든 항목이 통과한다 — 즉 그 조항이 검사되지 않는 채 남는다.
+
+두 대조 모두 **음성 대조로 판별력을 확인**했다:
+
+| 주입한 결함 | 결과 |
+|---|---|
+| P에서 `!fresh` 조항 제거 | `postcondition not satisfied` (46 verified, 1 error) |
+| P의 `<`를 항상 참으로 약화 | `postcondition not satisfied` (46 verified, 1 error) |
+
+즉 P는 항상 참도 항상 거짓도 아니고, 각 조항이 실제로 무언가를 배제한다.

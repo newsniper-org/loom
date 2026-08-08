@@ -8,6 +8,11 @@
 -- note below says is the real target. That composition needs `SupervisionNode`
 -- to carry real tree/Entity structure, which still doesn't exist here (see
 -- the TODO at the bottom) — so what's proved below is strictly narrower than
+-- **2026-07-28 갱신(Task #28-d), 2026-08-08 감사에서 확인**: 위 "still doesn't
+-- exist here"는 이제 절반만 맞다 — `SupervisionNode`는 `ownedEntities`를 실제로
+-- 담고 `entityAccessible` 위에서 두 정리를 증명한다(이 파일 아래쪽). 여전히
+-- 없는 것은 `children`(island 내부 tree)과 despawn 시점 모델링뿐이고, 아래
+-- TODO도 그 좁아진 범위를 가리킨다.
 -- RQ3's full teardown-safety claim: it proves the *actor lifecycle labels*
 -- can never re-enable access after a detach begins, not that the ECS/DOM
 -- layer actually stops touching a specific dead Entity. That second half

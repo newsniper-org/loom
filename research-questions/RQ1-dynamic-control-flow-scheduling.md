@@ -768,7 +768,16 @@ paired bootstrap으로 재확인해 우연이 아님을 확정.
   R1에서 D append=0.2ms, K=1.0ms — D가 오히려 우세).
 - **단, 채택의 추가 선결 조건("§5 FV 계류")이 아직 미충족** — flush 규약 v0의
   formal verification은 이 저장소 전체에서 아직 스켈레톤 수준(Phase 5 몫,
-  이번 계획의 4단계). 따라서 **최대 "조건부 채택(FV 계류)"** — 완전한
+  이번 계획의 4단계).
+
+> **2026-08-08 갱신 — 이 문단의 "스켈레톤 수준" 진단은 더는 성립하지 않는다.**
+> flush 규약 v0의 FV는 2026-07-31~08-08에 실제로 수행됐다:
+> `verus formal-verification/verus/flush_order.rs` → 28 verified, 0 errors,
+> `verus --crate-type=lib crates/loom-flush-core/src/lib.rs` → 47 verified,
+> 0 errors. 다만 **§5 FV 계류가 완전히 해소된 것은 아니다** — 비-LIS 경로
+> (`plan_writes_converging`)는 수렴이 실행 코드의 사후조건으로 증명됐지만,
+> D·E가 실제로 쓰는 **LIS 변형(`plan_writes`)의 수렴은 미증명**이다. 그 사전조건
+> P만 2026-08-08에 `requires`로 올라갔다. 따라서 **최대 "조건부 채택(FV 계류)"** — 완전한
   채택은 아직 아님, §9 자체가 명시한 정확히 그 중간 상태.
 
 **E — D와 같은 방향이나 근거가 더 얕음**:

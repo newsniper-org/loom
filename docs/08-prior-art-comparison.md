@@ -13,7 +13,7 @@
 | Lifecycle 모델 | 콜백 훅 | 콜백 훅 | 콜백 훅 | 프레임워크별 | 없음(World만) | Supervision tree | **Supervision tree** (06) |
 | 스케줄링 | 없음(React 자체 reconciler) | 없음(즉시 실행) | 없음 | 없음 | **선언된 접근집합 기반 자동 병렬** | Rx 스케줄러(런타임 동적) | Bevy 방식 + **컴파일타임 자동 생성** |
 | 백엔드 결합 | Node 중심 | Node 중심 | Node/Deno/Bun 중심 | 여러 JS 런타임 어댑터 | 해당없음 | 모바일 앱 내부 구조 | **언어 무관**(FIC, 05) |
-| 공식 검증 | 없음 | 없음 | 없음 | 없음 | 없음 | 없음(업계 관행) | Lean4/TLA+ 스텁 (formal-verification/) |
+| 공식 검증 | 없음 | 없음 | 없음 | 없음 | 없음 | 없음(업계 관행) | Lean4 증명 2건(`sorry` 0) + TLA+ 스텁 1건 + **Verus로 배포 코드 검증**(`crates/loom-flush-core` 47 verified, 모델 `flush_order.rs` 28 verified — 2026-08-08 실측) *(초판 2026-07-24 서술: "Lean4/TLA+ 스텁")* |
 
 ## 그대로 재사용한 것 (재발명 안 함)
 

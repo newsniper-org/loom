@@ -114,6 +114,20 @@ impl Chain {
     /// private 필드(`next`/`prev`/`head`/`tail`)를 참조하므로 공개할 수 없고,
     /// 공개할 필요도 없다 — 호출부는 `new()`의 사후조건으로 이것을 얻고
     /// 각 메서드의 사후조건으로 유지만 하면 된다(캡슐화).
+    ///
+    /// **`opaque`인 이유**(2026-08-08). `closed`는 *모듈 밖*에서만 본문을
+    /// 가린다. 이 크레이트는 전부 한 모듈이라 `plan_writes`/
+    /// `plan_writes_converging`의 루프 불변식에 있는 `chain.well_formed()`가
+    /// 매 반복 `chain_denotes`의 **8개 논리곱 — 그중 4개가 양화자, 하나는
+    /// `no_duplicates`** — 으로 펼쳐지고 있었다. B1에서 걷어낸 바로 그
+    /// 2변수 양화자가 `well_formed()`를 통해 뒷문으로 다시 들어온 것이다
+    /// (README의 "가설 ②"가 겨냥했던 지점 — 그때는 `chain_denotes` **안쪽**의
+    /// `no_duplicates`만 가렸고, 그러면 나머지 7개 논리곱은 그대로 남는다).
+    ///
+    /// 불투명으로 두면 두 루프는 "well_formed다"라는 **명제만** 들고 다닌다.
+    /// 펼치는 것은 그것이 실제로 필요한 `Chain`의 메서드 안뿐이고, 그쪽은
+    /// 루프가 아니라 직선 코드라 감당된다.
+    #[verifier::opaque]
     pub closed spec fn well_formed(&self) -> bool {
         chain_denotes(self.next@, self.prev@, self.head, self.tail, self.denotation@)
     }
@@ -123,6 +137,7 @@ impl Chain {
         ensures r.well_formed(), r.denotes() =~= Seq::<u64>::empty(),
     {
         broadcast use group_hash_axioms;
+        reveal(Chain::well_formed);
         Chain {
             next: HashMapWithView::new(),
             prev: HashMapWithView::new(),
@@ -141,6 +156,7 @@ impl Chain {
         requires self.well_formed(),
         ensures r == adjacent(self.denotes(), e, a),
     {
+        reveal(Chain::well_formed);
         let res = match self.next.get(&e) {
             Some(n) => *n == a,
             None => false,
@@ -172,6 +188,7 @@ impl Chain {
         requires self.well_formed(),
         ensures self.denotes().no_duplicates(),
     {
+        reveal(Chain::well_formed);
     }
 
     /// `no_dup`의 불투명 판본 — 루프가 양화자를 보지 않도록 이쪽을 쓴다.
@@ -193,6 +210,7 @@ impl Chain {
             final(self).well_formed(),
             final(self).denotes() =~= old(self).denotes().remove_value(e),
     {
+        reveal(Chain::well_formed);
         proof { chain_unlink_denotes_remove(self.next@, self.prev@, self.head, self.tail, self.denotation@, e); }
         let p = self.prev.remove(&e);
         let n = self.next.remove(&e);
@@ -229,6 +247,7 @@ impl Chain {
             final(self).denotes() =~= old(self).denotes().insert(
                 old(self).denotes().index_of_first(a).unwrap(), e),
     {
+        reveal(Chain::well_formed);
         proof {
             self.denotation@.index_of_first_ensures(a);
             let j = self.denotation@.index_of_first(a).unwrap();
@@ -256,6 +275,7 @@ impl Chain {
         requires old(self).well_formed(), !old(self).denotes().contains(e),
         ensures final(self).well_formed(), final(self).denotes() =~= old(self).denotes().push(e),
     {
+        reveal(Chain::well_formed);
         proof { chain_push_back_denotes(self.next@, self.prev@, self.head, self.tail, self.denotation@, e); }
         match self.tail {
             Some(t) => {
@@ -306,6 +326,7 @@ impl Chain {
         requires self.well_formed(),
         ensures r == (self.denotes().len() > 0 && self.denotes()[self.denotes().len() - 1] == e),
     {
+        reveal(Chain::well_formed);
         match self.tail {
             Some(t) => t == e,
             None => false,
@@ -1354,6 +1375,14 @@ pub fn plan_writes_converging(
             let ghost d_mid = chain.denotes();
             proof {
                 chain.no_dup_opaque();
+                // **`well_formed()`를 불투명으로 돌린 뒤 필요해진 두 줄**
+                // (2026-08-08). 이 시점에 `e`는 표기에서 빠져 있고(Retained면
+                // `unlink`가 뺐고, Fresh면 애초에 없었다) 따라서 `place_before`의
+                // 첫 단계 `remove_value(e)`는 항등이다. 전에는 `chain_denotes`가
+                // 문맥에 펼쳐져 있어 프루버가 이걸 곁다리로 주웠는데, 이제는
+                // 명시해야 한다.
+                assert(!d_mid.contains(e));
+                lemma_remove_value_absent(d_mid, e);
                 if i < n { lemma_place_extends_suffix(d_mid, k_old, e); }
             }
             match next_anchor {
@@ -1362,6 +1391,10 @@ pub fn plan_writes_converging(
                     let ghost j0 = d_mid.index_of_first(a).unwrap();
                     chain.insert_before(e, a);
                     proof {
+                        // `insert_before`의 사후조건(표기 = `insert(j0, e)`)과
+                        // `place_before`의 정의를 명시적으로 잇는다 — 위
+                        // `remove_value` 항등이 있어야 두 항이 같아진다.
+                        assert(chain.denotes() =~= place_before(d_mid, e, Some(a)));
                         lemma_move_extends_suffix(chain.denotes(), suf_old, target_ids@,
                                                   idx as int, n as int, e);
                         lemma_insert_same_plus(d_mid, j0, e);
@@ -1441,6 +1474,136 @@ pub struct PlanOp {
     pub before: Option<u64>,
 }
 
+/// **`current` 안에서의 위치** — 사전조건 P를 쓰기 위한 보조.
+///
+/// `Seq::index_of_first`는 `Option<int>`라 P의 본문에서 매번 언랩하면
+/// `->Some_0` 항이 양화자 몸통에 섞여 트리거가 지저분해진다. 중복 없는
+/// 시퀀스에서는 위치가 유일하므로, **언랩을 여기 한 곳에 가둔 정수 함수**를
+/// 쓴다. `s`에 `x`가 없을 때의 값은 규정하지 않는다 — P가 이 함수를 쓰는
+/// 자리(= `keep`으로 표시된 Retained 원소)는 `plan_writes`의 기존 사전조건이
+/// `current@.contains(...)`를 이미 보장한다.
+///
+/// **`open`으로 두는 이유**: 이 함수는 아래 `kept_order_preserved`의 몸통
+/// **안에서만** 나타나고 그쪽이 불투명하므로, 이 정의 공리는 P를 `reveal`하기
+/// 전에는 어떤 항과도 매칭되지 않는다(트리거가 될 `pos(..)` 항 자체가 문맥에
+/// 뜨지 않는다). 굳이 불투명으로 이중으로 가둘 이유가 없다.
+pub open spec fn pos(s: Seq<u64>, x: u64) -> int {
+    s.index_of_first(x).unwrap()
+}
+
+/// **사전조건 P** — LIS 변형이 넘기는 `keep`이 지켜야 하는 것.
+///
+/// > `keep`으로 표시된(그리고 fresh가 아닌) 원소들의 `current` 내 상대 순서가
+/// > target 순서와 같다.
+///
+/// `formal-verification/verus/lis-keep-exhaustive.py`의 전수 탐색(2026-08-02)이
+/// 이것이 **필요충분**임을 확정했다: P를 만족하는 keep 조합 28,215건에서 순서
+/// 위반 0건, P를 위반하는 2,484건에서 **100%** 순서가 깨졌다. 지금까지 이
+/// 명제는 `place_in_order_lis`의 `debug_assert!`와 주석에만 있었다.
+///
+/// **불투명인 이유**: 본문이 `a`, `b` 두 인덱스에 대한 2변수 양화자다 —
+/// `Seq::no_duplicates()`가 이 모듈에서 인스턴스화의 88%를 먹었던 바로 그
+/// 형태. 래퍼로 가두면 `plan_writes`의 검증 조건은 "P가 성립한다"는 **명제만**
+/// 들고 다니고 양화자는 보지 않는다(`seq_nodup`과 같은 처방).
+#[verifier::opaque]
+pub open spec fn kept_order_preserved(
+    current: Seq<u64>,
+    target_ids: Seq<u64>,
+    target_fresh: Seq<bool>,
+    keep: Seq<bool>,
+) -> bool {
+    forall|a: int, b: int| #![trigger keep[a], keep[b]]
+        0 <= a < b < target_ids.len()
+            && keep[a] && !target_fresh[a]
+            && keep[b] && !target_fresh[b]
+            ==> pos(current, target_ids[a]) < pos(current, target_ids[b])
+}
+
+/// **음성 대조 — P가 공허하지 않음**.
+///
+/// "통과했다"만으로는 명세가 실제로 무언가를 말하는지 알 수 없다(이 저장소의
+/// 음성 대조 관행, `formal-verification/verus/README.md`). `requires`는 약할수록
+/// 통과하기 쉬우므로, **항상 참인 술어를 사전조건에 얹는 것은 아무것도 하지
+/// 않는 것과 같다** — 그래서 P가 실제로 무언가를 *거절*하는지 못박는다.
+///
+/// `current = [7, 9]`인데 target이 `[9, 7]`이고 둘 다 Retained·`keep` 표시라면,
+/// 표시된 원소들의 `current` 내 순서(7 → 9)가 target 순서(9 → 7)와 **반대**이므로
+/// P는 거짓이어야 한다. 전수 탐색이 "P 위반 → 100% 순서가 깨진다"고 말한 바로
+/// 그 모양이고, 실제로 이 입력에서 LIS는 둘 중 하나만 표시한다.
+pub proof fn lemma_kept_order_rejects_inversion()
+    ensures
+        !kept_order_preserved(
+            seq![7u64, 9u64],
+            seq![9u64, 7u64],
+            seq![false, false],
+            seq![true, true],
+        ),
+{
+    reveal(kept_order_preserved);
+    let current = seq![7u64, 9u64];
+    let target_ids = seq![9u64, 7u64];
+    let keep = seq![true, true];
+    assert(current[0] == 7u64);
+    assert(current[1] == 9u64);
+    assert(current.contains(9u64));
+    assert(current.contains(7u64));
+    current.index_of_first_ensures(9u64);
+    current.index_of_first_ensures(7u64);
+    assert(pos(current, 9u64) == 1);
+    assert(pos(current, 7u64) == 0);
+    assert(target_ids[0] == 9u64);
+    assert(target_ids[1] == 7u64);
+    // 트리거(`keep[a]`, `keep[b]`)에 맞는 ground term을 세워 (a, b) = (0, 1)
+    // 인스턴스화를 끌어낸다 — 그 인스턴스가 `1 < 0`이라 P가 거짓이 된다.
+    assert(keep[0] == true);
+    assert(keep[1] == true);
+}
+
+/// **양성 대조 — P가 항상 거짓인 술어가 아님** (2026-08-08 추가).
+///
+/// 위 음성 대조만으로는 부족하다. `requires`가 **항상 거짓**이어도 그 정리는
+/// 통과하는데, 항상 거짓인 사전조건은 `plan_writes`를 검증 코드에서 아예
+/// 호출 불가능하게 만든다 — 통과하지만 쓸모없는, 다른 종류의 공허다.
+/// 그래서 **같은 `current`/`target_ids` 위에서 `keep`만 바꿔** 값이 실제로
+/// 갈리는 것을 기계검사한다.
+pub proof fn lemma_kept_order_accepts_increasing()
+    ensures
+        kept_order_preserved(
+            seq![7u64, 9u64],
+            seq![9u64, 7u64],
+            seq![false, false],
+            seq![false, true],
+        ),
+{
+    reveal(kept_order_preserved);
+    // `keep = [false, true]` — 표시된 것이 하나뿐이라 비교할 쌍이 없다.
+    // 위 `lemma_kept_order_rejects_inversion`과 `current`/`target_ids`가
+    // **완전히 같고** `keep`만 다른데 값이 갈린다는 것이 요점이다.
+}
+
+/// **`!fresh` 조항이 실제로 무언가를 하는지** (2026-08-08 추가).
+///
+/// 이것이 없으면 P의 정의에서 `&& !target_fresh[a] && !target_fresh[b]`를
+/// 통째로 지워도 다른 모든 항목이 그대로 통과한다 — 즉 그 조항은 검사되지
+/// 않는 채 남는다. 여기서는 **역전된 두 원소 중 하나를 fresh로 표시**해
+/// 조항이 그 쌍을 실제로 제외하는 것을 확인한다.
+///
+/// (fresh 원소는 아직 DOM에 없으므로 `current` 내 위치를 말할 수 없다 —
+/// `plan_writes`의 기존 `requires`가 그것을 이미 못박고 있고, P가 그 원소를
+/// 비교 대상에서 빼는 이유가 그것이다.)
+pub proof fn lemma_kept_order_ignores_fresh()
+    ensures
+        // 같은 역전(9가 7보다 앞) 인데 9 쪽이 fresh라 쌍이 성립하지 않는다.
+        kept_order_preserved(
+            seq![7u64, 9u64],
+            seq![9u64, 7u64],
+            seq![true, false],
+            seq![true, true],
+        ),
+{
+    reveal(kept_order_preserved);
+}
+
 /// **`place_in_order`의 순서 결정 전체**를 검증된 코드로 옮긴 것.
 /// 반환된 `PlanOp` 열은 **방출 순서 그대로**다(= target의 역순, 스킵 제외).
 ///
@@ -1465,6 +1628,12 @@ pub fn plan_writes(
             0 <= i < target_ids@.len() ==>
                 (target_fresh@[i] ==> !current@.contains(target_ids@[i]))
                 && (!target_fresh@[i] ==> current@.contains(target_ids@[i])),
+        // **사전조건 P** — `keep[i] || <인접성 검사>`의 **단락**이 정당하려면
+        // 표시된 원소들의 `current` 내 상대 순서가 target 순서와 같아야 한다.
+        // 호출부(`list.rs`의 `place_in_order_lis`)가 `lis_indices`로 이것을
+        // 세운다. 지금까지 디버그 빌드 `debug_assert!`로만 있던 것을 여기
+        // **기계가 읽는 계약**으로 올렸다(2026-08-08).
+        kept_order_preserved(current@, target_ids@, target_fresh@, keep@),
     ensures
         // 방출된 op의 인덱스는 전부 유효하고, spawn 여부는 target과 일치한다.
         forall|k: int| #![trigger ops@[k]]

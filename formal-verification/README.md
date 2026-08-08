@@ -103,3 +103,24 @@ Entity"가 아니라 "이 지연 activation 서브트리가 소유한 Entity"로
 
 `roadmap/PHASES.md`의 "Phase 5 — 공식 검증" 절 + `research-questions/
 RQ5-formal-verification-targets.md` 참고.
+
+
+## 2026-08-08 — 세 번째 트랙: Verus (`verus/`)
+
+이 파일이 오랫동안 Lean4와 TLA+만 다뤘는데, RQ5 후보 #4(flush 규약 v0 순서
+보장)가 `formal-verification/verus/`에서 진행돼 **세 번째 트랙**이 생겼다.
+왜 여기만 Verus인지(대상이 모델이 아니라 **실제 실행 함수**라서)는
+`verus/README.md`의 첫 절에 있다.
+
+실행:
+
+```
+verus formal-verification/verus/flush_order.rs              # 모델 — 28 verified, 0 errors
+verus --crate-type=lib crates/loom-flush-core/src/lib.rs    # 실행 코드 — 47 verified, 0 errors
+```
+
+`cargo verus verify`는 업스트림 Verus와 crates.io `vstd`의 불일치로 **실행되지
+않는다**(`unexpected verus diagnostic item …opens_invariants_none`).
+
+남은 것과 실패 경위(rlimit/메모리 벽, 두 번의 잘못된 가설, 함수 단위 프로파일의
+필요성)는 전부 `verus/README.md`에 있다.
