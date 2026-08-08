@@ -71,42 +71,102 @@ fn mint(rng: &mut Pcg64, counter: &mut usize) -> String {
 /// 길이 `len` 이하의 시퀀스를 만든다. 인덱스는 **생성 시점의 길이 추정치**로
 /// 뽑되, 적용 시점에 다시 clamp한다 — shrinking으로 앞쪽 op가 빠지면 길이가
 /// 달라지기 때문(그래도 시퀀스가 유효하게 남아야 최소화가 진행된다).
+///
+/// **크기 편향(2026-08-08)**: 시퀀스마다 목표 크기를 `[1, 50]`에서 뽑고, 현재
+/// 크기가 목표보다 작으면 삽입 쪽으로, 크면 삭제 쪽으로 기울인다.
+///
+/// 왜 필요했나: 처음에는 삽입/삭제 확률이 같았고, 그러면 리스트가 **4~5 근처를
+/// 랜덤워크**해서 §5가 정한 상한 n=50 근처에 한 번도 닿지 않는다(400시퀀스
+/// 시뮬레이션에서 상한 도달 0%, 최대 도달 평균 8.4). 그 상태로는 큰 구간·많은
+/// row·LIS가 실제로 작동하는 영역이 전혀 검사되지 않는다 — 통과해도 그 영역에
+/// 대해서는 아무 말도 못 하는 결과가 된다. 사이클 1을 **결과를 보기 전에**
+/// 중단하고 고친 이유다(§11-1(b) 측정 방법 결함).
 pub fn sequence(seed: u64, len: usize, outer0: usize, inner0: usize) -> Vec<Op> {
     let mut rng = Pcg64::from_seed(seed);
     let mut counter = 0usize;
     let (mut outer, mut inner) = (outer0, inner0);
+    // 목표 크기. 작은 리스트(경계 조건)와 상한 근처(규모)가 모두 나오도록
+    // 전 구간에서 균등하게 뽑는다.
+    let target_outer = 1 + rng.below(MAX_OUTER);
+    let target_inner = 1 + rng.below(MAX_INNER);
     let mut ops = Vec::with_capacity(len);
     for _ in 0..len {
-        let op = match rng.below(9) {
-            0 if outer < MAX_OUTER => {
-                outer += 1;
-                Op::OuterInsert { at: rng.below(outer), item: mint(&mut rng, &mut counter) }
-            }
-            1 if outer > 0 => {
-                let at = rng.below(outer);
-                outer -= 1;
-                Op::OuterRemove { at }
-            }
-            2 if outer > 1 => Op::OuterMove { from: rng.below(outer), to: rng.below(outer) },
-            3 if outer > 1 => Op::OuterSwap { a: rng.below(outer), b: rng.below(outer) },
-            4 if outer > 1 => Op::OuterReverse,
-            5 => Op::Toggle,
-            6 if inner < MAX_INNER => {
-                inner += 1;
-                Op::InnerInsert { at: rng.below(inner), item: mint(&mut rng, &mut counter) }
-            }
-            7 if inner > 0 => {
-                let at = rng.below(inner);
-                inner -= 1;
-                Op::InnerRemove { at }
-            }
-            8 if inner > 1 => Op::InnerMove { from: rng.below(inner), to: rng.below(inner) },
-            // 조건이 안 맞으면 토글로 떨어진다 — 시퀀스 길이를 유지하기 위해서.
-            _ => Op::Toggle,
+        // 어느 축을 건드릴지: 외부 4 / 토글 1 / 내부 4.
+        let axis = rng.below(9);
+        let op = if axis == 4 {
+            Op::Toggle
+        } else if axis < 4 {
+            grow_or_shrink(
+                &mut rng,
+                &mut counter,
+                &mut outer,
+                target_outer,
+                MAX_OUTER,
+                Axis::Outer,
+            )
+        } else {
+            grow_or_shrink(
+                &mut rng,
+                &mut counter,
+                &mut inner,
+                target_inner,
+                MAX_INNER,
+                Axis::Inner,
+            )
         };
         ops.push(op);
     }
     ops
+}
+
+#[derive(Clone, Copy)]
+enum Axis {
+    Outer,
+    Inner,
+}
+
+/// 목표 크기 쪽으로 기울인 한 조작. 목표에 도달한 뒤에는 재정렬이 주가 되므로
+/// 큰 리스트 위에서의 이동·교환·역순이 실제로 많이 생성된다(불변식 2·3이
+/// 겨냥하는 영역).
+fn grow_or_shrink(
+    rng: &mut Pcg64,
+    counter: &mut usize,
+    size: &mut usize,
+    target: usize,
+    cap: usize,
+    axis: Axis,
+) -> Op {
+    let roll = rng.below(10);
+    let grow = if *size < target { roll < 7 } else if *size > target { roll < 2 } else { roll < 3 };
+    let shrink = if *size > target { roll >= 2 && roll < 8 } else { roll >= 7 && roll < 8 };
+
+    if grow && *size < cap {
+        *size += 1;
+        let at = rng.below(*size);
+        let item = mint(rng, counter);
+        return match axis {
+            Axis::Outer => Op::OuterInsert { at, item },
+            Axis::Inner => Op::InnerInsert { at, item },
+        };
+    }
+    if shrink && *size > 0 {
+        let at = rng.below(*size);
+        *size -= 1;
+        return match axis {
+            Axis::Outer => Op::OuterRemove { at },
+            Axis::Inner => Op::InnerRemove { at },
+        };
+    }
+    if *size > 1 {
+        let (a, b) = (rng.below(*size), rng.below(*size));
+        return match (axis, rng.below(3)) {
+            (Axis::Outer, 0) => Op::OuterMove { from: a, to: b },
+            (Axis::Outer, 1) => Op::OuterSwap { a, b },
+            (Axis::Outer, _) => Op::OuterReverse,
+            (Axis::Inner, _) => Op::InnerMove { from: a, to: b },
+        };
+    }
+    Op::Toggle
 }
 
 /// 조작을 실제 상태에 적용한다. **모델과 앱이 같은 함수를 쓴다** — 조작 해석이
