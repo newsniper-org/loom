@@ -1474,6 +1474,18 @@ pub fn plan_writes(
 {
     let n = target_ids.len();
     let mut chain = Chain::from_slice(current);
+    // **불투명 형태로 바꿔 루프에 넘긴다** (2026-08-08, 프로파일 근거).
+    // `plan_writes_converging`은 2026-08-01에 이 처방을 받았는데 이쪽(LIS
+    // 변형)은 raw `no_duplicates`를 루프 불변식에 그대로 들고 있었다 —
+    // `--profile-all`이 `vstd/seq_lib.rs:520`(= `no_duplicates`의 2변수
+    // 양화자)을 전체 인스턴스화의 **82%**로 지목했다.
+    //
+    // 펼치는 것은 그것이 실제로 필요한 `assert ... by { }` 블록 **안쪽**뿐이다.
+    // 보조정리(`proof fn`)로 빼는 안도 해 봤는데, 그 `ensures`가 모듈 문맥에
+    // 새 트리거를 더해 **건드리지도 않은 `plan_writes_converging`이 rlimit
+    // 크래시**를 냈다 — 이 모듈이 경계에 붙어 있다는 증거이고, 그래서 공리를
+    // 늘리지 않는 `by` 블록 쪽을 택했다.
+    proof { lemma_nodup_wrap(current@); lemma_nodup_wrap(target_ids@); }
     let mut ops: Vec<PlanOp> = Vec::new();
     let mut next_anchor: Option<u64> = None;
     let mut i: usize = n;
@@ -1484,8 +1496,8 @@ pub fn plan_writes(
             n == target_ids@.len(),
             target_fresh@.len() == target_ids@.len(),
             keep@.len() == target_ids@.len(),
-            current@.no_duplicates(),
-            target_ids@.no_duplicates(),
+            seq_nodup(current@),
+            seq_nodup(target_ids@),
             forall|j: int| #![trigger target_fresh@[j]]
                 0 <= j < n ==>
                     (target_fresh@[j] ==> !current@.contains(target_ids@[j]))
@@ -1515,6 +1527,7 @@ pub fn plan_writes(
         proof {
             // e는 target의 i번째이고 중복이 없으므로 [i+1, n) 구간에 없다.
             assert(!target_ids@.subrange(i as int + 1, n as int).contains(e)) by {
+                reveal(seq_nodup);
                 let sub = target_ids@.subrange(i as int + 1, n as int);
                 assert forall|j: int| #![trigger sub[j]]
                     0 <= j < sub.len() implies sub[j] != e by {
@@ -1581,7 +1594,10 @@ pub fn plan_writes(
                     assert(!chain.denotes().contains(e));
                     // anchor는 e와 다른 원소이므로 unlink에도 살아남는다.
                     if let Some(a) = next_anchor {
-                        assert(a != e);
+                        // anchor는 target[i+1], e는 target[i] — 자리가 다르므로
+                        // 중복 없음에서 서로 다르다. 양화자는 이 `by` 블록
+                        // 안에서만 펼친다(불투명화의 의미를 지키기 위해).
+                        assert(a != e) by { reveal(seq_nodup); }
                         lemma_remove_value_keeps_other(before, e, a);
                     }
                 }
