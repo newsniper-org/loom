@@ -69,7 +69,14 @@ StringList/Bool/Str(DOM-복구형 재개)로 확장, IR의 "시그널당 액션 
 > 4.12.5). 증명 의무 (1) anchor 선행성·(2) 순서 수렴은 **실행 코드의 사후조건**
 > 으로 충족됐고, LIS 변형(`plan_writes`)의 **수렴**은 여전히 미증명이다 —
 > 다만 그 사전조건 P는 2026-08-08에 `requires`로 올라갔다. 상세 경위는
-> `formal-verification/verus/README.md`. 상세는 `formal-verification/README.md` +
+> `formal-verification/verus/README.md`.
+>
+> **2026-08-09 — LIS 변형의 수렴도 증명됨**: 실행 코드 `crates/loom-flush-core`
+> **70 verified, 0 errors**. `plan_writes`가 `plan_writes_converging`과 같은
+> 모양의 수렴 사후조건을 갖는다. 단, 사전조건 **Q(`current ⊆ target`)를
+> 추가**해야 했다 — 목표 명제가 P만으로는 거짓이었다(전수 탐색으로 반례 확인).
+> 남은 미증명은 `lis_indices`가 P를 세운다는 것(**LIS 건전성**) 하나다.
+> 상세는 `formal-verification/verus/README.md`의 "LIS 경로의 수렴" 절. 상세는 `formal-verification/README.md` +
 `roadmap/PHASES.md` Phase 5 절.
 
 ---

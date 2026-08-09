@@ -116,7 +116,7 @@ RQ5-formal-verification-targets.md` 참고.
 
 ```
 verus formal-verification/verus/flush_order.rs              # 모델 — 28 verified, 0 errors
-verus --crate-type=lib crates/loom-flush-core/src/lib.rs    # 실행 코드 — 47 verified, 0 errors
+verus --crate-type=lib crates/loom-flush-core/src/lib.rs    # 실행 코드 — 70 verified, 0 errors
 ```
 
 `cargo verus verify`는 업스트림 Verus와 crates.io `vstd`의 불일치로 **실행되지

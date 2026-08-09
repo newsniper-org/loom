@@ -475,6 +475,12 @@ P를 `kept_order_preserved`라는 `spec fn`으로 쓰고 `plan_writes`의 `requi
 
 ### 왜 "P ⟹ 수렴"을 지금 증명하지 않는가 (범위 결정)
 
+> **2026-08-09 해소**: 이 절은 그때의 범위 결정 기록으로 남긴다. 수렴은
+> 증명됐다 — 맨 아래 "LIS 경로의 수렴 — 증명 완료" 절. 다만 **결론이
+> 그대로는 아니다**: 아래가 "필요한 불변식"으로 적은 J1/J2 중 J2는 필요
+> 없었고(사전조건 Q가 대신한다), 정작 **목표 명제 자체가 P만으로는
+> 거짓**이었다. 아래 J1/J2 서술은 그 사실을 모르고 쓴 것이다.
+
 `plan_writes_converging`의 증명은 **접미사 불변식**("k개 처리 후 DOM의 뒤쪽
 k개 = target의 뒤쪽 k개")에 얹혀 있다. LIS 경로에서는 이 불변식이 **중간에
 깨진다** — 확인한 예: `current=[A,B,C]`, `target=[A,C,B]`, LIS={A,B}. i=2에서
@@ -509,9 +515,11 @@ B를 스킵하는 순간 뒤쪽 1개는 `[C]`지 `[B]`가 아니다. 그런데�
 2. **검증이 rlimit 경계에 붙어 있다 (최우선)** — HEAD도 부하가 걸리면
    크래시한다. "44 verified"는 한가한 머신 단독 실행에서만 재현된다.
    상세와 이분 결과는 위 "검증이 rlimit 경계에 붙어 있다" 절.
-3. **`plan_writes`(LIS 변형)의 수렴은 미증명** — 다만 경계가 정확해졌다
-   (위 "LIS 변형의 `keep` — 사전조건 P를 확정" 절). `lis_indices` 자체도
-   비검증이나, 필요한 것이 **건전성뿐이고 최적성이 아님**이 확인됐다.
+3. ~~**`plan_writes`(LIS 변형)의 수렴은 미증명**~~ → **2026-08-09 해결**
+   (맨 아래 "LIS 경로의 수렴 — 증명 완료" 절). 사전조건 **Q를 추가**해야
+   했다 — P만으로는 목표 명제가 거짓이었다. 남은 미증명은 `lis_indices`가
+   P를 세운다는 것(**LIS 건전성**)뿐이고, 필요한 것이 **건전성뿐이고
+   최적성이 아님**은 확인돼 있다.
 4. ~~`emit_writes`와 `apply_k`의 결선~~ → **2026-08-02 해결**
    (위 "`emit_writes` ↔ `apply_k` 결선" 절).
 
@@ -713,6 +721,11 @@ P를 넣을 자리를 만들려면 `plan_writes_converging`의 메모리를 줄�
 
 ### 그래도 아직 증명되지 **않은** 것 — 숨기지 않음
 
+> **2026-08-09 해소**: 아래 첫 단락은 그날의 상태다. P로부터 수렴이 유도됐고
+> (사전조건 Q를 하나 더 얹어서) `plan_writes`의 사후조건은 이제 인덱스
+> 유효성뿐이 아니다 — 맨 아래 "LIS 경로의 수렴 — 증명 완료" 절. 둘째 단락
+> (`lis_indices`의 건전성)은 **여전히 유효하다**.
+
 **P는 지금 `plan_writes`의 사전조건으로 "적혀" 있을 뿐, 그것으로부터 수렴이
 유도되지는 않았다.** `plan_writes`의 사후조건은 여전히 인덱스 유효성뿐이다.
 "P ⟹ 수렴"에는 위 "왜 'P ⟹ 수렴'을 지금 증명하지 않는가" 절이 적어 둔
@@ -745,3 +758,221 @@ J1/J2(접미사가 아니라 **부분수열** 형태의 불변식)가 그대로 
 | P의 `<`를 항상 참으로 약화 | `postcondition not satisfied` (46 verified, 1 error) |
 
 즉 P는 항상 참도 항상 거짓도 아니고, 각 조항이 실제로 무언가를 배제한다.
+
+## LIS 경로의 수렴 — 증명 완료 (2026-08-09)
+
+`crates/loom-flush-core::plan_writes`(LIS 변형, `keep` 있음)가 이제
+`plan_writes_converging`과 **글자 그대로 같은 모양의 수렴 사후조건**을 갖는다:
+
+```rust
+({
+    let d = apply_ops(current@, ops@, ops@.len() as int);
+    &&& d.len() >= target_ids@.len()
+    &&& d.subrange(d.len() - target_ids@.len(), d.len() as int) =~= target_ids@
+})
+```
+
+전 모듈 **70 verified, 0 errors**, 6.1초(smt-run 4.56초, rlimit 32.7M).
+직전 HEAD는 47 verified / 5.0초 / rlimit 26.6M이었으므로 1.2배.
+
+위 "왜 'P ⟹ 수렴'을 지금 증명하지 않는가" 절과 "남은 것" 3번은 **이 절로
+대체된다**. 다만 그 절이 예고한 J1/J2 형태 그대로 된 것은 아니다 — 아래.
+
+### 목표 명제는 P만으로는 **거짓**이었다 — 사전조건 Q를 추가했다
+
+J1/J2를 세우기 전에 전수 탐색으로 목표 명제부터 확인했더니 **반례가 있었다**:
+
+```
+current = [0, 1]   target_ids = [0]   target_fresh = [false]   keep = [true]
+```
+
+P는 성립한다(표시된 원소가 하나뿐이라 비교할 쌍 자체가 없어 공허하게 참).
+기존 `requires`도 전부 성립한다. 그런데 `keep[0]`이 인접성 검사를 **단락**하므로
+`0`은 그대로 남고 op가 하나도 나오지 않아 `apply_ops`의 결과는 `[0, 1]`이다.
+뒤쪽 1개는 `[1]`이지 `[0]`이 아니다. P를 만족하는 530,362개 조합 중
+**219,501건에서 수렴이 깨진다**.
+
+원인은 `current`에만 있고 `target`에는 없는 원소(**extras**)다. 기존 `requires`는
+"retained target ⊆ current"만 말하고 그 역을 말하지 않았다. 그래서 조항을 하나
+**추가**했다(기존 조항의 약화가 아니다):
+
+```rust
+// 사전조건 Q
+forall|x: u64| #![trigger current@.contains(x)]
+    current@.contains(x) ==> target_ids@.contains(x),
+```
+
+P ∧ Q인 133,034건 전부 수렴, 위반 0건. Q는 충분하지만 최소는 아니다 — 더 약한
+P2("extras는 전부 kept 원소들보다 `current`에서 앞에 있다")로도 반례가 나오지
+않았으나(177,827건), P2는 다시 2변수 양화자이고 Q는 1변수라 Q를 택했다.
+
+**왜 이전 전수 탐색이 이걸 못 봤나**: `lis-keep-exhaustive.py`(2026-08-02)는
+`cur = list(range(n))`, `tgt = cur의 순열`로 훑었다 — `current`가 **항상**
+target의 retained 집합과 정확히 같았다. extras 축은 한 번도 시험되지 않았고,
+반례는 정확히 그 축에 산다. "P는 필요충분"이라는 그때 결론은 **그 공간 안에서는
+여전히 옳다**. 새 스크립트는 `lis-convergence-exhaustive.py`.
+
+**두 경로의 진짜 비대칭이 여기 있다.** `plan_writes_converging`(비-LIS)은 Q가
+필요 없다 — 비인접이면 무조건 옮기므로 외래 원소가 저절로 앞으로 밀려난다.
+Q는 **`keep` 단락이 사 오는 비용**이다. 호출부
+(`crates/loom-runtime/src/list.rs`의 `d_lis_body`)는 구조적으로 이미 항상
+만족하지만(`current = old_order − removed`이므로 정확히 retained 집합) 계약에
+적혀 있지 않았을 뿐이고, P와 같은 방식으로 `place_in_order_lis`의
+`debug_assert!`에 대응 검사를 넣어 경계를 코드에 박았다.
+
+### 쓴 불변식 — J1/J2가 아니라 **분할점을 함께 든 부분수열형**
+
+예고했던 J1/J2 중 **J2는 필요 없었다**. Q가 있으면 최종 DOM은 target 원소만으로
+이루어지므로 "DOM에 target 밖 원소가 있다"는 경우가 아예 사라지고, J2는 그
+따름정리가 된다. 남는 것은 J1 하나인데 **J1은 단독으로 귀납적이지 않다**:
+keep 스킵 분기에서 "`target[i-1]`이 DOM에서 `target[i..]`보다 앞"을 J1만으로는
+못 얻는다. 그걸 주는 것이 P인데, **P는 `current`의 위치를 말하지 DOM의 위치를
+말하지 않는다.** 그 간극이 이 증명의 전부다.
+
+메운 방식은 J1을 **분할점 `sp`와 함께** 들고 다니는 것이다(`split_inv`).
+`sp`는 DOM 안에서 `target[i]`가 있는 자리이고,
+
+- `sp` **앞**을 아직 처리 안 한 kept 원소로 거르면 `keptseq(i)`,
+- `sp` **뒤**를 `target[i..]`로 거르면 `target[i..]` 그대로.
+
+분할점을 명시적으로 옮기는 것이 요점이다. 분할점 없이
+`filter(dom, kept ∪ target[i..]) == keptseq ++ target[i..]`만 들고 있으면 매
+스텝 `A + B`를 쪼개는 자리를 다시 찾아야 하고, 그러려면 filter 결과의 무중복성이
+필요해진다 — 이 파일이 두 번 자원 벽에 부딪힌 바로 그 형태다. `sp`를 함께
+옮기면 세 분기 모두 자리가 **주어진다**.
+
+### 설계상 가장 큰 이득 — `keptseq`를 `target`이 아니라 `current` 위에 정의
+
+`keptseq(i)`("아직 처리하지 않은 kept 원소들을 늘어놓은 것")를 **`current`
+순서로** 정의했다:
+
+```rust
+pub open spec fn keptseq(c, t, fr, kp, i) -> Seq<u64> {
+    c.filter(|x: u64| kept_lt(t, fr, kp, i, x))
+}
+```
+
+target 순서로 정의하면 루프 진입 시 `current.filter(kept) == target.filter(kept)`
+를 세워야 하는데, 그건 "순서 보존 선택 ⟹ filter 동일"이라는 별도의 무거운
+정리다. `current` 쪽으로 정의하면 **진입 조건이 항진명제**가 되고, P는
+keep 스킵 한 걸음(`lemma_keptseq_push`)에서만 소비된다. 이 파일에서 P가
+쓰이는 곳은 그 정리 **한 군데뿐**이다.
+
+세 분기는 전부 filter의 한 걸음이다:
+
+| 분기 | DOM | 새 분할점 | 쓰는 것 |
+|---|---|---|---|
+| keep 스킵 | 불변 | `keptseq(i)`의 마지막 원소가 있는 자리 | P(`lemma_keptseq_push`) + `lemma_filter_split_last` |
+| 인접 스킵 | 불변 | `sp - 1` | 인접성이 곧바로 준다 |
+| 이동/신규 | `remove_value` 후 `insert` | 삽입한 자리 | `e`가 술어 집합에 없다는 것 |
+
+끝맺음은 `lemma_endgame` 하나다: `i == 0`에서 filter가 항등이 되어(Q가 주는 것)
+**DOM == target**이 그냥 나온다.
+
+### `Seq::filter` 기계 — vstd에 있는 것과 없는 것
+
+`filter_distributes_over_add`는 vstd **기본 broadcast**(`group_seq_lib_default`)라
+`broadcast use` 없이 뜬다. 그래서 `remove(i)`/`insert(j,e)`를 `A + seq![x] + B`로
+쪼개면 filter가 그대로 따라 쪼개진다. 싱글턴 filter는
+`reveal_with_fuel(Seq::filter, 2)`로 풀리므로 **`lemma_filter_push`
+(= `group_seq_extra`, 기본 broadcast 아님)를 한 번도 들여오지 않았다** — 모듈에
+새 broadcast 트리거를 하나도 붙이지 않았다는 뜻이고, 이 파일의 "보조정리의
+`ensures`가 건드리지도 않은 함수를 깨뜨린다"는 이력상 그게 중요하다.
+
+직접 쓴 것(전부 vstd에 없다): `lemma_filter_none`, `lemma_filter_agree`,
+`lemma_filter_all`, `lemma_filter_singleton`, `lemma_filter_remove_nonmatching`,
+`lemma_filter_split_last`. 각 5~25줄이다. 이 중
+**`lemma_filter_split_last`가 keep 스킵의 심장**이고, filter가 `drop_last`
+재귀라 오른쪽에서 왼쪽으로 가는 그 귀납과 정확히 맞물린다.
+
+`split_inv`는 `#[verifier::opaque]`다 — 본문에 filter 항이 둘, 그 술어 안에
+존재 양화가 둘 들어간다. `seq_nodup`/`Chain::well_formed`와 같은 처방으로,
+루프는 명제만 들고 다니고 펼치는 것은 단계 보조정리 안뿐이다.
+
+### 먼저 해야 했던 것 — `chain_insert_before_denotes_insert`의 rlimit
+
+`chain_insert_before_denotes_insert`는 **기본 rlimit 경계에 붙어 있어서**,
+모듈에 새 `pub proof fn` 하나만 추가해도 재현성 있게 넘어갔다. 작업 시작 전에
+`#[verifier::rlimit(60)]`을 붙이고 baseline(47 verified)을 다시 잡았다. 자기
+증명은 그대로이고 예산만 올린 것이며 이 파일은 이미
+`rlimit(400)/(2000)/(4000)`을 쓰고 있다.
+
+### 음성 대조 — 사후조건이 실제로 검사되는지
+
+첫 시도에 통과했으므로 대조가 특히 필요했다. 조항을 하나씩 빼고 확인했다
+(사전조건과 루프 불변식 양쪽에서 빼야 실패 지점이 사후조건 쪽으로 내려온다):
+
+| 뺀 것 | 결과 |
+|---|---|
+| Q | `assertion failed` — 끝맺음의 "DOM의 모든 원소가 target 안" (69 verified, 1 error) |
+| P | `precondition not satisfied` — `lemma_step_keep_skip` 호출 (69 verified, 1 error) |
+
+즉 실패 지점이 전수 탐색의 반례가 사는 곳(Q)과 P를 소비하는 유일한 지점(P)에
+정확히 대응한다.
+
+**양성 대조도 넣었다** — `lemma_plan_writes_requires_satisfiable`. 사전조건이
+늘어날 때 가장 위험한 실패 양식은 "조항들이 서로 모순이라 함수가 공허하게
+검증되는 것"이다. P·Q·fresh/retained 조항을 **동시에** 만족하는 구체적 증인
+(`current=[7,9] target=[7,9] keep=[true,true]`)을 기계검사한다. `keep`이 전부
+참이므로 P를 실제로 소비하는 분기가 살아 있는 입력이다.
+
+호출부 쪽에서는 `cargo test -p loom-runtime` 109건 전원 통과 — 새로 넣은 Q의
+`debug_assert!`가 켜진 채로다(`d_lis_r1`/`e_lis_r1`이 이 경로를 탄다).
+
+### 남은 것
+
+`lis_indices`가 P를 세운다는 것(**LIS 건전성**)은 여전히 미증명이다. 이번에
+증명된 것은 "P ∧ Q ⟹ 수렴"이고, "LIS가 P를 만든다"가 아니다. 그 경계는
+`place_in_order_lis`의 두 `debug_assert!`(P, Q)와 무작위 속성 검사가 지킨다.
+
+
+---
+
+## 채택 후 보강 (2026-08-09, 병렬 시도 4안 중 채택안에 적용)
+
+네 시도가 **전부** 목표 사후조건과 바이트 동일한 `ensures`로 통과했고, 넷 다
+독립적으로 **같은 누락 사전조건 Q**를 찾았다. 판정자가 각 워크트리를 직접
+재검증(2회 반복, 크래시 없음)하고 돌연변이 2종으로 대조한 뒤 부담이 가장 가벼운
+안을 채택했다. 채택 후 판정이 지적한 것을 반영했다:
+
+1. **경고 5건 제거** — `reveal(Seq::<u64>::filter)`의 타입 인자가 무시된다는
+   경고. `Seq::<_>::filter`로. 이 모듈의 경고는 계속 0건이어야 한다.
+2. **호출부 Q 검사를 O(n²) → O(n)** — `list.rs`의 `debug_assert!`가 이중 루프
+   였다. 바로 위 P 검사가 맵으로 O(n)인 것과 같이 `HashSet`으로.
+3. **루프 불변식의 Q 사본 제거** — Q는 `current@`/`target_ids@`(둘 다 루프에서
+   불변)만 말하므로 함수 `requires`가 루프 안에서도 살아 있다. "Verus의 while은
+   불변식만으로 모듈러 검증된다"는 규칙을 **변하지 않는 상태에까지** 과잉 적용한
+   것이었다. 지우고 통과 확인(71 verified).
+4. **양성 대조의 증인 교체 + 음성 대조 추가** — 채택안의 양성 증인은
+   `current == target`이라 실행이 퇴화했다(방출 op 0개 = 아무것도 시험하지
+   않는다). 다른 시도의 증인(`c=[7,9]`, `t=[5,7,9]`, `fr=[T,F,F]`, `kp=[F,T,T]`
+   — P 비공허 + Fresh 포함 + `current != target`)으로 바꾸고,
+   `lemma_q_rejects_extras`(Q 없이는 목표 사후조건이 **거짓**임을 기계로 세운다)를
+   추가했다.
+
+### 최종 상태와 음성 대조
+
+```
+verus --crate-type=lib crates/loom-flush-core/src/lib.rs   → 71 verified, 0 errors, 경고 0
+verus formal-verification/verus/flush_order.rs             → 28 verified, 0 errors
+```
+
+| 주입한 결함 | 결과 |
+|---|---|
+| 수렴 사후조건의 `target_ids@`를 `.reverse()`로 | `postcondition not satisfied` (70 verified, 1 error) |
+| `requires`에서 Q 제거 | `assertion failed` (70 verified, 1 error) |
+
+즉 사후조건이 load-bearing이고 Q가 장식이 아니다.
+
+### 남는 것 (숨기지 않음)
+
+- **계약이 좁아졌고 그 대가를 비검증 코드가 진다.** 이제 `place_in_order_lis`가
+  지킬 조항이 P와 Q **둘**이고, 둘 다 `debug_assert!`(릴리스에서는 사라진다)와
+  무작위 속성 검사로만 지켜진다.
+- **`lis_indices`가 P를 세운다는 LIS 건전성은 여전히 미증명이다.** 증명된 것은
+  "P ∧ Q ⟹ 수렴"이지 "LIS가 P를 만든다"가 아니다.
+- Q는 **최소가 아니다**. 더 약한 P2("extras는 전부 표시된 원소보다 `current`에서
+  앞")로도 전수 탐색 반례 0건(177,827건)이었다. Q를 택한 이유는 P2가 다시 2변수
+  양화자라는 **성능 근거**지 수학적 필연이 아니다.
+- 다음 수: `match_keys`를 `loom-flush-core`로 옮겨 Q를 검증 안으로 끌어들이는
+  것. Q 쪽 구조적 논증이 P보다 훨씬 단순하다.

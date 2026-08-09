@@ -582,6 +582,12 @@ pub open spec fn ib_head(prev: Map<u64, u64>, head: Option<u64>, e: u64, a: u64)
 /// **Chain ↔ adjacent 대응 (변이 방향, insert_before)**: 표기 `s`인 chain에
 /// (아직 없는) `e`를 `a` 바로 앞에 끼우면 표기가 `s.insert(j, e)`가 된다
 /// (`j`는 `a`의 위치).
+///
+/// **`rlimit(60)`인 이유**(2026-08-09). 이 정리는 기본 rlimit 경계에 **붙어
+/// 있다** — 모듈에 새 심볼(`pub proof fn` 하나)을 추가하기만 해도 재현성 있게
+/// 넘어간다. 자기 자신의 증명은 그대로이고 예산만 올린 것이므로 `assume` 류
+/// 우회가 아니며, 이 파일은 이미 `rlimit(400)/(2000)/(4000)`을 쓰고 있다.
+#[verifier::rlimit(60)]
 pub proof fn chain_insert_before_denotes_insert(
     next: Map<u64, u64>,
     prev: Map<u64, u64>,
@@ -1233,12 +1239,24 @@ pub proof fn lemma_membership_step(
 
 /// **`place_in_order`의 순서 결정 — 수렴까지 증명된 판본**.
 ///
-/// `plan_writes`(LIS 변형용, `keep` 있음)와 갈라 둔 이유는 **사실에 맞추기
-/// 위해서**다. LIS가 `keep`으로 "이건 이미 제자리"라고 표시하면 그 원소는
-/// 인접하지 않아도 스킵되는데, 그 판단의 정당성은 비검증 `lis_indices`에
-/// 있다 — 그래서 그쪽은 수렴을 주장할 수 없다. 두 경로를 한 함수에 담으면
-/// 불변식이 전부 조건부가 되어 SMT가 감당하지 못한다(2026-07-28에 실제로
-/// 그래서 실패했다 — `formal-verification/verus/README.md` 참고).
+/// `plan_writes`(LIS 변형용, `keep` 있음)와 갈라 둔 이유는 **불변식의 모양이
+/// 실제로 다르기 때문**이다. 두 경로를 한 함수에 담으면 불변식이 전부
+/// 조건부가 되어 SMT가 감당하지 못한다(2026-07-28에 실제로 그래서 실패했다 —
+/// `formal-verification/verus/README.md` 참고).
+///
+/// **2026-08-09 정정**: 이 주석은 원래 "LIS 쪽은 수렴을 주장할 수 없다"고
+/// 적고 있었다. 이제 `plan_writes`도 **같은 모양의 수렴 사후조건을 갖는다.**
+/// 다만 두 경로는 여전히 다르고, 차이는 두 가지다.
+///
+/// 1. **사전조건**: LIS 쪽은 `current`에 target 밖 원소가 없어야 한다(조건 Q).
+///    이쪽은 필요 없다 — 비인접이면 무조건 옮기므로 외래 원소가 저절로 앞으로
+///    밀려나기 때문이다. Q는 `keep` 단락이 사 오는 비용이다.
+/// 2. **불변식**: 이쪽은 **접미사** 불변식("k개 처리 후 DOM의 뒤쪽 k개 =
+///    target의 뒤쪽 k개")으로 닫힌다. LIS 쪽에서는 그것이 중간에 깨져서
+///    분할점을 함께 든 **부분수열** 불변식(`split_inv`)을 써야 한다.
+///
+/// 여전히 미증명인 것은 `lis_indices`가 사전조건 P를 세운다는 것(LIS 건전성)
+/// 이고, 그건 호출부의 책임으로 남아 있다.
 #[verifier::rlimit(2000)]
 pub fn plan_writes_converging(
     current: &Vec<u64>,
@@ -1604,6 +1622,797 @@ pub proof fn lemma_kept_order_ignores_fresh()
     reveal(kept_order_preserved);
 }
 
+// ---------------------------------------------------------------------------
+// LIS 경로의 수렴 증명 기계 — `Seq::filter` 기반 (2026-08-09)
+//
+// **왜 접미사가 아니라 filter인가**. `plan_writes_converging`의 증명은
+// "k개 처리 후 DOM의 뒤쪽 k개 = target의 뒤쪽 k개"라는 **접미사 불변식**에
+// 얹혀 있는데, LIS 경로에서는 이것이 중간에 깨진다(최소 반례
+// `current=[0,1] target=[1,0] keep=[false,true]`). keep으로 스킵된 원소와
+// target 접미사 사이에 다른 원소가 끼기 때문이다. 그런데도 최종 결과가 맞는
+// 이유는 끼어든 것이 전부 `target[0..i-1]`에 속해 나중에 왼쪽으로 치워지기
+// 때문이고, 그 사실을 붙잡는 술어는 접미사가 아니라 **부분수열**이다.
+//
+// 여기서 쓰는 불변식은 부분수열형을 **분할점 `sp`와 함께** 들고 다니는 판본
+// (`split_inv`)이다. `sp`는 DOM 안에서 `target[i]`가 있는 자리이고,
+//
+//   * `sp` **앞**을 아직 처리하지 않은 kept 원소로 거르면 `keptseq(i)`,
+//   * `sp` **뒤**를 `target[i..]`로 거르면 `target[i..]` 그대로.
+//
+// 분할점을 명시적으로 들고 다니는 것이 요점이다. 분할점 없이
+// "filter(dom, kept ∪ target[i..]) == keptseq ++ target[i..]"만 들고 있으면
+// 매 스텝 `A + B`의 쪼개는 자리를 다시 찾아야 하는데(그러려면 filter 결과의
+// 무중복성이 필요하다), `sp`를 함께 옮기면 세 분기 모두 자리가 **주어진다**.
+// ---------------------------------------------------------------------------
+
+/// `s`의 원소를 전부 걸러내지 않으면 filter는 빈 것. (vstd의
+/// `lemma_all_neg_filter_empty`는 `Seq::all` 형태라 인덱스 형태로 쓰려면
+/// 감싸야 한다 — 직접 쓰는 편이 짧다.)
+pub proof fn lemma_filter_none(s: Seq<u64>, p: spec_fn(u64) -> bool)
+    requires forall|j: int| 0 <= j < s.len() ==> !p(#[trigger] s[j]),
+    ensures s.filter(p) =~= Seq::<u64>::empty(),
+    decreases s.len(),
+{
+    reveal(Seq::<_>::filter);
+    if s.len() > 0 {
+        let r = s.drop_last();
+        assert forall|j: int| 0 <= j < r.len() implies !p(#[trigger] r[j]) by { assert(r[j] == s[j]); }
+        lemma_filter_none(r, p);
+        assert(s.last() == s[s.len() - 1]);
+    }
+}
+
+/// 두 술어가 원소마다 일치하면 filter도 같다. **술어 확장 단계의 핵심**이고
+/// vstd에 없다.
+pub proof fn lemma_filter_agree(s: Seq<u64>, p: spec_fn(u64) -> bool, q: spec_fn(u64) -> bool)
+    requires forall|j: int| 0 <= j < s.len() ==> p(#[trigger] s[j]) == q(s[j]),
+    ensures s.filter(p) =~= s.filter(q),
+    decreases s.len(),
+{
+    reveal(Seq::<_>::filter);
+    if s.len() > 0 {
+        let r = s.drop_last();
+        assert forall|j: int| 0 <= j < r.len() implies p(#[trigger] r[j]) == q(r[j]) by {
+            assert(r[j] == s[j]);
+        }
+        lemma_filter_agree(r, p, q);
+        assert(s.last() == s[s.len() - 1]);
+    }
+}
+
+/// 전부 술어를 만족하면 filter는 항등 — **끝맺음**이 이것으로 닫힌다.
+pub proof fn lemma_filter_all(s: Seq<u64>, p: spec_fn(u64) -> bool)
+    requires forall|j: int| 0 <= j < s.len() ==> p(#[trigger] s[j]),
+    ensures s.filter(p) =~= s,
+    decreases s.len(),
+{
+    reveal(Seq::<_>::filter);
+    if s.len() > 0 {
+        let r = s.drop_last();
+        assert forall|j: int| 0 <= j < r.len() implies p(#[trigger] r[j]) by { assert(r[j] == s[j]); }
+        lemma_filter_all(r, p);
+        assert(s.last() == s[s.len() - 1]);
+        assert(r.push(s.last()) =~= s);
+    }
+}
+
+/// 싱글턴 filter. `reveal_with_fuel` 두 걸음으로 풀리므로 vstd의
+/// `lemma_filter_push`(= `group_seq_extra`, 기본 broadcast **아님**)를 한
+/// 번도 들여오지 않아도 된다 — 모듈에 새 broadcast 트리거를 붙이지 않는다는
+/// 뜻이고, 이 파일의 자원 이력상 그게 중요하다.
+pub proof fn lemma_filter_singleton(e: u64, p: spec_fn(u64) -> bool)
+    ensures seq![e].filter(p) =~= if p(e) { seq![e] } else { Seq::<u64>::empty() },
+{
+    reveal_with_fuel(Seq::<_>::filter, 2);
+    assert(seq![e].drop_last() =~= Seq::<u64>::empty());
+    assert(Seq::<u64>::empty().filter(p) =~= Seq::<u64>::empty());
+}
+
+/// 술어를 만족하지 않는 원소를 지워도 filter는 그대로.
+pub proof fn lemma_filter_remove_nonmatching(s: Seq<u64>, i: int, p: spec_fn(u64) -> bool)
+    requires 0 <= i < s.len(), !p(s[i]),
+    ensures s.remove(i).filter(p) =~= s.filter(p),
+{
+    let a = s.subrange(0, i);
+    let b = s.subrange(i + 1, s.len() as int);
+    assert(s =~= a + seq![s[i]] + b);
+    assert(s.remove(i) =~= a + b);
+    lemma_filter_singleton(s[i], p);
+}
+
+/// **filter의 마지막 원소에서 쪼개기** — keep 스킵 분기의 심장.
+/// `s.filter(p) == x.push(e)`이면 `e`는 `s` 안 어딘가(`q`)에 있고, 그 앞은
+/// `x`로 걸러지며 그 뒤에서는 아무것도 걸리지 않는다. filter가 `drop_last`
+/// 재귀라 오른쪽에서 왼쪽으로 가는 이 귀납과 정확히 맞물린다.
+pub proof fn lemma_filter_split_last(s: Seq<u64>, p: spec_fn(u64) -> bool, x: Seq<u64>, e: u64)
+    -> (q: int)
+    requires s.filter(p) =~= x.push(e),
+    ensures
+        0 <= q < s.len(),
+        s[q] == e,
+        s.subrange(0, q).filter(p) =~= x,
+        s.subrange(q + 1, s.len() as int).filter(p) =~= Seq::<u64>::empty(),
+    decreases s.len(),
+{
+    reveal(Seq::<_>::filter);
+    assert(s.len() > 0) by {
+        if s.len() == 0 { assert(s.filter(p).len() == 0); assert(x.push(e).len() > 0); }
+    }
+    let r = s.drop_last();
+    assert(s.last() == s[s.len() - 1]);
+    if p(s.last()) {
+        assert(s.filter(p) =~= r.filter(p).push(s.last()));
+        assert(r.filter(p).len() == x.len());
+        assert(s.last() == e) by {
+            assert(r.filter(p).push(s.last())[x.len() as int] == s.last());
+            assert(x.push(e)[x.len() as int] == e);
+        }
+        assert(r.filter(p) =~= x) by {
+            assert forall|m: int| 0 <= m < x.len() implies r.filter(p)[m] == x[m] by {
+                assert(r.filter(p).push(s.last())[m] == r.filter(p)[m]);
+                assert(x.push(e)[m] == x[m]);
+            }
+        }
+        let q = s.len() - 1;
+        assert(s.subrange(0, q) =~= r);
+        assert(s.subrange(q + 1, s.len() as int) =~= Seq::<u64>::empty());
+        assert(Seq::<u64>::empty().filter(p) =~= Seq::<u64>::empty());
+        q
+    } else {
+        assert(s.filter(p) =~= r.filter(p));
+        let q = lemma_filter_split_last(r, p, x, e);
+        assert(s[q] == r[q]);
+        assert(s.subrange(0, q) =~= r.subrange(0, q));
+        assert(s.subrange(q + 1, s.len() as int)
+               =~= r.subrange(q + 1, r.len() as int) + seq![s.last()]);
+        lemma_filter_singleton(s.last(), p);
+        q
+    }
+}
+
+/// 아직 처리하지 않은(target 인덱스 < `i`) **kept 원소**인가 — 값 위의 술어.
+/// `keep`은 target 인덱스 위에 있고 filter의 술어는 값 위에 있으므로 존재
+/// 양화가 하나 들어간다(`target_ids`가 무중복이라 증인 `j`는 유일).
+pub open spec fn kept_lt(t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int, x: u64) -> bool {
+    exists|j: int| 0 <= j < i && #[trigger] t[j] == x && kp[j] && !fr[j]
+}
+
+/// `target[i..]`에 속하는가.
+pub open spec fn in_suffix(t: Seq<u64>, i: int, x: u64) -> bool {
+    exists|j: int| i <= j < t.len() && #[trigger] t[j] == x
+}
+
+/// 불변식이 보는 원소 집합: 아직 처리 안 한 kept 원소 ∪ `target[i..]`.
+pub open spec fn sel(t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int) -> spec_fn(u64) -> bool {
+    |x: u64| kept_lt(t, fr, kp, i, x) || in_suffix(t, i, x)
+}
+
+/// 아직 처리하지 않은 kept 원소들을 **`current` 순서로** 늘어놓은 것.
+///
+/// **`target` 순서가 아니라 `current` 순서로 정의한 것이 이 증명의 설계점**이다.
+/// target 쪽으로 정의하면 루프 진입 시 `current.filter(kept) == target.filter(kept)`
+/// 를 세워야 하고 그건 "순서 보존 선택 ⟹ filter 동일"이라는 별도의 무거운
+/// 정리다. `current` 쪽으로 정의하면 진입 조건이 **항진명제**가 되고, P는
+/// keep 스킵 한 걸음(`lemma_keptseq_push`)에서만 소비된다.
+pub open spec fn keptseq(c: Seq<u64>, t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int) -> Seq<u64> {
+    c.filter(|x: u64| kept_lt(t, fr, kp, i, x))
+}
+
+/// **LIS 경로의 루프 불변식** — 분할점 `sp`를 명시적으로 들고 다니는 부분수열형.
+///
+/// **불투명인 이유**: 본문에 filter 항이 둘 있고 그 술어 안에 존재 양화가
+/// 둘 들어간다. `seq_nodup`/`Chain::well_formed`와 같은 처방으로, 루프는
+/// "불변식이 성립한다"는 명제만 들고 다니고 펼치는 것은 아래 단계 보조정리
+/// 안뿐이다.
+#[verifier::opaque]
+pub open spec fn split_inv(
+    d: Seq<u64>, c: Seq<u64>, t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int, sp: int,
+) -> bool {
+    &&& 0 <= sp <= d.len()
+    &&& (i < t.len() ==> sp < d.len() && d[sp] == t[i])
+    &&& (i >= t.len() ==> sp == d.len())
+    &&& d.subrange(0, sp).filter(sel(t, fr, kp, i)) =~= keptseq(c, t, fr, kp, i)
+    &&& d.subrange(sp, d.len() as int).filter(sel(t, fr, kp, i)) =~= t.subrange(i, t.len() as int)
+}
+
+/// 불변식에서 **분할점의 위치 정보만** 꺼낸다 — 루프가 filter 항을 보지
+/// 않고 anchor의 자리를 알 수 있게 하는 투영.
+pub proof fn lemma_split_inv_anchor(
+    d: Seq<u64>, c: Seq<u64>, t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int, sp: int,
+)
+    requires split_inv(d, c, t, fr, kp, i, sp),
+    ensures
+        0 <= sp <= d.len(),
+        i < t.len() ==> sp < d.len() && d[sp] == t[i],
+        i >= t.len() ==> sp == d.len(),
+{ reveal(split_inv); }
+
+/// **루프 진입** — `d == current`, `i == n`, `sp == |current|`에서 성립.
+/// `keptseq`를 `current` 위에 정의한 덕에 술어 일치 하나로 끝난다.
+pub proof fn lemma_split_inv_init(c: Seq<u64>, t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>)
+    ensures split_inv(c, c, t, fr, kp, t.len() as int, c.len() as int),
+{
+    reveal(split_inv);
+    let s = sel(t, fr, kp, t.len() as int);
+    let k = |x: u64| kept_lt(t, fr, kp, t.len() as int, x);
+    assert(c.subrange(0, c.len() as int) =~= c);
+    assert forall|m: int| 0 <= m < c.len() implies s(#[trigger] c[m]) == k(c[m]) by {
+        if in_suffix(t, t.len() as int, c[m]) {
+            let j = choose|j: int| t.len() <= j < t.len() && #[trigger] t[j] == c[m];
+            assert(t.len() <= j < t.len());
+        }
+    }
+    lemma_filter_agree(c, s, k);
+    assert(c.subrange(c.len() as int, c.len() as int) =~= Seq::<u64>::empty());
+    assert(Seq::<u64>::empty().filter(s) =~= Seq::<u64>::empty());
+    assert(t.subrange(t.len() as int, t.len() as int) =~= Seq::<u64>::empty());
+}
+
+/// `target[i-1]`은 `sel(i)`에 걸리지 않는다 — 이동/인접스킵 분기의 전제.
+/// (kept가 아니므로 `kept_lt(i)`에 없고, 무중복이므로 `target[i..]`에도 없다.)
+pub proof fn lemma_sel_not_e(t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int)
+    requires
+        0 < i <= t.len(), fr.len() == t.len(), kp.len() == t.len(),
+        !(kp[i - 1] && !fr[i - 1]),
+        seq_nodup(t),
+    ensures !sel(t, fr, kp, i)(t[i - 1]),
+{
+    lemma_nodup_unwrap(t);
+    if kept_lt(t, fr, kp, i, t[i - 1]) {
+        let j = choose|j: int| 0 <= j < i && #[trigger] t[j] == t[i - 1] && kp[j] && !fr[j];
+        assert(t[j] == t[i - 1]);
+        assert(j == i - 1);
+    }
+    if in_suffix(t, i, t[i - 1]) {
+        let j = choose|j: int| i <= j < t.len() && #[trigger] t[j] == t[i - 1];
+        assert(t[j] == t[i - 1]);
+        assert(j == i - 1);
+    }
+}
+
+/// kept 원소를 처리할 때 술어 집합은 **변하지 않는다**(`e`가 kept 쪽에서
+/// 접미사 쪽으로 옮겨갈 뿐).
+pub proof fn lemma_sel_same_kept(t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int)
+    requires
+        0 < i <= t.len(), fr.len() == t.len(), kp.len() == t.len(),
+        kp[i - 1], !fr[i - 1],
+    ensures forall|x: u64| sel(t, fr, kp, i - 1)(x) == #[trigger] sel(t, fr, kp, i)(x),
+{
+    assert forall|x: u64| sel(t, fr, kp, i - 1)(x) == #[trigger] sel(t, fr, kp, i)(x) by {
+        if sel(t, fr, kp, i - 1)(x) {
+            if kept_lt(t, fr, kp, i - 1, x) {
+                let j = choose|j: int| 0 <= j < i - 1 && #[trigger] t[j] == x && kp[j] && !fr[j];
+                assert(0 <= j < i && t[j] == x && kp[j] && !fr[j]);
+            } else {
+                let j = choose|j: int| i - 1 <= j < t.len() && #[trigger] t[j] == x;
+                if j == i - 1 {
+                    assert(0 <= (i - 1) < i && t[i - 1] == x && kp[i - 1] && !fr[i - 1]);
+                } else {
+                    assert(i <= j < t.len() && t[j] == x);
+                }
+            }
+        }
+        if sel(t, fr, kp, i)(x) {
+            if kept_lt(t, fr, kp, i, x) {
+                let j = choose|j: int| 0 <= j < i && #[trigger] t[j] == x && kp[j] && !fr[j];
+                if j == i - 1 { assert(i - 1 <= j < t.len() && t[j] == x); }
+                else { assert(0 <= j < i - 1 && t[j] == x && kp[j] && !fr[j]); }
+            } else {
+                let j = choose|j: int| i <= j < t.len() && #[trigger] t[j] == x;
+                assert(i - 1 <= j < t.len() && t[j] == x);
+            }
+        }
+    }
+}
+
+/// kept가 아닌 원소를 처리할 때 술어 집합은 `{e}`만큼 **넓어진다**.
+pub proof fn lemma_sel_widen_notkept(t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int)
+    requires
+        0 < i <= t.len(), fr.len() == t.len(), kp.len() == t.len(),
+        !(kp[i - 1] && !fr[i - 1]),
+        seq_nodup(t),
+    ensures
+        forall|x: u64| sel(t, fr, kp, i - 1)(x)
+            == (#[trigger] sel(t, fr, kp, i)(x) || x == t[i - 1]),
+        !sel(t, fr, kp, i)(t[i - 1]),
+{
+    lemma_sel_not_e(t, fr, kp, i);
+    assert forall|x: u64| sel(t, fr, kp, i - 1)(x)
+        == (#[trigger] sel(t, fr, kp, i)(x) || x == t[i - 1]) by {
+        if sel(t, fr, kp, i - 1)(x) {
+            if kept_lt(t, fr, kp, i - 1, x) {
+                let j = choose|j: int| 0 <= j < i - 1 && #[trigger] t[j] == x && kp[j] && !fr[j];
+                assert(0 <= j < i && t[j] == x && kp[j] && !fr[j]);
+            } else {
+                let j = choose|j: int| i - 1 <= j < t.len() && #[trigger] t[j] == x;
+                if j == i - 1 { assert(x == t[i - 1]); }
+                else { assert(i <= j < t.len() && t[j] == x); }
+            }
+        }
+        if sel(t, fr, kp, i)(x) {
+            if kept_lt(t, fr, kp, i, x) {
+                let j = choose|j: int| 0 <= j < i && #[trigger] t[j] == x && kp[j] && !fr[j];
+                assert(j != i - 1);
+                assert(0 <= j < i - 1 && t[j] == x && kp[j] && !fr[j]);
+            } else {
+                let j = choose|j: int| i <= j < t.len() && #[trigger] t[j] == x;
+                assert(i - 1 <= j < t.len() && t[j] == x);
+            }
+        }
+        if x == t[i - 1] {
+            assert(i - 1 <= i - 1 < t.len() && t[i - 1] == x);
+        }
+    }
+}
+
+pub proof fn lemma_suffix_split(t: Seq<u64>, i: int)
+    requires 0 < i <= t.len(),
+    ensures t.subrange(i - 1, t.len() as int) =~= seq![t[i - 1]] + t.subrange(i, t.len() as int),
+{
+}
+
+/// 중복이 없으면 `index_of_first`는 바로 그 자리를 돌려준다.
+pub proof fn lemma_index_of_first_unique(d: Seq<u64>, k: int)
+    requires seq_nodup(d), 0 <= k < d.len(),
+    ensures d.index_of_first(d[k]) == Some(k), pos(d, d[k]) == k, d.contains(d[k]),
+{
+    lemma_nodup_unwrap(d);
+    assert(d.contains(d[k]));
+    d.index_of_first_ensures(d[k]);
+    let idx = d.index_of_first(d[k]).unwrap();
+    assert(d[idx] == d[k]);
+    assert(idx == k);
+}
+
+/// 끝에 끼우는 것은 덧붙이는 것 — 꼬리(`i == n`) 분기를 삽입 분기와 같은
+/// 모양으로 다루기 위한 다리.
+pub proof fn lemma_insert_at_end(d: Seq<u64>, e: u64)
+    ensures d.insert(d.len() as int, e) =~= d.push(e),
+{ d.insert_ensures(d.len() as int, e); }
+
+/// 인접성 판정이 참이면 `e`는 분할점 **바로 앞**에 있다.
+pub proof fn lemma_adjacent_at_split(d: Seq<u64>, sp: int, e: u64, a: u64)
+    requires seq_nodup(d), 0 <= sp < d.len(), d[sp] == a, adjacent(d, e, a),
+    ensures sp >= 1, d[sp - 1] == e,
+{
+    lemma_nodup_unwrap(d);
+    let p = choose|p: int| 0 <= p < d.len() - 1 && #[trigger] d[p] == e && d[p + 1] == a;
+    assert(d[p + 1] == d[sp]);
+    assert(p + 1 == sp);
+}
+
+/// **`keptseq` 한 걸음 (kept 원소) — 이 모듈에서 P가 소비되는 유일한 지점**.
+///
+/// `e = target[i-1]`이 kept이면 `keptseq(i)`의 **마지막 원소**다. 왜냐하면
+/// 아직 남은 kept 원소들(인덱스 < i-1)은 P에 의해 `current` 안에서 `e`보다
+/// 앞에 있기 때문이다. 이 한 줄이 "P는 `current`의 위치를 말하고 불변식은
+/// DOM의 위치를 말한다"는 간극을 메운다 — `keptseq`를 `current` 위에
+/// 정의했으므로 P를 그대로 쓸 수 있다.
+pub proof fn lemma_keptseq_push(
+    c: Seq<u64>, t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int,
+)
+    requires
+        0 < i <= t.len(), fr.len() == t.len(), kp.len() == t.len(),
+        kp[i - 1], !fr[i - 1],
+        seq_nodup(c), seq_nodup(t),
+        c.contains(t[i - 1]),
+        kept_order_preserved(c, t, fr, kp),
+    ensures
+        keptseq(c, t, fr, kp, i) =~= keptseq(c, t, fr, kp, i - 1).push(t[i - 1]),
+{
+    reveal(kept_order_preserved);
+    lemma_nodup_unwrap(c);
+    lemma_nodup_unwrap(t);
+    let e = t[i - 1];
+    let ki = |x: u64| kept_lt(t, fr, kp, i, x);
+    let km = |x: u64| kept_lt(t, fr, kp, i - 1, x);
+
+    c.index_of_first_ensures(e);
+    let pe = c.index_of_first(e).unwrap();
+    assert(c[pe] == e);
+    let c1 = c.subrange(0, pe);
+    let c2 = c.subrange(pe + 1, c.len() as int);
+    assert(c =~= c1 + seq![e] + c2);
+    lemma_index_of_first_unique(c, pe);
+    assert(pos(c, e) == pe);
+
+    // (1) `e` 뒤에는 kept 원소가 없다 — **P가 주는 것**.
+    assert forall|m: int| 0 <= m < c2.len() implies !ki(#[trigger] c2[m]) by {
+        assert(c2[m] == c[pe + 1 + m]);
+        if kept_lt(t, fr, kp, i, c2[m]) {
+            let j = choose|j: int| 0 <= j < i && #[trigger] t[j] == c2[m] && kp[j] && !fr[j];
+            lemma_index_of_first_unique(c, pe + 1 + m);
+            assert(pos(c, c2[m]) == pe + 1 + m);
+            assert(c2[m] != e);
+            assert(j != i - 1);
+            assert(0 <= j < i - 1 < t.len() && kp[j] && !fr[j] && kp[i - 1] && !fr[i - 1]);
+            assert(pos(c, t[j]) < pos(c, t[i - 1]));
+        }
+    }
+    assert forall|m: int| 0 <= m < c2.len() implies !km(#[trigger] c2[m]) by {
+        assert(!ki(c2[m]));
+        if kept_lt(t, fr, kp, i - 1, c2[m]) {
+            let j = choose|j: int| 0 <= j < i - 1 && #[trigger] t[j] == c2[m] && kp[j] && !fr[j];
+            assert(0 <= j < i && t[j] == c2[m] && kp[j] && !fr[j]);
+        }
+    }
+    lemma_filter_none(c2, ki);
+    lemma_filter_none(c2, km);
+
+    // (2) `e` 앞에서는 두 술어가 일치한다(차이는 `j == i-1`뿐이고 그건 `e`다).
+    assert forall|m: int| 0 <= m < c1.len() implies ki(#[trigger] c1[m]) == km(c1[m]) by {
+        assert(c1[m] == c[m]);
+        lemma_index_of_first_unique(c, m);
+        assert(c1[m] != e);
+        if kept_lt(t, fr, kp, i, c1[m]) {
+            let j = choose|j: int| 0 <= j < i && #[trigger] t[j] == c1[m] && kp[j] && !fr[j];
+            assert(j != i - 1);
+            assert(0 <= j < i - 1 && t[j] == c1[m] && kp[j] && !fr[j]);
+        }
+        if kept_lt(t, fr, kp, i - 1, c1[m]) {
+            let j = choose|j: int| 0 <= j < i - 1 && #[trigger] t[j] == c1[m] && kp[j] && !fr[j];
+            assert(0 <= j < i && t[j] == c1[m] && kp[j] && !fr[j]);
+        }
+    }
+    lemma_filter_agree(c1, ki, km);
+
+    assert(ki(e)) by { assert(0 <= i - 1 < i && t[i - 1] == e && kp[i - 1] && !fr[i - 1]); }
+    assert(!km(e)) by {
+        if kept_lt(t, fr, kp, i - 1, e) {
+            let j = choose|j: int| 0 <= j < i - 1 && #[trigger] t[j] == e && kp[j] && !fr[j];
+            assert(t[j] == t[i - 1]);
+            assert(j == i - 1);
+        }
+    }
+    lemma_filter_singleton(e, ki);
+    lemma_filter_singleton(e, km);
+    assert(keptseq(c, t, fr, kp, i - 1) + seq![e] =~= keptseq(c, t, fr, kp, i - 1).push(e));
+}
+
+/// kept가 아닌 원소를 처리하면 `keptseq`는 변하지 않는다.
+pub proof fn lemma_keptseq_same(
+    c: Seq<u64>, t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int,
+)
+    requires
+        0 < i <= t.len(), fr.len() == t.len(), kp.len() == t.len(),
+        !(kp[i - 1] && !fr[i - 1]),
+    ensures keptseq(c, t, fr, kp, i - 1) =~= keptseq(c, t, fr, kp, i),
+{
+    let ki = |x: u64| kept_lt(t, fr, kp, i, x);
+    let km = |x: u64| kept_lt(t, fr, kp, i - 1, x);
+    assert forall|m: int| 0 <= m < c.len() implies km(#[trigger] c[m]) == ki(c[m]) by {
+        if kept_lt(t, fr, kp, i, c[m]) {
+            let j = choose|j: int| 0 <= j < i && #[trigger] t[j] == c[m] && kp[j] && !fr[j];
+            assert(j != i - 1);
+            assert(0 <= j < i - 1 && t[j] == c[m] && kp[j] && !fr[j]);
+        }
+        if kept_lt(t, fr, kp, i - 1, c[m]) {
+            let j = choose|j: int| 0 <= j < i - 1 && #[trigger] t[j] == c[m] && kp[j] && !fr[j];
+            assert(0 <= j < i && t[j] == c[m] && kp[j] && !fr[j]);
+        }
+    }
+    lemma_filter_agree(c, km, ki);
+}
+
+/// **분기 ① — keep 스킵**. DOM이 그대로이고 술어 집합도 그대로이므로,
+/// 새 분할점은 "`keptseq(i)`의 마지막 원소 `e`가 DOM에서 있는 자리"다.
+/// 그 자리를 찾아 주는 것이 `lemma_filter_split_last`이고, `e`가 마지막
+/// 원소라는 사실을 주는 것이 P(`lemma_keptseq_push`)다.
+pub proof fn lemma_step_keep_skip(
+    d: Seq<u64>, c: Seq<u64>, t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int, sp: int,
+) -> (spn: int)
+    requires
+        0 < i <= t.len(), fr.len() == t.len(), kp.len() == t.len(),
+        kp[i - 1], !fr[i - 1],
+        seq_nodup(c), seq_nodup(t),
+        c.contains(t[i - 1]),
+        kept_order_preserved(c, t, fr, kp),
+        split_inv(d, c, t, fr, kp, i, sp),
+    ensures split_inv(d, c, t, fr, kp, i - 1, spn),
+{
+    reveal(split_inv);
+    let e = t[i - 1];
+    let s_new = sel(t, fr, kp, i - 1);
+    let s_old = sel(t, fr, kp, i);
+    lemma_sel_same_kept(t, fr, kp, i);
+    lemma_keptseq_push(c, t, fr, kp, i);
+
+    let pre = d.subrange(0, sp);
+    let q = lemma_filter_split_last(pre, s_old, keptseq(c, t, fr, kp, i - 1), e);
+    assert(pre[q] == d[q]);
+
+    assert(d.subrange(0, q) =~= pre.subrange(0, q));
+    lemma_filter_agree(d.subrange(0, q), s_new, s_old);
+
+    let gap = d.subrange(q + 1, sp);
+    assert(gap =~= pre.subrange(q + 1, pre.len() as int));
+    assert(d.subrange(q, d.len() as int)
+           =~= seq![e] + gap + d.subrange(sp, d.len() as int));
+    lemma_filter_agree(d.subrange(q, d.len() as int), s_new, s_old);
+    assert(s_old(e)) by { assert(0 <= i - 1 < i && t[i - 1] == e && kp[i - 1] && !fr[i - 1]); }
+    lemma_filter_singleton(e, s_old);
+    lemma_suffix_split(t, i);
+    q
+}
+
+/// **분기 ② — 인접 스킵**. DOM은 그대로이고 `e`가 분할점 바로 앞이므로
+/// 새 분할점은 `sp - 1`이다.
+pub proof fn lemma_step_adj_skip(
+    d: Seq<u64>, c: Seq<u64>, t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int, sp: int,
+) -> (spn: int)
+    requires
+        0 < i <= t.len(), fr.len() == t.len(), kp.len() == t.len(),
+        !(kp[i - 1] && !fr[i - 1]),
+        seq_nodup(t), seq_nodup(d),
+        split_inv(d, c, t, fr, kp, i, sp),
+        sp >= 1, d[sp - 1] == t[i - 1],
+    ensures split_inv(d, c, t, fr, kp, i - 1, spn), spn == sp - 1,
+{
+    reveal(split_inv);
+    lemma_nodup_unwrap(d);
+    let e = t[i - 1];
+    let s_new = sel(t, fr, kp, i - 1);
+    let s_old = sel(t, fr, kp, i);
+    lemma_sel_widen_notkept(t, fr, kp, i);
+    lemma_keptseq_same(c, t, fr, kp, i);
+
+    assert forall|m: int| 0 <= m < sp - 1 implies s_new(#[trigger] d.subrange(0, sp - 1)[m])
+        == s_old(d.subrange(0, sp - 1)[m]) by {
+        assert(d.subrange(0, sp - 1)[m] == d[m]);
+        assert(d[m] != d[sp - 1]);
+    }
+    lemma_filter_agree(d.subrange(0, sp - 1), s_new, s_old);
+    assert(d.subrange(0, sp) =~= d.subrange(0, sp - 1) + seq![e]);
+    lemma_filter_singleton(e, s_old);
+
+    assert(d.subrange(sp - 1, d.len() as int) =~= seq![e] + d.subrange(sp, d.len() as int));
+    assert forall|m: int| 0 <= m < d.subrange(sp, d.len() as int).len()
+        implies s_new(#[trigger] d.subrange(sp, d.len() as int)[m])
+            == s_old(d.subrange(sp, d.len() as int)[m]) by {
+        assert(d.subrange(sp, d.len() as int)[m] == d[sp + m]);
+        assert(d[sp + m] != d[sp - 1]);
+    }
+    lemma_filter_agree(d.subrange(sp, d.len() as int), s_new, s_old);
+    lemma_filter_singleton(e, s_new);
+    assert(s_new(e));
+    lemma_suffix_split(t, i);
+    sp - 1
+}
+
+/// **이동 분기 전반 — `unlink` 뒤에도 분할이 살아 있다**. `e`는 술어 집합에
+/// 걸리지 않으므로 양쪽 filter 값은 그대로이고, 분할점만 `e`가 앞쪽에
+/// 있었는지에 따라 한 칸 당겨진다.
+pub proof fn lemma_split_after_remove(
+    d: Seq<u64>, c: Seq<u64>, t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int, sp: int, e: u64,
+) -> (sp1: int)
+    requires
+        0 <= i <= t.len(),
+        seq_nodup(d),
+        split_inv(d, c, t, fr, kp, i, sp),
+        !sel(t, fr, kp, i)(e),
+        i < t.len() ==> t[i] != e,
+    ensures split_inv(d.remove_value(e), c, t, fr, kp, i, sp1),
+{
+    reveal(split_inv);
+    lemma_nodup_unwrap(d);
+    let s_old = sel(t, fr, kp, i);
+    let d1 = d.remove_value(e);
+    d.index_of_first_ensures(e);
+    if !d.contains(e) {
+        assert(d1 =~= d);
+        sp
+    } else {
+        let pe = d.index_of_first(e).unwrap();
+        assert(d[pe] == e);
+        assert(d1 =~= d.remove(pe));
+        d.remove_ensures(pe);
+        assert(pe != sp);
+        if pe < sp {
+            let sp1 = sp - 1;
+            assert(d.subrange(0, sp).remove(pe) =~= d1.subrange(0, sp1)) by {
+                assert forall|m: int| 0 <= m < sp1 implies
+                    d.subrange(0, sp).remove(pe)[m] == d1.subrange(0, sp1)[m] by {
+                    if m < pe { assert(d.subrange(0, sp).remove(pe)[m] == d.subrange(0, sp)[m]); }
+                    else { assert(d.subrange(0, sp).remove(pe)[m] == d.subrange(0, sp)[m + 1]); }
+                }
+            }
+            assert(d.subrange(0, sp)[pe] == e);
+            lemma_filter_remove_nonmatching(d.subrange(0, sp), pe, s_old);
+            assert(d1.subrange(sp1, d1.len() as int) =~= d.subrange(sp, d.len() as int)) by {
+                assert forall|m: int| 0 <= m < d.len() - sp implies
+                    d1.subrange(sp1, d1.len() as int)[m] == d.subrange(sp, d.len() as int)[m] by {
+                    assert(d1[sp1 + m] == d[sp + m]);
+                }
+            }
+            sp1
+        } else {
+            let sp1 = sp;
+            assert(d1.subrange(0, sp1) =~= d.subrange(0, sp)) by {
+                assert forall|m: int| 0 <= m < sp implies d1[m] == d[m] by { }
+            }
+            let tail = d.subrange(sp, d.len() as int);
+            assert(tail[pe - sp] == e);
+            assert(tail.remove(pe - sp) =~= d1.subrange(sp1, d1.len() as int)) by {
+                assert forall|m: int| 0 <= m < tail.len() - 1 implies
+                    tail.remove(pe - sp)[m] == d1.subrange(sp1, d1.len() as int)[m] by {
+                    if m < pe - sp { assert(tail.remove(pe - sp)[m] == tail[m]); }
+                    else { assert(tail.remove(pe - sp)[m] == tail[m + 1]); }
+                }
+            }
+            lemma_filter_remove_nonmatching(tail, pe - sp, s_old);
+            sp1
+        }
+    }
+}
+
+/// **분기 ③ — 삽입**. `e`를 분할점에 끼우면 그 자리가 곧 새 분할점이다.
+/// 꼬리(`i == n`)의 `push_back`도 `lemma_insert_at_end`를 거쳐 같은 모양이
+/// 되므로 분기가 하나로 합쳐진다.
+pub proof fn lemma_step_insert(
+    d1: Seq<u64>, c: Seq<u64>, t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, i: int, sp1: int, e: u64,
+)
+    requires
+        0 < i <= t.len(), fr.len() == t.len(), kp.len() == t.len(),
+        !(kp[i - 1] && !fr[i - 1]), e == t[i - 1],
+        seq_nodup(t), !d1.contains(e),
+        split_inv(d1, c, t, fr, kp, i, sp1),
+    ensures split_inv(d1.insert(sp1, e), c, t, fr, kp, i - 1, sp1),
+{
+    reveal(split_inv);
+    let s_new = sel(t, fr, kp, i - 1);
+    let s_old = sel(t, fr, kp, i);
+    lemma_sel_widen_notkept(t, fr, kp, i);
+    lemma_keptseq_same(c, t, fr, kp, i);
+
+    let a1 = d1.subrange(0, sp1);
+    let b1 = d1.subrange(sp1, d1.len() as int);
+    let d2 = d1.insert(sp1, e);
+    d1.insert_ensures(sp1, e);
+    assert(d2 =~= a1 + seq![e] + b1);
+    assert(d2.subrange(0, sp1) =~= a1);
+    assert(d2.subrange(sp1, d2.len() as int) =~= seq![e] + b1);
+    assert(d2[sp1] == e);
+
+    assert forall|m: int| 0 <= m < a1.len() implies s_new(#[trigger] a1[m]) == s_old(a1[m]) by {
+        assert(a1[m] == d1[m]);
+        assert(d1.contains(d1[m]));
+    }
+    lemma_filter_agree(a1, s_new, s_old);
+    assert forall|m: int| 0 <= m < b1.len() implies s_new(#[trigger] b1[m]) == s_old(b1[m]) by {
+        assert(b1[m] == d1[sp1 + m]);
+        assert(d1.contains(d1[sp1 + m]));
+    }
+    lemma_filter_agree(b1, s_new, s_old);
+    assert(s_new(e));
+    lemma_filter_singleton(e, s_new);
+    lemma_suffix_split(t, i);
+}
+
+/// **끝맺음** — `i == 0`의 불변식 + 사전조건 Q ⟹ DOM이 곧 target.
+///
+/// Q(`current ⊆ target`)가 없으면 이 정리는 **거짓**이다. 최소 반례:
+/// `current = [0, 1]`, `target = [0]`, `keep = [true]` — P는 공허하게 참,
+/// 기존 `requires`도 전부 참인데 `keep[0]`이 인접성 검사를 단락하므로 op가
+/// 하나도 나오지 않아 DOM은 `[0, 1]`로 남는다. `target`에 없는 원소(extras)가
+/// `current`에 있으면 LIS 경로는 그것을 치우지 않는다.
+pub proof fn lemma_endgame(
+    d: Seq<u64>, c: Seq<u64>, t: Seq<u64>, fr: Seq<bool>, kp: Seq<bool>, sp: int,
+)
+    requires
+        split_inv(d, c, t, fr, kp, 0, sp),
+        forall|j: int| 0 <= j < d.len() ==> #[trigger] t.contains(d[j]),
+    ensures d =~= t,
+{
+    reveal(split_inv);
+    let s0 = sel(t, fr, kp, 0);
+    let k0 = |x: u64| kept_lt(t, fr, kp, 0, x);
+    assert forall|m: int| 0 <= m < c.len() implies !k0(#[trigger] c[m]) by { }
+    lemma_filter_none(c, k0);
+    assert(t.subrange(0, t.len() as int) =~= t);
+    assert(d =~= d.subrange(0, sp) + d.subrange(sp, d.len() as int));
+    assert(d.filter(s0) =~= t);
+    assert forall|j: int| 0 <= j < d.len() implies s0(#[trigger] d[j]) by {
+        assert(t.contains(d[j]));
+        let m = choose|m: int| 0 <= m < t.len() && t[m] == d[j];
+        assert(0 <= m < t.len() && t[m] == d[j]);
+    }
+    lemma_filter_all(d, s0);
+}
+
+// **증인 교체(2026-08-09)**: 처음 판본의 증인은 `current == target == [7,9]`라
+// 실행이 퇴화했다(방출 op 0개 — 아무것도 시험하지 않는다). 아래 증인은 P를
+// 실제로 소비하고(표시 둘), Fresh를 포함하며, `current != target`이다.
+/// **음성 대조 — 새 사전조건 Q를 얹은 뒤에도 `plan_writes`의 계약이 공허하지
+/// 않다**.
+///
+/// `requires`가 서로 모순이면 `ensures`가 무엇이든 통과한다. Q는 계약을
+/// **좁히는** 조항이므로, 좁힌 뒤에도 실제로 만족 가능한 입력이 남아 있음을
+/// 못박지 않으면 "수렴을 증명했다"는 말이 의미를 갖지 못한다. 아래는 그
+/// 증인이고, `plan_writes`의 사전조건 **일곱 개 전부**를 한 인스턴스에 대해
+/// 동시에 세운다 — 즉 이 정리가 통과하면 사전조건 집합은 만족 가능하다.
+///
+/// 증인은 일부러 자명하지 않게 골랐다: `current != target`(신규 원소가
+/// 하나 있다), `keep`이 실제로 두 개 켜져 있어 P가 공허하지 않다.
+pub proof fn lemma_plan_writes_requires_satisfiable()
+    ensures
+        ({
+            let cur = seq![7u64, 9u64];
+            let t = seq![5u64, 7u64, 9u64];
+            let fr = seq![true, false, false];
+            let kp = seq![false, true, true];
+            &&& cur.no_duplicates()
+            &&& t.no_duplicates()
+            &&& fr.len() == t.len()
+            &&& kp.len() == t.len()
+            &&& forall|i: int| #![trigger fr[i]]
+                    0 <= i < t.len() ==>
+                        (fr[i] ==> !cur.contains(t[i])) && (!fr[i] ==> cur.contains(t[i]))
+            &&& kept_order_preserved(cur, t, fr, kp)
+            &&& forall|x: u64| #![trigger cur.contains(x)] cur.contains(x) ==> t.contains(x)
+            // 그리고 P는 여기서 공허하지 않다 — 실제로 비교되는 쌍이 있다.
+            &&& kp[1] && !fr[1] && kp[2] && !fr[2]
+        }),
+{
+    let cur = seq![7u64, 9u64];
+    let t = seq![5u64, 7u64, 9u64];
+    assert(cur[0] == 7 && cur[1] == 9);
+    assert(t[0] == 5 && t[1] == 7 && t[2] == 9);
+    assert(cur.contains(7u64)) by { assert(cur[0] == 7u64); }
+    assert(cur.contains(9u64)) by { assert(cur[1] == 9u64); }
+    assert(t.contains(7u64)) by { assert(t[1] == 7u64); }
+    assert(t.contains(9u64)) by { assert(t[2] == 9u64); }
+    assert(!cur.contains(5u64)) by {
+        if cur.contains(5u64) {
+            let m = choose|m: int| 0 <= m < cur.len() && cur[m] == 5u64;
+            assert(cur[m] == 5u64);
+        }
+    }
+    assert forall|x: u64| #![trigger cur.contains(x)] cur.contains(x) implies t.contains(x) by {
+        let m = choose|m: int| 0 <= m < cur.len() && cur[m] == x;
+        assert(cur[m] == x);
+    }
+    cur.index_of_first_ensures(7u64);
+    cur.index_of_first_ensures(9u64);
+    assert(pos(cur, 7u64) == 0);
+    assert(pos(cur, 9u64) == 1);
+    reveal(kept_order_preserved);
+}
+/// **음성 대조 — 새 사전조건 Q가 실제로 무언가를 거절한다** (2026-08-09).
+///
+/// `requires`는 약할수록 통과하기 쉬우므로, 항상 참인 조항을 얹는 것은 아무것도
+/// 하지 않는 것과 같다. Q가 진짜 조항임을, 그리고 **Q 없이는 목표 사후조건이
+/// 실제로 거짓임**을 여기서 기계검사한다. 정찰이 찾아낸 최소 반례:
+///
+/// ```text
+/// current = [0, 1]   target_ids = [0]   target_fresh = [false]   keep = [true]
+/// ```
+///
+/// P는 표시된 원소가 하나뿐이라 공허하게 참이고 기존 `requires`도 전부
+/// 성립하는데, `keep[0]`이 인접성 검사를 단락하므로 op가 하나도 나오지 않는다.
+/// 그러면 DOM은 `[0, 1]` 그대로이고 뒤쪽 1개는 `[1] != [0]`이다.
+pub proof fn lemma_q_rejects_extras()
+    ensures
+        // (1) Q는 이 `current`/`target` 짝을 거절한다 — 증인 `1`을 직접 낸다
+        //     (`x = 1`이 Q의 함의를 깨므로 Q 전체가 거짓이다).
+        seq![0u64, 1u64].contains(1u64) && !seq![0u64].contains(1u64),
+        // (2) 그리고 그 입력에서 op를 하나도 내지 않으면(= `keep` 단락이 하는
+        //     일이 정확히 그것이다) 목표 사후조건이 **거짓**이 된다.
+        !(apply_ops(seq![0u64, 1u64], Seq::<PlanOp>::empty(), 0).subrange(1, 2)
+            =~= seq![0u64]),
+{
+    let c = seq![0u64, 1u64];
+    assert(c[1] == 1u64);
+    assert(c.contains(1u64));
+    assert(!seq![0u64].contains(1u64)) by {
+        assert forall|j: int| 0 <= j < seq![0u64].len() implies seq![0u64][j] != 1u64 by {
+            assert(seq![0u64][0] == 0u64);
+        }
+    }
+    assert(apply_ops(c, Seq::<PlanOp>::empty(), 0) =~= c);
+    assert(c.subrange(1, 2)[0] == 1u64);
+    assert(seq![0u64][0] == 0u64);
+}
+
 /// **`place_in_order`의 순서 결정 전체**를 검증된 코드로 옮긴 것.
 /// 반환된 `PlanOp` 열은 **방출 순서 그대로**다(= target의 역순, 스킵 제외).
 ///
@@ -1634,12 +2443,35 @@ pub fn plan_writes(
         // 세운다. 지금까지 디버그 빌드 `debug_assert!`로만 있던 것을 여기
         // **기계가 읽는 계약**으로 올렸다(2026-08-08).
         kept_order_preserved(current@, target_ids@, target_fresh@, keep@),
+        // **사전조건 Q** — `current`에 target 밖 원소(extras)가 없다 (2026-08-09 신설).
+        //
+        // 기존 조항의 **약화가 아니라 새 조항의 추가**다. 그리고 이것 없이는
+        // 아래 수렴 사후조건이 **거짓**이다 — `lemma_endgame`의 주석에 최소
+        // 반례를 적어 뒀다. 비-LIS 경로(`plan_writes_converging`)는 이 조항이
+        // 필요 없다: 거기서는 비인접이면 무조건 옮기므로 외래 원소가 저절로
+        // 앞으로 밀려난다. **두 경로의 진짜 비대칭**이고, LIS의 `keep` 단락이
+        // 사 오는 비용이다.
+        //
+        // 호출부(`crates/loom-runtime/src/list.rs`의 `d_lis_body`)는 이미 항상
+        // 만족한다 — `match_keys`가 old를 retained/removed로 가르고
+        // `current = old_order − removed`를 만들므로 `current`는 정확히
+        // retained 집합이다. 지금까지 계약에 적혀 있지 않았을 뿐이다.
+        forall|x: u64| #![trigger current@.contains(x)]
+            current@.contains(x) ==> target_ids@.contains(x),
     ensures
         // 방출된 op의 인덱스는 전부 유효하고, spawn 여부는 target과 일치한다.
         forall|k: int| #![trigger ops@[k]]
             0 <= k < ops@.len() ==>
                 ops@[k].idx < target_ids@.len()
                 && ops@[k].spawn == target_fresh@[ops@[k].idx as int],
+        // **수렴(RQ5 #4 정리 (2)) — LIS 경로**. `plan_writes_converging`이
+        // 갖고 있는 것과 **글자 그대로 같은 모양**이다: 방출된 op를 순서대로
+        // 적용하면 DOM의 뒤쪽 |target|개가 목표 순서와 정확히 일치한다.
+        ({
+            let d = apply_ops(current@, ops@, ops@.len() as int);
+            &&& d.len() >= target_ids@.len()
+            &&& d.subrange(d.len() - target_ids@.len(), d.len() as int) =~= target_ids@
+        }),
 {
     let n = target_ids.len();
     let mut chain = Chain::from_slice(current);
@@ -1658,6 +2490,10 @@ pub fn plan_writes(
     let mut ops: Vec<PlanOp> = Vec::new();
     let mut next_anchor: Option<u64> = None;
     let mut i: usize = n;
+    // **분할점** — DOM 안에서 `target[i]`가 있는 자리(`i == n`이면 끝).
+    // 부분수열 불변식 `split_inv`가 이 자리를 기준으로 앞/뒤를 나눈다.
+    let ghost mut sp: int = current@.len() as int;
+    proof { lemma_split_inv_init(current@, target_ids@, target_fresh@, keep@); }
 
     while i > 0
         invariant
@@ -1671,6 +2507,10 @@ pub fn plan_writes(
                 0 <= j < n ==>
                     (target_fresh@[j] ==> !current@.contains(target_ids@[j]))
                     && (!target_fresh@[j] ==> current@.contains(target_ids@[j])),
+            // 사전조건 P·Q는 루프 안에서 자동으로 살아 있지 않다(Verus의
+            // `while`은 불변식만으로 모듈러 검증된다) — 다시 적는다. 둘 다
+            // 명제 하나 또는 1변수 양화자라 부담이 없다.
+            kept_order_preserved(current@, target_ids@, target_fresh@, keep@),
             chain.well_formed(),
             // (b) 처음부터 있던 것은 사라지지 않는다.
             forall|x: u64| #![trigger current@.contains(x)]
@@ -1686,140 +2526,193 @@ pub fn plan_writes(
             forall|k: int| #![trigger ops@[k]]
                 0 <= k < ops@.len() ==>
                     ops@[k].idx < n && ops@[k].spawn == target_fresh@[ops@[k].idx as int],
+            // (e) chain 표기 = 방출한 op를 순서대로 적용한 결과. 사후조건이
+            // `apply_ops`로 말하므로 이 배선이 있어야 한다.
+            chain.denotes() =~= apply_ops(current@, ops@, ops@.len() as int),
+            // (f) **부분수열 불변식** — 접미사 불변식이 LIS 경로에서 깨지는
+            // 자리를 대신한다. 불투명이라 루프는 명제만 들고 다닌다.
+            split_inv(chain.denotes(), current@, target_ids@, target_fresh@, keep@, i as int, sp),
         decreases i,
     {
-        i = i - 1;
-        let e = target_ids[i];
-        let fresh = target_fresh[i];
+        // `i`는 루프 **끝에서만** 줄인다(`plan_writes_converging`과 같은 형태).
+        // 새로 들어온 `split_inv`가 `i`와 `i-1`을 함께 언급하므로, 앞에서
+        // 줄이면 불변식의 인덱스와 본문의 인덱스를 프루버가 잇지 못한다.
+        let idx = i - 1;
+        let e = target_ids[idx];
+        let fresh = target_fresh[idx];
         let ghost prev_denotes = chain.denotes();
+        let ghost prev_ops = ops@;
+        let ghost sp_old = sp;
 
         proof {
-            // e는 target의 i번째이고 중복이 없으므로 [i+1, n) 구간에 없다.
-            assert(!target_ids@.subrange(i as int + 1, n as int).contains(e)) by {
+            chain.no_dup_opaque();
+            // 불변식에서 **분할점의 위치 정보만** 꺼낸다 — filter 항은 보지 않는다.
+            lemma_split_inv_anchor(prev_denotes, current@, target_ids@, target_fresh@,
+                                   keep@, i as int, sp_old);
+            // e는 target의 idx번째이고 중복이 없으므로 [idx+1, n) 구간에 없다.
+            assert(!target_ids@.subrange(idx as int + 1, n as int).contains(e)) by {
                 reveal(seq_nodup);
-                let sub = target_ids@.subrange(i as int + 1, n as int);
+                let sub = target_ids@.subrange(idx as int + 1, n as int);
                 assert forall|j: int| #![trigger sub[j]]
                     0 <= j < sub.len() implies sub[j] != e by {
-                    assert(sub[j] == target_ids@[i as int + 1 + j]);
+                    assert(sub[j] == target_ids@[idx as int + 1 + j]);
                 }
             }
         }
 
         if fresh {
             // Fresh: chain에 없음이 (c)로부터 따라온다 → insert 사전조건 충족.
+            proof {
+                lemma_sel_not_e(target_ids@, target_fresh@, keep@, i as int);
+                lemma_remove_value_absent(prev_denotes, e);
+            }
             match next_anchor {
                 Some(a) => {
                     proof {
-                        // a == target_ids[i+1] 이고, 불변식 (d)가 그것이 chain
-                        // 안에 있음을 준다 → index_of_first가 범위 안.
-                        assert(chain.denotes().contains(a));
-                        chain.denotes().index_of_first_ensures(a);
-                        lemma_insert_has_new(chain.denotes(),
-                            chain.denotes().index_of_first(a).unwrap(), e);
+                        // anchor는 `target[i]`이고 분할점이 바로 그 자리다 —
+                        // 중복이 없으므로 `index_of_first`가 `sp_old`를 준다.
+                        assert(a == target_ids@[i as int]);
+                        assert(prev_denotes[sp_old] == a);
+                        lemma_index_of_first_unique(prev_denotes, sp_old);
+                        lemma_insert_has_new(prev_denotes, sp_old, e);
                     }
-                    let ghost j0 = chain.denotes().index_of_first(a).unwrap();
                     chain.insert_before(e, a);
                     proof {
-                        assert forall|x: u64| #![trigger chain.denotes().contains(x)]
-                            chain.denotes().contains(x) <==> (prev_denotes.contains(x) || x == e) by {
-                            if chain.denotes().contains(x) { lemma_insert_only(prev_denotes, j0, e, x); }
-                            if prev_denotes.contains(x) { lemma_insert_keeps(prev_denotes, j0, e, x); }
-                            if x == e { lemma_insert_has_new(prev_denotes, j0, e); }
-                        }
+                        assert(chain.denotes() =~= prev_denotes.insert(sp_old, e));
+                        lemma_step_insert(prev_denotes, current@, target_ids@, target_fresh@,
+                                          keep@, i as int, sp_old, e);
+                        lemma_insert_same_plus(prev_denotes, sp_old, e);
+                        assert(chain.denotes() =~= place_before(prev_denotes, e, Some(a)));
                     }
                 }
                 None => {
+                    proof { assert(sp_old == prev_denotes.len()); }
                     chain.push_back(e);
                     proof {
-                        assert forall|x: u64| #![trigger chain.denotes().contains(x)]
-                            chain.denotes().contains(x) <==> (prev_denotes.contains(x) || x == e) by {
-                            if chain.denotes().contains(x) { lemma_push_only(prev_denotes, e, x); }
-                            if prev_denotes.contains(x) { lemma_push_keeps(prev_denotes, e, x); }
-                            if x == e { assert(prev_denotes.push(e)[prev_denotes.len() as int] == e); }
-                        }
+                        // 꼬리 덧붙이기도 "분할점에 끼우기"의 특수 경우다.
+                        lemma_insert_at_end(prev_denotes, e);
+                        assert(chain.denotes() =~= prev_denotes.insert(sp_old, e));
+                        lemma_step_insert(prev_denotes, current@, target_ids@, target_fresh@,
+                                          keep@, i as int, sp_old, e);
+                        lemma_push_same_plus(prev_denotes, e);
+                        assert(chain.denotes() =~= place_before(prev_denotes, e, None));
                     }
                 }
             }
             assert(same_plus(chain.denotes(), prev_denotes, e));
-            ops.push(PlanOp { idx: i, id: e, spawn: true, before: next_anchor });
+            ops.push(PlanOp { idx, id: e, spawn: true, before: next_anchor });
+            proof {
+                lemma_step_keeps_link(current@, prev_ops, ops@, prev_denotes, chain.denotes(),
+                    PlanOp { idx, id: e, spawn: true, before: next_anchor });
+            }
         } else {
             // `keep[i]`는 호출부(LIS 변형)가 "이 원소는 이미 상대 순서가
             // 맞으니 건드리지 말라"고 표시한 것. 스킵은 write를 내지 않고
             // chain도 그대로 두므로 chain은 계속 DOM과 일치한다 — 다만
             // **LIS 판단 자체의 정당성은 여기서 검증하지 않는다**(호출부 책임).
-            let already_adjacent = keep[i] || match next_anchor {
+            let already_adjacent = keep[idx] || match next_anchor {
                 Some(a) => chain.next_is(e, a),
                 None => chain.is_tail(e),
             };
             if !already_adjacent {
                 // Retained: (b)로부터 chain에 있음 → unlink 사전조건 충족.
-                let ghost before = chain.denotes();
-                proof { chain.no_dup_opaque(); }
+                proof {
+                    assert(!keep@[idx as int]);
+                    lemma_sel_not_e(target_ids@, target_fresh@, keep@, i as int);
+                    if i < n { assert(target_ids@[i as int] != e) by { reveal(seq_nodup); } }
+                }
                 chain.unlink(e);
                 proof {
                     // 중복이 없었으므로 unlink로 e는 완전히 사라졌다 —
                     // 이어지는 삽입의 사전조건(!contains(e))이 여기서 나온다.
-                    lemma_remove_value_no_dup(before, e);
+                    lemma_remove_value_no_dup(prev_denotes, e);
                     assert(!chain.denotes().contains(e));
                     // anchor는 e와 다른 원소이므로 unlink에도 살아남는다.
                     if let Some(a) = next_anchor {
-                        // anchor는 target[i+1], e는 target[i] — 자리가 다르므로
+                        // anchor는 target[i], e는 target[i-1] — 자리가 다르므로
                         // 중복 없음에서 서로 다르다. 양화자는 이 `by` 블록
                         // 안에서만 펼친다(불투명화의 의미를 지키기 위해).
                         assert(a != e) by { reveal(seq_nodup); }
-                        lemma_remove_value_keeps_other(before, e, a);
+                        lemma_remove_value_keeps_other(prev_denotes, e, a);
                     }
+                    // **분할점을 옮긴다** — `e`는 술어 집합에 걸리지 않으므로
+                    // 양쪽 filter 값은 그대로이고, `e`가 앞쪽에 있었으면
+                    // 분할점만 한 칸 당겨진다.
+                    sp = lemma_split_after_remove(prev_denotes, current@, target_ids@,
+                             target_fresh@, keep@, i as int, sp_old, e);
+                    lemma_split_inv_anchor(chain.denotes(), current@, target_ids@,
+                                           target_fresh@, keep@, i as int, sp);
                 }
                 let ghost mid = chain.denotes();
                 match next_anchor {
                     Some(a) => {
                         proof {
-                            assert(chain.denotes().contains(a));
-                            chain.denotes().index_of_first_ensures(a);
-                            lemma_insert_has_new(chain.denotes(),
-                                chain.denotes().index_of_first(a).unwrap(), e);
+                            assert(mid[sp] == a);
+                            lemma_index_of_first_unique(mid, sp);
+                            lemma_insert_has_new(mid, sp, e);
                         }
-                        let ghost j0 = chain.denotes().index_of_first(a).unwrap();
                         chain.insert_before(e, a);
                         proof {
-                            assert forall|x: u64| #![trigger chain.denotes().contains(x)]
-                                chain.denotes().contains(x) <==> (prev_denotes.contains(x) || x == e) by {
-                                if chain.denotes().contains(x) {
-                                    lemma_insert_only(mid, j0, e, x);
-                                    if x != e { lemma_remove_value_only(prev_denotes, e, x); }
-                                }
-                                if prev_denotes.contains(x) && x != e {
-                                    lemma_remove_value_keeps_other(prev_denotes, e, x);
-                                    lemma_insert_keeps(mid, j0, e, x);
-                                }
-                                if x == e { lemma_insert_has_new(mid, j0, e); }
-                            }
+                            assert(chain.denotes() =~= mid.insert(sp, e));
+                            lemma_step_insert(mid, current@, target_ids@, target_fresh@,
+                                              keep@, i as int, sp, e);
+                            lemma_insert_same_plus(mid, sp, e);
+                            lemma_remove_then_place_same_plus(prev_denotes, mid,
+                                                              chain.denotes(), e);
+                            assert(chain.denotes() =~= place_before(prev_denotes, e, Some(a)));
                         }
                     }
                     None => {
+                        proof { assert(sp == mid.len()); }
                         chain.push_back(e);
                         proof {
-                            assert forall|x: u64| #![trigger chain.denotes().contains(x)]
-                                chain.denotes().contains(x) <==> (prev_denotes.contains(x) || x == e) by {
-                                if chain.denotes().contains(x) {
-                                    lemma_push_only(mid, e, x);
-                                    if x != e { lemma_remove_value_only(prev_denotes, e, x); }
-                                }
-                                if prev_denotes.contains(x) && x != e {
-                                    lemma_remove_value_keeps_other(prev_denotes, e, x);
-                                    lemma_push_keeps(mid, e, x);
-                                }
-                                if x == e { assert(mid.push(e)[mid.len() as int] == e); }
-                            }
+                            lemma_insert_at_end(mid, e);
+                            assert(chain.denotes() =~= mid.insert(sp, e));
+                            lemma_step_insert(mid, current@, target_ids@, target_fresh@,
+                                              keep@, i as int, sp, e);
+                            lemma_push_same_plus(mid, e);
+                            lemma_remove_then_place_same_plus(prev_denotes, mid,
+                                                              chain.denotes(), e);
+                            assert(chain.denotes() =~= place_before(prev_denotes, e, None));
                         }
                     }
                 }
                 assert(same_plus(chain.denotes(), prev_denotes, e));
-                ops.push(PlanOp { idx: i, id: e, spawn: false, before: next_anchor });
+                ops.push(PlanOp { idx, id: e, spawn: false, before: next_anchor });
+                proof {
+                    lemma_step_keeps_link(current@, prev_ops, ops@, prev_denotes,
+                        chain.denotes(),
+                        PlanOp { idx, id: e, spawn: false, before: next_anchor });
+                }
             } else {
                 // 스킵: 표기 불변. e는 Retained이므로 이미 들어 있다.
                 assert(current@.contains(e));
                 assert(same_plus(chain.denotes(), prev_denotes, e));
+                proof {
+                    // 스킵은 **두 가지 이유**로 일어나고 분할점이 옮겨가는
+                    // 방식이 서로 다르다.
+                    if keep@[idx as int] {
+                        // ① `keep` 단락 — 인접성은 성립하지 않을 수 있다.
+                        //    `e`는 `keptseq(i)`의 **마지막** 원소이고(P가 주는
+                        //    것), 그 자리가 새 분할점이다.
+                        sp = lemma_step_keep_skip(prev_denotes, current@, target_ids@,
+                                 target_fresh@, keep@, i as int, sp_old);
+                    } else {
+                        // ② 인접성 판정이 참이었다 — `e`가 분할점 바로 앞.
+                        match next_anchor {
+                            Some(a) => {
+                                assert(adjacent(prev_denotes, e, a));
+                                lemma_adjacent_at_split(prev_denotes, sp_old, e, a);
+                            }
+                            None => {
+                                assert(prev_denotes[prev_denotes.len() - 1] == e);
+                                assert(sp_old == prev_denotes.len());
+                            }
+                        }
+                        sp = lemma_step_adj_skip(prev_denotes, current@, target_ids@,
+                                 target_fresh@, keep@, i as int, sp_old);
+                    }
+                }
             }
         }
         proof {
@@ -1833,15 +2726,15 @@ pub fn plan_writes(
                     assert(prev_denotes.contains(x));
                 }
             }
-            let sub_new = target_ids@.subrange(i as int, n as int);
-            let sub_old = target_ids@.subrange(i as int + 1, n as int);
+            let sub_new = target_ids@.subrange(idx as int, n as int);
+            let sub_old = target_ids@.subrange(idx as int + 1, n as int);
             assert(sub_new[0] == e);
             assert(sub_new.contains(e));
             // 이전 구간은 새 구간의 부분이다 — 불변식 (c)를 한 칸 넓히는 단계.
             assert forall|x: u64| sub_old.contains(x) implies sub_new.contains(x) by {
                 let k = choose|k: int| 0 <= k < sub_old.len() && sub_old[k] == x;
-                assert(sub_old[k] == target_ids@[i as int + 1 + k]);
-                assert(sub_new[k + 1] == target_ids@[i as int + 1 + k]);
+                assert(sub_old[k] == target_ids@[idx as int + 1 + k]);
+                assert(sub_new[k + 1] == target_ids@[idx as int + 1 + k]);
             }
             assert forall|x: u64| #![trigger chain.denotes().contains(x)]
                 chain.denotes().contains(x)
@@ -1851,11 +2744,26 @@ pub fn plan_writes(
                 }
             }
             assert forall|j: int| #![trigger target_ids@[j]]
-                i <= j < n implies chain.denotes().contains(target_ids@[j]) by {
-                if j > i { assert(prev_denotes.contains(target_ids@[j])); }
+                idx <= j < n implies chain.denotes().contains(target_ids@[j]) by {
+                if j > idx { assert(prev_denotes.contains(target_ids@[j])); }
             }
         }
         next_anchor = Some(e);
+        i = idx;
+    }
+    proof {
+        // **끝맺음**. `i == 0`이므로 (f)는 "DOM에서 target 원소만 뽑으면
+        // target 그대로"를 말하고, Q는 "DOM에 target 밖 원소가 없다"를 준다.
+        // 둘이 합쳐지면 filter가 항등이 되어 **DOM == target**이 나온다.
+        let d = chain.denotes();
+        assert(target_ids@.subrange(0, n as int) =~= target_ids@);
+        assert forall|j: int| 0 <= j < d.len() implies
+            target_ids@.contains(#[trigger] d[j]) by {
+            assert(d.contains(d[j]));
+        }
+        lemma_endgame(d, current@, target_ids@, target_fresh@, keep@, sp);
+        assert(d =~= target_ids@);
+        assert(d.subrange(d.len() - n as int, d.len() as int) =~= target_ids@);
     }
     ops
 }

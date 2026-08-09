@@ -397,6 +397,33 @@ fn place_in_order_lis<R: crate::RowSpawner>(
         "lis_indices가 사전조건 P를 위반했다 — 표시된 원소들의 current 내 \
          상대 순서가 target 순서와 다르다. 이 상태로 진행하면 DOM 순서가 깨진다."
     );
+    // **사전조건 Q** (2026-08-09 신설): `current`에 target 밖 원소(extras)가
+    // 없어야 한다. 이것 없이는 `plan_writes`의 수렴 사후조건이 **거짓**이다 —
+    // `keep`이 인접성 검사를 단락하므로 target에 없는 원소는 영영 치워지지
+    // 않는다(최소 반례 `current=[0,1] target=[0] keep=[true]`).
+    //
+    // 이 호출부는 구조적으로 이미 만족한다: `match_keys`가 `old_order`를
+    // retained/removed로 가르고 호출자가 `current = old_order − removed`를
+    // 만들므로 `current`는 정확히 retained 집합이며 전부 `Slot::Retained`로
+    // `target`에 들어 있다. P와 마찬가지로 그 사실을 디버그 빌드에서 실제로
+    // 검사해 경계를 코드에 박는다.
+    //
+    // **비-LIS 경로(`place_in_order`)는 이 조건이 필요 없다** — 거기서는
+    // 비인접이면 무조건 옮기므로 외래 원소가 저절로 앞으로 밀려난다.
+    // 두 경로의 진짜 비대칭이고, `keep` 단락이 사 오는 비용이다.
+    debug_assert!(
+        {
+            // 바로 위 P 검사가 `old_index_of` 맵으로 O(n)인 것과 같은 이유로
+            // 집합을 쓴다 — 순진한 이중 루프는 O(n²)이고, 이 경로는 디버그
+            // 빌드에서 긴 리스트를 돈다.
+            let in_target: std::collections::HashSet<Entity> =
+                target.iter().map(slot_entity).collect();
+            current.iter().all(|e| in_target.contains(e))
+        },
+        "current에 target 밖 원소가 있다 — plan_writes의 사전조건 Q 위반. \
+         LIS 경로는 keep으로 단락된 원소를 건드리지 않으므로 이 상태로 \
+         진행하면 그 원소가 DOM에 남아 순서가 깨진다."
+    );
     let ops = loom_flush_core::plan_writes(
         &current.iter().map(|e| e.to_bits()).collect::<Vec<u64>>(),
         &target.iter().map(|s| slot_entity(s).to_bits()).collect::<Vec<u64>>(),
