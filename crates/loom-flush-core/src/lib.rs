@@ -3226,6 +3226,311 @@ pub proof fn lemma_take_order_accepts_increasing()
     }
 }
 
+// ============================================================================
+// P를 **세우는** 쪽 — LIS 표시(`keep`)의 생성 (2026-08-11, 4단계)
+// ============================================================================
+//
+// 여기까지 P(`take_order_preserved`)는 `plan_lis_from_selection`의 `requires`로
+// **가정**돼 있었고, 그것을 실제로 세우는 `lis_indices`는 `loom-runtime`의
+// 비검증 코드에 있었다 — 릴리스에서 사라지는 `debug_assert!` 하나가 유일한
+// 확인이었다. 아래 `lis_keep`이 그 알고리즘을 그대로 옮겨 P를 **사후조건으로**
+// 증명한다. 사슬이 사후조건 → 사전조건으로 닫히는 지점은
+// `plan_lis_from_selection_auto`다.
+//
+// **건전성만 증명한다. 최적성(정말 가장 긴 증가 부분수열인가)은 증명하지
+// 않는다** — 최적이 아니면 이동이 더 나올 뿐 순서는 깨지지 않으므로 성능
+// 성질이지 정합성 성질이 아니다. 필요한 것은 predecessor 사슬이 증가
+// 부분수열이라는 국소 불변식뿐이고, 그것이 아래 세 술어다.
+//
+// **알고리즘은 한 글자도 바뀌지 않았다**(실격 조건 1번). 옛 코드는
+// `take_old`에서 retained 슬롯만 뽑은 `retained_old_indices`에 LIS를 돌린 뒤
+// 순위(rank)로 되짚어 `keep`을 만들었는데, 여기서는 `take_old`를 직접 훑되
+// 비-retained 슬롯을 **건너뛴다**. 처리되는 값의 열과 순서가 같고 비교가
+// `sequence[ti] < val` 하나뿐이므로 `tails`/`pred`가 담는 인덱스가 순서
+// 동형으로 대응하고, 고르는 집합이 글자 그대로 같다 — 대신 순위 되짚기라는
+// 간접 참조 한 겹이 없어져 증명이 짧아진다. 전수 대조로 확인했다(순열 n≤7,
+// fresh 혼합 전수, 중복 값 열, 단사+fresh 실제 모양 — 30,153건, 불일치 0건).
+
+/// `tails`가 담는 것은 `sequence`의 **인덱스**다 — 범위 술어를 bound로
+/// 매개변수화해 두면 "`sequence` 안"과 "아직 훑지 않은 `i` 앞"을 같은 술어로
+/// 쓸 수 있다. 1변수 양화자라 불투명화가 필요 없다.
+spec fn tails_bounded(tails: Seq<usize>, bound: int) -> bool {
+    forall|k: int| #![trigger tails[k]] 0 <= k < tails.len() ==> tails[k] < bound
+}
+
+/// I3 — `tails`가 가리키는 **값**이 엄격히 증가한다.
+///
+/// **불투명인 이유**: `seq_nodup`·`kept_order_preserved`와 같다 — 2변수
+/// 양화자이고, 게다가 `seq[tails[k]]`라는 **이중 인덱싱**이라 루프 문맥에
+/// 그냥 두면 트리거가 폭발한다. 펼치는 곳은 이분 탐색의 두 가지와 보존
+/// 정리 둘 안뿐이다.
+#[verifier::opaque]
+spec fn tails_sorted(seq: Seq<usize>, tails: Seq<usize>) -> bool {
+    forall|k1: int, k2: int| #![trigger tails[k1], tails[k2]]
+        0 <= k1 < k2 < tails.len()
+            ==> seq[tails[k1] as int] < seq[tails[k2] as int]
+}
+
+/// I1 — predecessor의 **국소** 불변식. 이것 하나가 "사슬을 따라가면 인덱스도
+/// 값도 엄격히 감소한다"의 전부이고, 뒤집으면 증가 부분수열이다. 1변수
+/// 양화자이므로 루프에 그대로 들고 다녀도 된다.
+spec fn pred_local(seq: Seq<usize>, pred: Seq<Option<usize>>) -> bool {
+    forall|k: int| #![trigger pred[k]]
+        0 <= k < pred.len() && pred[k] is Some
+            ==> pred[k]->0 < k && seq[pred[k]->0 as int] < seq[k]
+}
+
+/// `tails.partition_point(|&ti| sequence[ti] < val)`과 **의미가 같은** 명시적
+/// 이분 탐색.
+///
+/// **왜 `partition_point`를 그대로 못 쓰는가**: vstd에 스펙이 없다
+/// (`core::slice::...::partition_point` is not supported). Verus가 제시하는
+/// 유일한 해결책이 `assume_specification`인데 그것은 이 작업의 금지 사항이다.
+/// 술어가 `<=`가 아니라 **`<`**이므로 결과는 lower bound이고, 아래 세 사후조건이
+/// 그 의미를 그대로 적은 것이다. `mid = lo + (hi - lo) / 2`라 오버플로가 없고
+/// 스텝당 O(log n) — 전체 O(n log n)이 유지된다.
+fn lower_bound(sequence: &Vec<usize>, tails: &Vec<usize>, val: usize) -> (pos: usize)
+    requires
+        tails_bounded(tails@, sequence@.len() as int),
+        tails_sorted(sequence@, tails@),
+    ensures
+        pos <= tails@.len(),
+        forall|k: int| #![trigger tails@[k]]
+            0 <= k < pos ==> sequence@[tails@[k] as int] < val,
+        forall|k: int| #![trigger tails@[k]]
+            pos <= k < tails@.len() ==> sequence@[tails@[k] as int] >= val,
+{
+    let mut lo: usize = 0;
+    let mut hi: usize = tails.len();
+    while lo < hi
+        invariant
+            lo <= hi,
+            hi <= tails@.len(),
+            tails_bounded(tails@, sequence@.len() as int),
+            tails_sorted(sequence@, tails@),
+            forall|k: int| #![trigger tails@[k]]
+                0 <= k < lo ==> sequence@[tails@[k] as int] < val,
+            forall|k: int| #![trigger tails@[k]]
+                hi <= k < tails@.len() ==> sequence@[tails@[k] as int] >= val,
+        decreases hi - lo,
+    {
+        let mid = lo + (hi - lo) / 2;
+        let ti = tails[mid];
+        if sequence[ti] < val {
+            proof { reveal(tails_sorted); }
+            lo = mid + 1;
+        } else {
+            proof { reveal(tails_sorted); }
+            hi = mid;
+        }
+    }
+    lo
+}
+
+/// I3 보존 — 교체 가지(`tails[pos] = i`). 핵심은 `k1 == pos` 경우다:
+/// `seq[tails[pos]] >= val`(이분 탐색의 오른쪽 사후조건)과 기존 정렬
+/// `seq[tails[pos]] < seq[tails[k2]]`를 겹치면 `val < seq[tails[k2]]`가
+/// **엄격하게** 나온다 — 그래서 중복 값이 있어도 I3가 엄격한 채로 유지된다.
+proof fn lemma_sorted_after_set(
+    seq: Seq<usize>, tails: Seq<usize>, pos: int, i: usize, val: usize,
+)
+    requires
+        tails_sorted(seq, tails),
+        0 <= pos < tails.len(),
+        i < seq.len(),
+        seq[i as int] == val,
+        tails_bounded(tails, seq.len() as int),
+        forall|k: int| #![trigger tails[k]]
+            0 <= k < pos ==> seq[tails[k] as int] < val,
+        forall|k: int| #![trigger tails[k]]
+            pos <= k < tails.len() ==> seq[tails[k] as int] >= val,
+    ensures
+        tails_sorted(seq, tails.update(pos, i)),
+{
+    reveal(tails_sorted);
+    let nt = tails.update(pos, i);
+    assert forall|k1: int, k2: int| #![trigger nt[k1], nt[k2]]
+        0 <= k1 < k2 < nt.len()
+        implies seq[nt[k1] as int] < seq[nt[k2] as int] by {
+        assert(nt[k1] == if k1 == pos { i } else { tails[k1] });
+        assert(nt[k2] == if k2 == pos { i } else { tails[k2] });
+        if k1 == pos {
+            assert(seq[tails[pos] as int] < seq[tails[k2] as int]);
+            assert(seq[tails[pos] as int] >= val);
+        } else if k2 == pos {
+            assert(seq[tails[k1] as int] < val);
+        } else {
+            assert(seq[tails[k1] as int] < seq[tails[k2] as int]);
+        }
+    }
+}
+
+/// I3 보존 — 연장 가지(`tails.push(i)`). 이쪽은 이분 탐색의 왼쪽 사후조건이
+/// `pos == tails.len()`에서 모든 `k`를 덮으므로 그대로 나온다.
+proof fn lemma_sorted_after_push(
+    seq: Seq<usize>, tails: Seq<usize>, i: usize, val: usize,
+)
+    requires
+        tails_sorted(seq, tails),
+        i < seq.len(),
+        seq[i as int] == val,
+        tails_bounded(tails, seq.len() as int),
+        forall|k: int| #![trigger tails[k]]
+            0 <= k < tails.len() ==> seq[tails[k] as int] < val,
+    ensures
+        tails_sorted(seq, tails.push(i)),
+{
+    reveal(tails_sorted);
+    let nt = tails.push(i);
+    assert forall|k1: int, k2: int| #![trigger nt[k1], nt[k2]]
+        0 <= k1 < k2 < nt.len()
+        implies seq[nt[k1] as int] < seq[nt[k2] as int] by {
+        assert(nt[k1] == tails[k1]);
+        if k2 < tails.len() {
+            assert(nt[k2] == tails[k2]);
+            assert(seq[tails[k1] as int] < seq[tails[k2] as int]);
+        } else {
+            assert(nt[k2] == i);
+            assert(seq[tails[k1] as int] < val);
+        }
+    }
+}
+
+/// **사전조건 P를 세우는 함수** — patience sorting + predecessor 재구성.
+/// `loom-runtime`에 있던 `lis_indices` + `keep` 조립을 그대로 옮긴 것이고,
+/// 이제 P가 `ensures`로 **증명**된다.
+///
+/// `take_old[i] >= old_len`인 슬롯(fresh)은 옛 자리가 없으므로 건너뛴다 —
+/// 옛 코드가 `retained_old_indices`로 걸러 내던 것과 같다.
+///
+/// 사전조건이 **없다**: 빈 열은 루프가 그냥 안 돌고, 중복 값이 있어도
+/// 무해하다(이분 탐색 술어가 `<`라 사슬이 strictly increasing이다). 그래서
+/// `seq_nodup` 같은 2변수 양화자를 `requires`에 걸 필요가 없다 — 걸었다면
+/// 이 모듈이 전에 겪은 트리거 폭발을 다시 샀을 것이다.
+///
+/// 실제 반환값이 무엇인지(= 최적성)는 규정하지 않는다. 규정하는 것은
+/// "표시된 것들의 옛 인덱스가 target 순서로 증가한다" 하나다.
+pub fn lis_keep(take_old: &Vec<usize>, old_len: usize) -> (keep: Vec<bool>)
+    ensures
+        keep@.len() == take_old@.len(),
+        take_order_preserved(old_len as nat, take_old@, keep@),
+{
+    let n = take_old.len();
+
+    let mut pred: Vec<Option<usize>> = Vec::with_capacity(n);
+    let mut j: usize = 0;
+    while j < n
+        invariant
+            j <= n,
+            pred@.len() == j,
+            forall|k: int| #![trigger pred@[k]] 0 <= k < j ==> pred@[k] is None,
+        decreases n - j,
+    {
+        pred.push(None);
+        j = j + 1;
+    }
+
+    // I2/I3/I1을 루프 불변식으로 들고 간다. `tails_bounded(_, i)`가 I1의
+    // `p < i`를 세우는 재료이고, `tails_bounded(_, n)`은 이분 탐색의
+    // 사전조건이다.
+    let mut tails: Vec<usize> = Vec::new();
+    let mut i: usize = 0;
+    proof { reveal(tails_sorted); }
+    while i < n
+        invariant
+            i <= n,
+            n == take_old@.len(),
+            pred@.len() == n,
+            pred_local(take_old@, pred@),
+            tails_bounded(tails@, i as int),
+            tails_bounded(tails@, n as int),
+            tails_sorted(take_old@, tails@),
+        decreases n - i,
+    {
+        let t = take_old[i];
+        if t < old_len {
+            let pos = lower_bound(take_old, &tails, t);
+            if pos > 0 {
+                let p = tails[pos - 1];
+                let ghost old_pred = pred@;
+                // I1을 이 자리에서 한 번 세우면 끝이다 — `pred[i]`는 이후
+                // 다시 쓰이지 않는다.
+                assert(p < i);
+                assert(take_old@[p as int] < t);
+                pred.set(i, Some(p));
+                proof {
+                    assert forall|k: int| #![trigger pred@[k]]
+                        0 <= k < pred@.len() && pred@[k] is Some
+                        implies pred@[k]->0 < k
+                            && take_old@[pred@[k]->0 as int] < take_old@[k] by {
+                        if k != i as int {
+                            assert(pred@[k] == old_pred[k]);
+                        }
+                    }
+                }
+            }
+            if pos == tails.len() {
+                proof { lemma_sorted_after_push(take_old@, tails@, i, t); }
+                tails.push(i);
+            } else {
+                proof { lemma_sorted_after_set(take_old@, tails@, pos as int, i, t); }
+                tails.set(pos, i);
+            }
+        }
+        i = i + 1;
+    }
+
+    let mut keep: Vec<bool> = Vec::with_capacity(n);
+    let mut j2: usize = 0;
+    while j2 < n
+        invariant
+            j2 <= n,
+            keep@.len() == j2,
+            forall|k: int| #![trigger keep@[k]] 0 <= k < j2 ==> !keep@[k],
+        decreases n - j2,
+    {
+        keep.push(false);
+        j2 = j2 + 1;
+    }
+
+    // 사슬 되짚기. `tails`가 비면 `cursor`가 처음부터 `None`이라 루프가 안
+    // 돌고 `keep`은 전부 false — 갈래를 여기서 합쳐 두면 뒤에서 조인이 없다.
+    let mut cursor: Option<usize> = if tails.len() > 0 {
+        Some(tails[tails.len() - 1])
+    } else {
+        None
+    };
+
+    // 갱신 부담은 **1변수** 불변식이 진다("표시된 모든 m이 cursor보다 뒤에
+    // 있고 값도 크다"). 그러면 `keep[cursor] = true`인 시점에 새 원소 대 기존
+    // 원소가 전부 덮이므로 2변수 쌍별 성질이 자동 보존된다. 종료 척도는
+    // I1의 `p < i`가 그대로 준다.
+    while cursor.is_some()
+        invariant
+            keep@.len() == n,
+            n == take_old@.len(),
+            pred@.len() == n,
+            pred_local(take_old@, pred@),
+            cursor is Some ==> cursor->0 < n,
+            forall|m: int| #![trigger keep@[m]]
+                0 <= m < n && keep@[m] && cursor is Some
+                    ==> cursor->0 < m && take_old@[cursor->0 as int] < take_old@[m],
+            forall|a: int, b: int| #![trigger keep@[a], keep@[b]]
+                0 <= a < b < n && keep@[a] && keep@[b]
+                    ==> take_old@[a] < take_old@[b],
+        decreases if cursor is Some { cursor->0 + 1 } else { 0 },
+    {
+        let idx = cursor.unwrap();
+        keep.set(idx, true);
+        cursor = pred[idx];
+    }
+
+    // 쌍별 성질은 P보다 **강하다**(P는 `take_old[_] < old_len`이라는 가정을
+    // 더 달고 있다). 불투명 래퍼를 여기서 한 번만 편다.
+    proof { reveal(take_order_preserved); }
+    keep
+}
+
 /// LIS 경로(후보 D-LIS·E-LIS) — 같은 선택에 LIS의 "유지" 표시(`keep`)를 얹어
 /// `plan_writes`까지 간다.
 ///
@@ -3304,6 +3609,68 @@ pub fn plan_lis_from_selection(
         target_fresh: pi.target_fresh,
         ops,
     }
+}
+
+/// **사슬이 닫히는 지점** (2026-08-11, 4단계). `keep`을 밖에서 받지 않고
+/// `lis_keep`으로 **여기서 만든다** — 그래서 `lis_keep`의 사후조건
+/// `take_order_preserved`가 바로 아래 `plan_lis_from_selection`의 동명
+/// `requires`를 **Verus가 검사하는 자리에서** 충족한다.
+///
+/// 이 한 겹이 있어야 하는 이유: 값만 넘기고 사람 눈으로 잇는 것은 사슬을 닫지
+/// 못한다. `loom-runtime`은 검증 대상이 아니므로 거기서
+/// `lis_keep(...)` → `plan_lis_from_selection(..., &keep)`으로 이어 봐야 두
+/// 계약 사이는 아무도 검사하지 않는다 — 예전 `debug_assert!`와 같은 종류의
+/// 틈이 이름만 바꿔 남는다. 두 호출이 **한 검증 단위 안에** 있어야 한다.
+///
+/// 그래서 `loom-runtime`이 부르는 것은 이 함수뿐이고, 거기에는 P에 대한
+/// 계약이 아예 나타나지 않는다(`keep`이 인자가 아니므로 넘길 것이 없다).
+/// 나머지 다섯 사전조건은 `plan_lis_from_selection`의 것을 그대로 물려받는다 —
+/// 그것들은 `match_keys` 경계에서 이미 세워져 있다(2026-08-11, 2단계).
+pub fn plan_lis_from_selection_auto(
+    old_ids: &Vec<u64>,
+    take_old: &Vec<usize>,
+    fresh_ids: &Vec<u64>,
+) -> (r: SelectedPlan)
+    requires
+        old_ids@.no_duplicates(),
+        fresh_ids@.len() == take_old@.len(),
+        forall|i: int| #![trigger take_old@[i]]
+            0 <= i < take_old@.len() && take_old@[i] >= old_ids@.len()
+                ==> !old_ids@.contains(fresh_ids@[i]),
+        forall|a: int, b: int| #![trigger take_old@[a], take_old@[b]]
+            0 <= a < b < take_old@.len()
+                && take_old@[a] < old_ids@.len() && take_old@[b] < old_ids@.len()
+                ==> take_old@[a] != take_old@[b],
+        forall|a: int, b: int| #![trigger take_old@[a], take_old@[b]]
+            0 <= a < b < take_old@.len()
+                && take_old@[a] >= old_ids@.len() && take_old@[b] >= old_ids@.len()
+                ==> fresh_ids@[a] != fresh_ids@[b],
+    ensures
+        r.target_ids@.len() == take_old@.len(),
+        r.target_fresh@.len() == r.target_ids@.len(),
+        forall|i: int| #![trigger r.target_fresh@[i]]
+            0 <= i < take_old@.len() ==> r.target_fresh@[i] == (take_old@[i] >= old_ids@.len()),
+        forall|i: int| #![trigger r.target_ids@[i]]
+            0 <= i < take_old@.len() ==>
+                r.target_ids@[i] == if take_old@[i] < old_ids@.len() {
+                    old_ids@[take_old@[i] as int]
+                } else {
+                    fresh_ids@[i]
+                },
+        forall|k: int| #![trigger r.ops@[k]]
+            0 <= k < r.ops@.len() ==>
+                r.ops@[k].idx < r.target_ids@.len()
+                && r.ops@[k].spawn == r.target_fresh@[r.ops@[k].idx as int],
+        ({
+            let d = apply_ops(r.current@, r.ops@, r.ops@.len() as int);
+            &&& d.len() >= r.target_ids@.len()
+            &&& d.subrange(d.len() - r.target_ids@.len(), d.len() as int) =~= r.target_ids@
+        }),
+        forall|x: u64| #![trigger r.removed@.contains(x)]
+            r.removed@.contains(x) ==> !r.current@.contains(x),
+{
+    let keep = lis_keep(take_old, old_ids.len());
+    plan_lis_from_selection(old_ids, take_old, fresh_ids, &keep)
 }
 
 } // verus!

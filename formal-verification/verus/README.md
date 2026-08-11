@@ -264,7 +264,7 @@ Retained-이동)가 공통으로 만족하는 모양을 `same_plus`(표기 집�
 **LIS 변형도 같은 함수를 쓴다**: `place_in_order_lis`의 "이 원소는 상대 순서가
 이미 맞으니 건드리지 말라"는 표시를 `keep` 파라미터로 받는다. 스킵은 write를
 내지 않고 chain도 그대로 두므로 chain은 계속 DOM과 일치한다. **단, LIS 판단
-자체의 정당성은 검증 범위 밖**이다(`lis_indices`는 비검증 코드) — 검증된 것은
+자체의 정당성은 검증 범위 밖**이었다(`lis_indices`는 비검증 코드) — 검증된 것은
 "그 표시를 받아들여도 Chain 조작의 사전조건이 지켜진다"까지다.
 
 §2.5 재수집(v7 → **v8**): §9 판정 전부 동일(CI 폭만 미세 변동).
@@ -975,6 +975,8 @@ verus formal-verification/verus/flush_order.rs             → 28 verified, 0 er
   무작위 속성 검사로만 지켜진다.
 - **`lis_indices`가 P를 세운다는 LIS 건전성은 여전히 미증명이다.** 증명된 것은
   "P ∧ Q ⟹ 수렴"이지 "LIS가 P를 만든다"가 아니다.
+  > **2026-08-11 정정 (4단계)**: 이제 증명됐다. 아래 "LIS 건전성 — 증명 완료,
+  > 사슬이 닫혔다" 절 참고. 이 항목은 당시 기록으로 남긴다.
 - Q는 **최소가 아니다**. 더 약한 P2("extras는 전부 표시된 원소보다 `current`에서
   앞")로도 전수 탐색 반례 0건(177,827건)이었다. Q를 택한 이유는 P2가 다시 2변수
   양화자라는 **성능 근거**지 수학적 필연이 아니다.
@@ -1055,6 +1057,8 @@ P(`kept_order_preserved`)로 **번역하는 것까지 기계검사**한다. 번�
 
 - **`lis_indices`가 P를 세운다는 LIS 건전성은 여전히 미증명이다.** 이번에도
   아니다. 다만 남은 미검증 계약이 **정확히 그것 하나**가 됐다.
+  > **2026-08-11 정정 (같은 날 4단계)**: 그 하나도 닫혔다. 아래 "LIS 건전성 —
+  > 증명 완료, 사슬이 닫혔다" 절 참고. 이 항목은 당시 기록으로 남긴다.
 - **비검증 코드가 지는 짐: 여섯 → 넷**, 그리고 성격이 바뀌었다. 예전 넷은
   `current`/`target`의 *상호작용*에 대한 명제였고, 지금 넷은 원시 입력에 대한
   **구조적 사실**이다: 옛 Entity 유일성 / `take_old` 단사성 / fresh Entity가 옛
@@ -1098,3 +1102,180 @@ fresh 민터의 공역(100만)이 n=10,000에서 부족해져 rep의 34%가 중�
 먹인다. 성질은 전부 성립하므로 수집분이 무효가 되지는 않지만(전수 확인:
 `match-keys-exhaustive.py`), 주석은 이번에 고쳤다. 별건으로 남길 것: 그 공역
 부족은 W7의 "10% 값 변경" 조항을 계통적으로 미달시킨다(RQ1 §3.1 계측 정확도).
+
+## LIS 건전성 — 증명 완료, 사슬이 닫혔다 (2026-08-11, 같은 날 4단계)
+
+바로 위 절이 "남은 미검증 계약이 **정확히 그것 하나**"라고 적은 그것 —
+`lis_indices`가 사전조건 P를 세운다는 것 — 을 증명했다. **이제 P는 가정이
+아니라 실행 코드의 사후조건이다.**
+
+### 무엇이 어디로 갔나
+
+`list.rs`의 `lis_indices`(patience sorting)와 `lis_keep`(마스크 조립)이 통째로
+`crates/loom-flush-core/src/lib.rs`로 옮겨 갔다. 새로 생긴 것:
+
+| 이름 | 무엇 |
+|---|---|
+| `lis_keep` | `(take_old, old_len)` → `keep: Vec<bool>`. **`take_order_preserved`가 사후조건** |
+| `plan_lis_from_selection_auto` | **사슬이 닫히는 자리**. `lis_keep`을 부르고 그 결과로 `plan_lis_from_selection`을 부른다 |
+| `lower_bound` | `partition_point`의 의미를 그대로 적은 명시적 이분 탐색 |
+| `tails_sorted` | I3(`tails`가 가리키는 값이 엄격 증가). **불투명** — 2변수 + 이중 인덱싱 |
+| `tails_bounded` / `pred_local` | I2 / I1. 둘 다 1변수라 불투명화 불필요 |
+| `lemma_sorted_after_set` / `lemma_sorted_after_push` | I3 보존(교체 가지 / 연장 가지) |
+
+`list.rs`의 P `debug_assert!`는 **삭제됐다**. 그 파일에 P에 대한 계약이 이제
+한 줄도 없다 — `keep`이 인자로 오가지 않기 때문이다.
+
+### 왜 래퍼 한 겹(`plan_lis_from_selection_auto`)이 필요했나
+
+`list.rs`에서 `lis_keep(...)` → `plan_lis_from_selection(..., &keep)`으로
+이어 놓는 것으로는 **사슬이 닫히지 않는다**. `loom-runtime`은 검증 대상이
+아니므로 그 두 계약 사이를 아무도 검사하지 않고, 예전 `debug_assert!`와 같은
+종류의 틈이 이름만 바꿔 남는다. 두 호출이 **한 검증 단위 안에** 있어야 한다.
+
+기계로 확인했다 — `lis_keep`의 `ensures`에서 `take_order_preserved` 한 줄을
+지우면:
+
+```
+error: precondition not satisfied
+    --> lib.rs:3672:5
+     |
+3560 |         take_order_preserved(old_ids@.len(), take_old@, keep@),
+     |         ------------------------------------------------------ failed precondition
+...
+3672 |     plan_lis_from_selection(old_ids, take_old, fresh_ids, &keep)
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+verification results:: 89 verified, 1 errors
+```
+
+즉 사후조건 → 사전조건이 **실제로** 이어져 있다.
+
+### 건전성만 증명했다 — 최적성은 아니다
+
+의도적이다. P는 "표시된 것들이 증가 부분수열을 이룬다"와 같고, 그것이면
+충분하다. LIS가 최적이 아니면 이동이 더 나올 뿐 순서는 깨지지 않는다(성능
+성질이지 정합성 성질이 아니다). 그래서 patience sorting이 *가장 긴* 부분수열을
+찾는다는 것은 증명하지 않았고, 필요한 것은 predecessor 사슬의 **국소
+불변식**뿐이었다:
+
+```
+I1  pred[i] == Some(p) ==> p < i && seq[p] < seq[i]        (pred_local)
+I2  tails[k] < i                                           (tails_bounded)
+I3  k1 < k2 ==> seq[tails[k1]] < seq[tails[k2]]            (tails_sorted, 불투명)
+```
+
+사슬 되짚기의 갱신 부담은 **1변수** 불변식이 진다("표시된 모든 m이 cursor보다
+뒤에 있고 값도 크다"). 그러면 `keep[cursor] = true` 시점에 새 원소 대 기존
+원소가 전부 덮여 2변수 쌍별 성질이 자동 보존된다. 종료 척도는 I1의 `p < i`가
+그대로 준다.
+
+### `partition_point`는 못 쓴다
+
+vstd에 스펙이 없다(`/opt/verus/vstd` 전수 grep 0건, 프로브로 실증:
+`core::slice::impl&%0::partition_point` is not supported). Verus가 제시하는
+유일한 해결책이 `assume_specification`인데 그것은 우회 금지 조항에 걸린다.
+그래서 의미가 같은 명시적 이분 탐색(`lower_bound`)으로 대체했다 — 술어가 `<=`가
+아니라 **`<`**이므로 둘 다 lower bound이고, `mid = lo + (hi - lo) / 2`라
+오버플로가 없으며 **O(n log n)이 유지**된다.
+
+### 중복 값에 `no_duplicates`가 필요 없다
+
+`lis_keep`에는 **사전조건이 하나도 없다**. 이분 탐색 술어가 `<`라
+`pred[i] = tails[pos-1]`이 `seq[tails[pos-1]] < val`을 **엄격하게** 만족하고,
+즉 이 알고리즘은 strictly increasing 사슬만 만든다 — 같은 값 둘이 한 사슬에
+들어갈 수 없다. I3도 엄격한 채로 유지된다. 그래서 이 모듈이 전에 128초를
+태웠던 `Seq::no_duplicates` 2변수 양화자를 `requires`에 걸 필요가 **없었다**.
+
+### 방출 동일성 — 알고리즘은 한 글자도 안 바뀌었다
+
+옛 코드는 `take_old`에서 retained 슬롯만 뽑은 `retained_old_indices`에 LIS를
+돌린 뒤 순위(rank)로 되짚어 `keep`을 만들었다. 새 코드는 `take_old`를 직접
+훑되 비-retained 슬롯을 **건너뛴다**. 처리되는 값의 열과 순서가 같고 비교가
+`sequence[ti] < val` 하나뿐이므로 `tails`/`pred`가 담는 인덱스가 순서 동형으로
+대응하고, 고르는 집합이 글자 그대로 같다 — 대신 순위 되짚기라는 간접 참조 한
+겹이 없어져 증명이 짧아진다.
+
+기계로 확인했다. `lis-output-identity-exhaustive.py`가 옛 구현과 새 구현의
+`keep` 벡터를 전수 대조한다:
+
+| 입력 공간 | 건수 |
+|---|---|
+| 전 순열 n≤7 (전부 retained) | 5,914 |
+| fresh 혼합 전수 (중복 포함) | 5,704 |
+| 중복 값 열 ({0,1}≤9, {0,1,2}≤7, {0,1,2,3}≤6) | 9,764 |
+| 단사 retained + fresh (실제 `match_keys` 출력 모양) | 8,771 |
+| **합계** | **30,153** |
+
+`keep` 벡터 불일치 **0건**, P 위반 **0건**.
+
+### 명세가 공허하지 않음을 확인한 음성 대조
+
+| 주입한 결함 | 결과 |
+|---|---|
+| `lis_keep`의 `take_order_preserved` 사후조건 제거 | `precondition not satisfied` (89 verified, 1 error) |
+| 사슬 밖 원소도 표시(`keep.set(idx - 1, true)`) | 루프 불변식 2건 `not satisfied` (89 verified, 1 error) |
+
+기존 `lemma_take_order_rejects_inversion`(음성) /
+`lemma_take_order_accepts_increasing`(양성)도 그대로 통과한다.
+
+### rlimit 여유가 **늘었다** (예상 밖)
+
+위 절이 "임계가 3 → 7로 올라갔다, 여유가 3.3배에서 1.4배가 됐다"고 경고했는데,
+이번 변경 뒤 임계가 **7 → 5로 내려갔다**(여유 1.4배 → 2.0배). 같은 기계에서
+재현 확인:
+
+| 모듈 | `--rlimit 4` | `--rlimit 5` | `--rlimit 6` | `--rlimit 7` |
+|---|---|---|---|---|
+| 이번 변경 전(HEAD) | — | 79 verified, 1 error | 79 verified, 1 error | **80 verified, 0 errors** |
+| 이번 변경 후 | 89 verified, 1 error | **90 verified, 0 errors** | — | — |
+
+모듈 전체 비용도 같은 방향이다(`--time`, 같은 기계):
+
+| | 총 rlimit | smt-run | total-time |
+|---|---|---|---|
+| 이번 변경 전(HEAD, 80 verified) | 52,235,573 | 6,732 ms | 8,338 ms |
+| 이번 변경 후(90 verified) | **39,585,099** | **6,437 ms** | **8,221 ms** |
+
+검증 함수가 10개 늘었는데 총 rlimit이 **24.2% 줄었다**.
+
+> **기준선 수치 정정(2026-08-11, 채택 직후 실측)**: 이 표에 처음 적힌 기준선은
+> 48,585,897 / 7,971ms / 9,616ms였고 감소폭을 18.5%로 적었다 — **셋 다 틀렸다**.
+> 유휴 머신에서 2회 재측정한 결정적 값이 52,235,573 / 6,732ms / 8,338ms이고
+> 감소폭은 24.2%다(판정자 재검증과도 일치). rlimit은 결정적 수치라 잡음이
+> 아니었다. 이 표는 다음 사람이 회귀 판정에 쓰는 기준선이므로 실측값으로 고쳤다.
+>
+> **이 개선은 재현 보장이 없다.** 병목 `chain_unlink_denotes_remove`는 한 줄도
+> 안 바뀌었고 여전히 단독 12.7~13.2M rlimit이며 그 인스턴스화 대부분이 vstd의
+> `Seq::no_duplicates`다. **무관한 심볼을 하나 더 얹는 순간 여유가 다시 사라질
+> 수 있다.** 그래서 모듈 총 rlimit을 여기 기준선으로 못박아 둔다 — 이번 라운드에
+> 네 후보 중 셋이 이 수치를 틀리게 보고한 이유가 정확히 "아무도 이 값을 고정
+> 기준선으로 갖고 있지 않아서"였다.
+
+병목은 그대로 `chain_unlink_denotes_remove`이고 `--profile`이 그 함수
+인스턴스화의 **87%**(298,680 / 340,414)를 vstd `seq_lib.rs:520`의
+`Seq::no_duplicates` 하나로 지목한다 — 새 코드는 병목이 아니다. 임계가 내려간
+것은 "새 심볼이 모듈 문맥을 흔든다"는 이 모듈의 알려진 현상이 이번엔 좋은
+쪽으로 작용한 것으로 보인다. **인과를 단정하지는 않는다** — 관측값만 적어
+둔다. 다음에 이 모듈을 건드리는 사람은 여전히
+`chain_unlink_denotes_remove`부터 손봐야 한다.
+
+### 기준선
+
+```
+verus --crate-type=lib crates/loom-flush-core/src/lib.rs   → 90 verified, 0 errors, 경고 0
+verus formal-verification/verus/flush_order.rs             → 28 verified, 0 errors
+cargo test --workspace                                     → 195 passed
+cargo test -p loom-runtime --test write_identity           → 1 passed
+cargo run --release -p loom-track-n -- --cases 40          → 6 arm 전부 통과
+```
+
+### 남는 것 (숨기지 않음)
+
+- **비검증 코드가 지는 짐: 넷 → 넷.** P가 빠졌지만 원시 입력에 대한 구조적
+  사실 넷(`selection_preconditions_hold`)은 그대로다. 그 넷은 여전히
+  `debug_assert!`로만 지켜진다 — 성격이 다른 계약이고 이번 범위 밖이었다.
+- **최적성은 증명되지 않았다.** 위에 적은 대로 의도적이지만, "LIS 변형이 정말
+  이동을 최소화하는가"는 RQ1의 **성능** 주장이고 그것은 여전히 측정으로만
+  뒷받침된다.
+- **`lis_keep`은 `Vec<usize>`를 받는다**(`&[usize]`가 아니라). vstd의 슬라이스
+  스펙이 얇아서 그렇게 뒀다. 호출부가 이미 `Vec`을 들고 있어 실제 비용은 없다.

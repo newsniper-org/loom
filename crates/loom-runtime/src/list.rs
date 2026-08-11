@@ -297,138 +297,48 @@ fn emit_plan<R: crate::RowSpawner>(
     }
 }
 
-/// **2026-07-28 — 손코딩 `Chain`은 `loom-flush-core`의 Verus 검증본으로
-/// 대체됐다**(RQ5 후보 #4). 이전에는 여기 `std::collections::HashMap` 두 개로
-/// 된 이중연결리스트가 손코딩돼 있었고, 그 맵 수술(`unlink`의 네 갈래,
-/// `insert_before`의 두 갈래)이 실제로 순서를 올바르게 재결선하는지는
-/// 검증되지 않은 채였다.
-///
-/// **2026-07-28 (같은 날, 2단계)**: 방출 루프 자체도 검증 크레이트로 옮겼다.
-/// 이제 `list.rs`는 `Chain`을 **직접 만지지 않고** `plan_writes`가 돌려준
-/// 계획을 `DomWrite`로 옮겨 적기만 한다 — 순서 판단이 이 파일에서 완전히
-/// 사라졌으므로, Chain 연산의 사전조건 준수까지 기계적으로 검증된다.
-/// `formal-verification/verus/README.md` 참고.
-///
-/// **2026-08-11 (3단계)**: `current`/`target` **조립**도 옮겼다. 이제 이 파일이
-/// 검증 코어에 넘기는 것은 키 매칭의 결과인 인덱스 선택(`take_old`)뿐이고,
-/// `plan_writes`의 사전조건 여섯 중 다섯이 코어의 사후조건으로 선다. 남은
-/// 미검증 계약은 아래 `lis_indices`가 P를 세운다는 것 하나다.
-///
-/// `Entity`는 Verus가 다룰 수 없는 불투명 타입이라 `to_bits()`로 `u64`를
-/// 만들어 넘긴다(단사이므로 동일성·구별성 보존).
-///
-/// Returns the set of indices (into `sequence`) forming *a* longest
-/// strictly-increasing subsequence (there can be several of the same
-/// length; this returns one valid choice, not necessarily unique).
-/// Standard O(n log n) patience-sorting algorithm with predecessor
-/// reconstruction — RQ1's noted "LIS 기반 최소 이동" variant needs exactly
-/// this, and it's an already-solved problem (CLAUDE.md 2-1), not something
-/// to design from scratch.
-fn lis_indices(sequence: &[usize]) -> std::collections::HashSet<usize> {
-    if sequence.is_empty() {
-        return std::collections::HashSet::new();
-    }
-    // `tails[k]` = index into `sequence` of the smallest possible tail
-    // value for an increasing subsequence of length k+1 found so far.
-    let mut tails: Vec<usize> = Vec::new();
-    let mut predecessor: Vec<Option<usize>> = vec![None; sequence.len()];
-
-    for i in 0..sequence.len() {
-        let val = sequence[i];
-        let pos = tails.partition_point(|&ti| sequence[ti] < val);
-        if pos > 0 {
-            predecessor[i] = Some(tails[pos - 1]);
-        }
-        if pos == tails.len() {
-            tails.push(i);
-        } else {
-            tails[pos] = i;
-        }
-    }
-
-    let mut result = std::collections::HashSet::new();
-    let mut cursor = tails.last().copied();
-    while let Some(idx) = cursor {
-        result.insert(idx);
-        cursor = predecessor[idx];
-    }
-    result
-}
-
-/// The **LIS-optimized** variant's "keep" marking — RQ1's other noted
-/// variant-axis choice ("이동 최소화: 순열 매칭만 vs LIS"). Retained entities
-/// whose *old* positions form a longest increasing subsequence (relative to
-/// their new-order positions) are provably already in the correct relative
-/// order and need **zero** `Reposition` calls; only entities outside that
-/// subsequence actually move. For a pure "swap the two ends" workload this
-/// finds the true minimum (2 moves) where the matching-only approach was
-/// shown by measurement to move nearly every retained entity
-/// (research-questions/RQ1-dynamic-control-flow-scheduling.md's Phase 1
-/// Track L section) — the two variants stay separate, directly comparable
-/// candidates rather than one replacing the other.
-///
-/// **2026-08-11 — 입력이 `current` 안의 자리에서 옛 인덱스로 바뀌었다.**
-/// 예전에는 `HashMap<Entity, usize>`로 `current` 안의 자리를 만들어 그 수열에
-/// LIS를 돌렸다. `current`는 옛 순서를 보존하는 부분열이므로 "옛 인덱스"와
-/// "`current` 안의 자리"는 **순서 동형**이고, `lis_indices`는 값의 대소만
-/// 보므로(비교가 `sequence[ti] < val` 하나뿐) 고르는 집합이 글자 그대로 같다.
-/// 방출되는 write가 바뀌지 않는 이유이고, 덤으로 reconcile마다 짓던 해시맵
-/// 하나가 없어졌다.
-fn lis_keep(take_old: &[usize], old_len: usize) -> Vec<bool> {
-    // Old-index sequence for retained slots only, in target order — fresh
-    // slots have no old position to participate with.
-    let retained_old_indices: Vec<usize> =
-        take_old.iter().copied().filter(|&t| t < old_len).collect();
-    let lis = lis_indices(&retained_old_indices);
-
-    // `keep[i]` is only meaningful when slot `i` is retained; built by
-    // walking retained slots in order and checking LIS membership by their
-    // position *within the retained-only subsequence*.
-    let mut keep = vec![false; take_old.len()];
-    let mut retained_seen = 0;
-    for (i, &t) in take_old.iter().enumerate() {
-        if t < old_len {
-            if lis.contains(&retained_seen) {
-                keep[i] = true;
-            }
-            retained_seen += 1;
-        }
-    }
-
-    // **`keep`이 지켜야 하는 조건 P**:
-    // 표시된 원소들의 `current` 내 상대 순서가 target 순서와 같아야 한다.
-    // 이것이 정확히 필요충분조건임은 전수 탐색으로 확인됐다(2026-08-02) —
-    // P를 위반하면 **100%** 순서가 깨진다.
-    //
-    // **2026-08-08**: P는 `plan_writes`의 Verus `requires`가 됐다
-    // (`loom_flush_core::kept_order_preserved`).
-    // **2026-08-11**: 그리고 이제 `plan_lis_from_selection`의 `requires`가
-    // `take_old` 항으로 적힌 같은 명제(`take_order_preserved`)다 — 두 형태가
-    // 같다는 것(`selection_order_preserved`를 거친 번역)은 검증 크레이트 안에서
-    // 기계검사된다. **남은 미검증 계약은 정확히 이것 하나**다: `lis_indices`가
-    // 실제로 P를 세우는가(= LIS 건전성). 그래서 이 디버그 검사는 남긴다.
-    // 필요한 건 건전성뿐이고 **최적성은 아니다** — LIS가 최적이 아니면 이동이
-    // 더 나올 뿐 순서는 깨지지 않는다(성능 성질).
-    debug_assert!(
-        {
-            let mut last: Option<usize> = None;
-            let mut ok = true;
-            for (i, &t) in take_old.iter().enumerate() {
-                if keep[i] && t < old_len {
-                    if last.is_some_and(|l| t <= l) {
-                        ok = false;
-                    }
-                    last = Some(t);
-                }
-            }
-            ok
-        },
-        "lis_indices가 사전조건 P를 위반했다 — 표시된 원소들의 옛 인덱스가 \
-         target 순서로 증가하지 않는다. 이 상태로 진행하면 DOM 순서가 깨진다."
-    );
-    keep
-}
-
+// **2026-07-28 — 손코딩 `Chain`은 `loom-flush-core`의 Verus 검증본으로
+// 대체됐다**(RQ5 후보 #4). 이전에는 여기 `std::collections::HashMap` 두 개로
+// 된 이중연결리스트가 손코딩돼 있었고, 그 맵 수술(`unlink`의 네 갈래,
+// `insert_before`의 두 갈래)이 실제로 순서를 올바르게 재결선하는지는
+// 검증되지 않은 채였다.
+//
+// **2026-07-28 (같은 날, 2단계)**: 방출 루프 자체도 검증 크레이트로 옮겼다.
+// 이제 `list.rs`는 `Chain`을 **직접 만지지 않고** `plan_writes`가 돌려준
+// 계획을 `DomWrite`로 옮겨 적기만 한다 — 순서 판단이 이 파일에서 완전히
+// 사라졌으므로, Chain 연산의 사전조건 준수까지 기계적으로 검증된다.
+// `formal-verification/verus/README.md` 참고.
+//
+// **2026-08-11 (3단계)**: `current`/`target` **조립**도 옮겼다. 이제 이 파일이
+// 검증 코어에 넘기는 것은 키 매칭의 결과인 인덱스 선택(`take_old`)뿐이고,
+// `plan_writes`의 사전조건 여섯 중 다섯이 코어의 사후조건으로 선다. 남은
+// 미검증 계약은 `lis_indices`가 P를 세운다는 것 하나였다.
+//
+// **2026-08-11 (4단계) — 그 하나도 없어졌다.** `lis_indices`와 `keep` 조립이
+// 통째로 `loom-flush-core`로 옮겨 갔고(`loom_flush_core::lis_keep`), P는 그
+// 함수의 **사후조건으로 증명**된다. 그래서 이 파일에는 P에 대한 계약이 아예
+// 나타나지 않는다 — 아래 두 후보가 부르는 것은
+// `plan_lis_from_selection_auto` 하나뿐이고, `keep`은 인자가 아니라 검증
+// 크레이트 **안에서** 만들어져 같은 검증 단위 안에서
+// `plan_lis_from_selection`의 `requires`에 물린다. `keep`을 여기서 받아
+// 되넘겼다면 두 계약 사이를 아무도 검사하지 않아 `debug_assert!`와 같은 틈이
+// 이름만 바꿔 남았을 것이다.
+//
+// 알고리즘은 그대로다(patience sorting + predecessor 재구성, O(n log n)) —
+// 방출되는 write 열은 한 글자도 바뀌지 않는다. `partition_point`만 vstd에
+// 스펙이 없어 의미가 같은 명시적 이분 탐색으로 대체됐다(술어가 `<`이므로
+// 둘 다 lower bound). 전수 대조 30,153건에서 `keep` 벡터 불일치 0건.
+//
+// `Entity`는 Verus가 다룰 수 없는 불투명 타입이라 `to_bits()`로 `u64`를
+// 만들어 넘긴다(단사이므로 동일성·구별성 보존).
+//
+// LIS 변형이 사 오는 것(RQ1의 "이동 최소화: 순열 매칭만 vs LIS" 축):
+// retained entity 중 옛 자리가 증가 부분수열을 이루는 것들은 이미 올바른 상대
+// 순서에 있으므로 `Reposition`이 **0회**고, 그 밖의 것만 실제로 움직인다.
+// 양 끝 교환 워크로드에서 매칭 전용 방식이 거의 모든 retained entity를
+// 옮기던 것과 달리 진짜 최소(2회)를 찾는다
+// (research-questions/RQ1-dynamic-control-flow-scheduling.md의 Phase 1 트랙 L
+// 절). 두 변형은 서로를 대체하지 않고 직접 비교 가능한 별개 후보로 남는다.
 // **사전조건 Q는 여기서 사라졌다** (2026-08-11). 예전에 이 자리에는
 // "`current`에 target 밖 원소(extras)가 없다"를 보는 `debug_assert!`가 있었고,
 // 그것이 릴리스 빌드에서 사라지는 바람에 `plan_writes`의 수렴 사후조건이
@@ -582,9 +492,11 @@ fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
             "{SELECTION_PRECONDITION_MSG}"
         );
 
-        let keep = lis_keep(&take_old, old_ids.len());
+        // `keep`은 **검증 크레이트 안에서** 만들어진다 — 여기서 받아 되넘기지
+        // 않는 것이 핵심이다(사슬이 닫히는 자리는 이 파일이 아니라
+        // `plan_lis_from_selection_auto` 안이다).
         let plan =
-            loom_flush_core::plan_lis_from_selection(&old_ids, &take_old, &fresh_ids, &keep);
+            loom_flush_core::plan_lis_from_selection_auto(&old_ids, &take_old, &fresh_ids);
 
         for bits in &plan.removed {
             let stale = Entity::from_bits(*bits);
@@ -786,9 +698,11 @@ fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
             "{SELECTION_PRECONDITION_MSG}"
         );
 
-        let keep = lis_keep(&take_old, old_ids.len());
+        // `keep`은 **검증 크레이트 안에서** 만들어진다 — 여기서 받아 되넘기지
+        // 않는 것이 핵심이다(사슬이 닫히는 자리는 이 파일이 아니라
+        // `plan_lis_from_selection_auto` 안이다).
         let plan =
-            loom_flush_core::plan_lis_from_selection(&old_ids, &take_old, &fresh_ids, &keep);
+            loom_flush_core::plan_lis_from_selection_auto(&old_ids, &take_old, &fresh_ids);
 
         for bits in &plan.removed {
             let stale = Entity::from_bits(*bits);
@@ -825,16 +739,32 @@ fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
 
 #[cfg(test)]
 mod lis_tests {
-    use super::lis_indices;
+    /// **2026-08-11 (4단계)** — 대상이 `super::lis_indices`(삭제됨)에서
+    /// `loom_flush_core::lis_keep`으로 바뀌었다. 옛 함수는 retained 열에 대한
+    /// LIS **인덱스 집합**을 냈고 새 함수는 `take_old` 전체에 대한 `keep`
+    /// **마스크**를 낸다 — 표시되는 슬롯은 같으므로 아래 기대값은 그대로이고,
+    /// 마스크를 인덱스 목록으로 되돌려 비교한다.
+    ///
+    /// 여기 있는 테스트는 전부 **retained 전용** 입력(`old_len == len`)이라
+    /// 옛 판본의 `sequence` 인자와 글자 그대로 같은 것을 넣는다.
+    use loom_flush_core::lis_keep;
+
+    /// 표시된 슬롯의 인덱스를 오름차순으로.
+    fn marked(keep: &[bool]) -> Vec<usize> {
+        keep.iter()
+            .enumerate()
+            .filter_map(|(i, &k)| if k { Some(i) } else { None })
+            .collect()
+    }
 
     #[test]
     fn empty_sequence() {
-        assert!(lis_indices(&[]).is_empty());
+        assert!(marked(&lis_keep(&Vec::new(), 0)).is_empty());
     }
 
     #[test]
     fn already_increasing_keeps_everything() {
-        let lis = lis_indices(&[0, 1, 2, 3, 4]);
+        let lis = marked(&lis_keep(&vec![0, 1, 2, 3, 4], 5));
         assert_eq!(lis.len(), 5);
     }
 
@@ -843,22 +773,25 @@ mod lis_tests {
         // [A,B,C,D,E] -> [E,B,C,D,A]: old-index sequence in new order is
         // [4,1,2,3,0]. The LIS is {1,2,3} (B,C,D) — exactly the 3 middle
         // elements that shouldn't need to move for a pure end-swap.
-        let lis = lis_indices(&[4, 1, 2, 3, 0]);
-        let mut positions: Vec<usize> = lis.into_iter().collect();
-        positions.sort();
-        assert_eq!(positions, vec![1, 2, 3]);
+        assert_eq!(marked(&lis_keep(&vec![4, 1, 2, 3, 0], 5)), vec![1, 2, 3]);
     }
 
     #[test]
     fn full_reversal_lis_is_a_single_element() {
         // A full reversal has no increasing run longer than 1.
-        let lis = lis_indices(&[4, 3, 2, 1, 0]);
+        let lis = marked(&lis_keep(&vec![4, 3, 2, 1, 0], 5));
         assert_eq!(lis.len(), 1);
     }
 
-    /// **사전조건 P의 건전성 무작위 검사** — `lis_indices`가 돌려준 인덱스
-    /// 집합이 정말 *증가* 부분수열인가. 이것이 `plan_writes`의 `keep`이
-    /// 지켜야 하는 조건(`loom_flush_core::kept_order_preserved`)의 전부다.
+    /// **사전조건 P의 건전성 무작위 검사** — `lis_keep`이 표시한 슬롯들이 정말
+    /// *증가* 부분수열인가.
+    ///
+    /// **이제 이것은 회귀 검사이지 유일한 근거가 아니다.** P는
+    /// `lis_keep`의 Verus 사후조건(`take_order_preserved`)으로 **증명**돼 있고,
+    /// 그 사후조건이 `plan_lis_from_selection`의 사전조건에 물리는 것까지
+    /// `plan_lis_from_selection_auto` 안에서 기계검사된다. 이 테스트가 남아
+    /// 있는 이유는 ghost가 지워진 **빌드 산출물**이 증명된 것과 같은 코드임을
+    /// 값으로 한 번 더 확인하기 위해서다.
     ///
     /// 최적성(정말 *가장 긴가*)은 **검사하지 않는다** — 최적이 아니면 이동이
     /// 더 나올 뿐 순서는 깨지지 않으므로 성능 성질이지 정합성 성질이 아니다.
@@ -882,9 +815,7 @@ mod lis_tests {
                     let j = (next() as usize) % (i + 1);
                     seq.swap(i, j);
                 }
-                let lis = lis_indices(&seq);
-                let mut idx: Vec<usize> = lis.into_iter().collect();
-                idx.sort_unstable();
+                let idx = marked(&lis_keep(&seq, n));
                 assert!(!idx.is_empty(), "비어 있지 않은 입력에 빈 LIS: {seq:?}");
                 for w in idx.windows(2) {
                     assert!(
@@ -900,11 +831,11 @@ mod lis_tests {
 
     #[test]
     fn head_insert_pattern_keeps_the_whole_tail() {
-        // Prepending conceptually looks like old-indices [0,1,2,3] (no
-        // "new" entry participates in the old-index sequence at all, since
-        // fresh entities are filtered out before this function ever sees
-        // them) — everything already-existing stays in the LIS.
-        let lis = lis_indices(&[0, 1, 2, 3]);
+        // Prepending conceptually looks like old-indices [0,1,2,3] (fresh
+        // slots carry `take_old >= old_len` and are skipped inside
+        // `lis_keep`, so they never participate) — everything
+        // already-existing stays in the LIS.
+        let lis = marked(&lis_keep(&vec![0, 1, 2, 3], 4));
         assert_eq!(lis.len(), 4);
     }
 }

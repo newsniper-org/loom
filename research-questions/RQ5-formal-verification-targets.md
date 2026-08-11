@@ -76,7 +76,16 @@ StringList/Bool/Str(DOM-복구형 재개)로 확장, IR의 "시그널당 액션 
 > 모양의 수렴 사후조건을 갖는다. 단, 사전조건 **Q(`current ⊆ target`)를
 > 추가**해야 했다 — 목표 명제가 P만으로는 거짓이었다(전수 탐색으로 반례 확인).
 > 남은 미증명은 `lis_indices`가 P를 세운다는 것(**LIS 건전성**) 하나다.
-> 상세는 `formal-verification/verus/README.md`의 "LIS 경로의 수렴" 절. 상세는 `formal-verification/README.md` +
+> 상세는 `formal-verification/verus/README.md`의 "LIS 경로의 수렴" 절.
+>
+> **2026-08-11 — LIS 건전성도 증명됨**: `crates/loom-flush-core`
+> **90 verified, 0 errors**. `lis_indices`/`keep` 조립이 `lis_keep`으로 옮겨
+> 오면서 P가 **사후조건**이 됐고, `plan_lis_from_selection_auto`가 그 사후조건을
+> `plan_lis_from_selection`의 사전조건에 물린다 — 배치 알고리즘의 미검증 계약이
+> **0개**가 됐다(원시 입력에 대한 구조적 사실 넷은 별개 계약으로 남는다).
+> 건전성만 증명했고 최적성은 의도적으로 증명하지 않았다. 상세는
+> `formal-verification/verus/README.md`의 "LIS 건전성 — 증명 완료, 사슬이
+> 닫혔다" 절. 상세는 `formal-verification/README.md` +
 `roadmap/PHASES.md` Phase 5 절.
 
 ---

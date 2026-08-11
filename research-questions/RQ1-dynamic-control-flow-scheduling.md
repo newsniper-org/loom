@@ -804,6 +804,26 @@ paired bootstrap으로 재확인해 우연이 아님을 확정.
 > 계류)"**로 좁혀진 것이다 — 계류 항목이 배치 알고리즘 전체에서 `lis_indices`
 > 하나로 줄었다. 완전한 채택으로 올리려면 그 하나가 남았다.
 
+**2026-08-11 정정 — 그 하나가 닫혔다.** 위 인용의 2번(`lis_indices`가 P를
+세운다는 LIS 건전성)은 **증명됐다**. `lis_indices`와 `keep` 조립이
+`loom_flush_core::lis_keep`으로 옮겨 갔고 P(`take_order_preserved`)가 그 함수의
+**사후조건**이다. 그리고 그 사후조건이 `plan_lis_from_selection`의 사전조건으로
+이어지는 것까지 `plan_lis_from_selection_auto` 안에서 기계검사된다(사후조건
+한 줄을 지우면 `precondition not satisfied`가 난다 — 값만 넘긴 것이 아니다).
+`list.rs`의 P `debug_assert!`는 삭제됐다.
+
+방출되는 write 열은 바뀌지 않았다(`write_identity` 통과 + 옛/새 구현 `keep`
+벡터 전수 대조 30,153건 불일치 0건)이므로 **§2.5 재측정 사유가 아니다** —
+트랙 L 수집분은 그대로 유효하다.
+
+기준선: `crates/loom-flush-core` **90 verified, 0 errors, 경고 0**.
+상세: `formal-verification/verus/README.md`의 "LIS 건전성 — 증명 완료, 사슬이
+닫혔다" 절.
+
+**주의 — 이것이 곧 "완전한 채택"은 아니다.** 위 문장이 말한 계류 항목은
+해소됐지만, 최종 채택 판정은 §5 게이트와 측정 데이터에 걸린 별개 판단이다.
+여기서는 **FV 계류 항목이 소진됐다는 사실만** 기록한다.
+
 **E — D와 같은 방향이나 근거가 더 얕음**:
 - **기각 (i) 미발동**: 판정 셀 그대로("W1·W3×R2, n=1,000") 확인 — 두 브라우저
   모두 두 셀 다 **우세**(위 표). "어느 셀에서도 우세 없음"이 기각 조건인데
