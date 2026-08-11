@@ -2768,4 +2768,542 @@ pub fn plan_writes(
     ops
 }
 
+
+// ============================================================================
+// 경계 — 매칭 결과(인덱스 선택)에서 `plan_writes`의 입력을 **함께** 구성한다
+// ============================================================================
+
+/// `current`가 **옛 DOM 순서를 보존한다**는 사실. 사전조건 P를
+/// `take_old`(인덱스 선택) 항으로 번역할 때 쓰는 재료다.
+///
+/// **불투명인 이유**: 본문이 `pos(..)` 항을 만든다. `pos`의 정의 주석이
+/// 말하듯 그 항이 모듈 문맥에 그냥 뜨면 `kept_order_preserved`를 불투명으로
+/// 가둔 격리가 무너진다 — 여기서도 같은 처방을 쓴다.
+#[verifier::opaque]
+pub open spec fn selection_order_preserved(
+    current: Seq<u64>,
+    old_ids: Seq<u64>,
+    take_old: Seq<usize>,
+    target_ids: Seq<u64>,
+) -> bool {
+    forall|a: int, b: int| #![trigger take_old[a], take_old[b]]
+        0 <= a < target_ids.len() && 0 <= b < target_ids.len()
+            && take_old[a] < old_ids.len() && take_old[b] < old_ids.len()
+            && take_old[a] < take_old[b]
+            ==> pos(current, target_ids[a]) < pos(current, target_ids[b])
+}
+
+/// `plan_writes`/`plan_writes_converging`에 넘길 입력 3종 + despawn 대상.
+pub struct PlanInputs {
+    pub current: Vec<u64>,
+    pub removed: Vec<u64>,
+    pub target_ids: Vec<u64>,
+    pub target_fresh: Vec<bool>,
+}
+
+/// **경계 함수** — "새 슬롯 i가 옛 슬롯 몇 번을 가져가는가"(`take_old`)만 받아
+/// `current`와 `target_ids`/`target_fresh`를 **함께** 만든다.
+///
+/// 요점은 이것이다: 두 벡터가 같은 선택에서 같이 나오므로 **사전조건 Q**
+/// (`current`에 target 밖 원소가 없다)가 *구조적으로* 참이다 — 매칭이 옳든
+/// 그르든 상관없다. 키 비교(String)는 호출부(비검증)에 남고, 이 함수는
+/// 인덱스만 본다.
+pub fn plan_inputs(
+    old_ids: &Vec<u64>,
+    take_old: &Vec<usize>,
+    fresh_ids: &Vec<u64>,
+) -> (r: PlanInputs)
+    requires
+        old_ids@.no_duplicates(),
+        fresh_ids@.len() == take_old@.len(),
+        forall|i: int| #![trigger take_old@[i]]
+            0 <= i < take_old@.len() && take_old@[i] >= old_ids@.len()
+                ==> !old_ids@.contains(fresh_ids@[i]),
+        forall|a: int, b: int| #![trigger take_old@[a], take_old@[b]]
+            0 <= a < b < take_old@.len()
+                && take_old@[a] < old_ids@.len() && take_old@[b] < old_ids@.len()
+                ==> take_old@[a] != take_old@[b],
+        forall|a: int, b: int| #![trigger take_old@[a], take_old@[b]]
+            0 <= a < b < take_old@.len()
+                && take_old@[a] >= old_ids@.len() && take_old@[b] >= old_ids@.len()
+                ==> fresh_ids@[a] != fresh_ids@[b],
+    ensures
+        r.target_ids@.len() == take_old@.len(),
+        r.target_fresh@.len() == r.target_ids@.len(),
+        forall|i: int| #![trigger r.target_fresh@[i]]
+            0 <= i < take_old@.len() ==> r.target_fresh@[i] == (take_old@[i] >= old_ids@.len()),
+        forall|i: int| #![trigger r.target_ids@[i]]
+            0 <= i < take_old@.len() ==>
+                r.target_ids@[i] == if take_old@[i] < old_ids@.len() {
+                    old_ids@[take_old@[i] as int]
+                } else {
+                    fresh_ids@[i]
+                },
+        // **불투명 형태로 낸다**: raw `no_duplicates`는 2변수 양화자라 이
+        // 사후조건이 모듈 문맥에 트리거를 더한다(이 모듈이 실제로 그것 때문에
+        // 128초를 태운 적이 있다). 소비자(두 래퍼)가 `lemma_nodup_unwrap`으로
+        // 자기 안에서만 편다.
+        seq_nodup(r.current@),
+        seq_nodup(r.target_ids@),
+        forall|x: u64| #![trigger r.current@.contains(x)]
+            r.current@.contains(x) ==> r.target_ids@.contains(x),
+        forall|i: int| #![trigger r.target_fresh@[i]]
+            0 <= i < r.target_ids@.len() ==>
+                (r.target_fresh@[i] ==> !r.current@.contains(r.target_ids@[i]))
+                && (!r.target_fresh@[i] ==> r.current@.contains(r.target_ids@[i])),
+        forall|x: u64| #![trigger r.removed@.contains(x)]
+            r.removed@.contains(x) ==> !r.current@.contains(x),
+        selection_order_preserved(r.current@, old_ids@, take_old@, r.target_ids@),
+{
+    let m = old_ids.len();
+    let n = take_old.len();
+    proof { lemma_nodup_wrap(old_ids@); }
+
+    // ---- 1. taker[j] = 옛 슬롯 j를 가져간 새 인덱스(없으면 n) ----
+    let mut taker: Vec<usize> = Vec::with_capacity(m);
+    let mut j: usize = 0;
+    while j < m
+        invariant
+            j <= m,
+            taker@.len() == j,
+            forall|k: int| #![trigger taker@[k]] 0 <= k < j ==> taker@[k] == n,
+        decreases m - j,
+    {
+        taker.push(n);
+        j = j + 1;
+    }
+
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            n == take_old@.len(),
+            m == old_ids@.len(),
+            taker@.len() == m,
+            forall|k: int| #![trigger taker@[k]]
+                0 <= k < m ==> taker@[k] <= n,
+            forall|k: int| #![trigger taker@[k]]
+                0 <= k < m && taker@[k] < n ==> take_old@[taker@[k] as int] == k,
+            forall|t: int| #![trigger take_old@[t]]
+                0 <= t < i && take_old@[t] < m ==> taker@[take_old@[t] as int] < n,
+        decreases n - i,
+    {
+        let t = take_old[i];
+        if t < m {
+            taker.set(t, i);
+        }
+        i = i + 1;
+    }
+
+    // ---- 2. current / removed — 옛 DOM 순서 그대로 가른다 ----
+    let mut current: Vec<u64> = Vec::new();
+    let mut removed: Vec<u64> = Vec::new();
+    // `rank[k]` = `current[k]`가 온 옛 인덱스(`rrank`는 removed 쪽),
+    // `whr[q]` = 옛 슬롯 q가 `current`에서 놓인 자리(선택된 q에서만 유효).
+    let ghost mut rank: Seq<int> = Seq::empty();
+    let ghost mut rrank: Seq<int> = Seq::empty();
+    let ghost mut whr: Seq<int> = Seq::empty();
+    proof { lemma_nodup_wrap(current@); }
+    let mut j: usize = 0;
+    while j < m
+        invariant
+            j <= m,
+            m == old_ids@.len(),
+            taker@.len() == m,
+            whr.len() == j,
+            seq_nodup(old_ids@),
+            rank.len() == current@.len(),
+            rrank.len() == removed@.len(),
+            forall|k: int| #![trigger rank[k]]
+                0 <= k < rank.len() ==>
+                    0 <= rank[k] < j && old_ids@[rank[k]] == current@[k]
+                    && taker@[rank[k] as int] < n,
+            forall|k: int| #![trigger rrank[k]]
+                0 <= k < rrank.len() ==>
+                    0 <= rrank[k] < j && old_ids@[rrank[k]] == removed@[k]
+                    && taker@[rrank[k] as int] >= n,
+            seq_nodup(current@),
+            forall|q: int| #![trigger taker@[q]]
+                0 <= q < j && taker@[q] < n ==>
+                    current@.contains(old_ids@[q])
+                    && 0 <= whr[q] < current@.len()
+                    && current@[whr[q]] == old_ids@[q],
+            forall|q1: int, q2: int| #![trigger whr[q1], whr[q2]]
+                0 <= q1 < q2 < j && taker@[q1] < n && taker@[q2] < n ==> whr[q1] < whr[q2],
+            forall|x: u64| #![trigger current@.contains(x)]
+                current@.contains(x) ==> old_ids@.contains(x),
+        decreases m - j,
+    {
+        let ghost old_current = current@;
+        let ghost e = old_ids@[j as int];
+        if taker[j] < n {
+            proof {
+                assert(!current@.contains(e)) by {
+                    lemma_nodup_unwrap(old_ids@);
+                    if current@.contains(e) {
+                        let k = choose|k: int| 0 <= k < current@.len() && current@[k] == e;
+                        assert(0 <= rank[k] < j);
+                        assert(old_ids@[rank[k]] == old_ids@[j as int]);
+                        assert(false);
+                    }
+                }
+                assert(seq_nodup(current@.push(e))) by {
+                    lemma_nodup_unwrap(current@);
+                    lemma_insert_no_dup(current@, current@.len() as int, e);
+                    assert(current@.insert(current@.len() as int, e) =~= current@.push(e));
+                    lemma_nodup_wrap(current@.push(e));
+                }
+                whr = whr.push(current@.len() as int);
+            }
+            current.push(old_ids[j]);
+            proof {
+                rank = rank.push(j as int);
+                assert forall|x: u64| #[trigger] current@.contains(x) implies
+                    old_ids@.contains(x) by {
+                    lemma_push_only(old_current, e, x);
+                    if x == e {
+                        assert(old_ids@.contains(old_ids@[j as int]));
+                    }
+                }
+                assert forall|q: int| 0 <= q < j + 1 && #[trigger] taker@[q] < n implies
+                    current@.contains(old_ids@[q])
+                    && 0 <= whr[q] < current@.len()
+                    && current@[whr[q]] == old_ids@[q] by {
+                    if q < j as int {
+                        lemma_push_keeps(old_current, e, old_ids@[q]);
+                    } else {
+                        assert(current@[old_current.len() as int] == e);
+                        assert(current@.contains(e));
+                    }
+                }
+            }
+        } else {
+            removed.push(old_ids[j]);
+            proof {
+                rrank = rrank.push(j as int);
+                whr = whr.push(0);
+            }
+        }
+        j = j + 1;
+    }
+
+    // ---- 3. target_ids / target_fresh ----
+    let mut target_ids: Vec<u64> = Vec::with_capacity(n);
+    let mut target_fresh: Vec<bool> = Vec::with_capacity(n);
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            n == take_old@.len(),
+            m == old_ids@.len(),
+            fresh_ids@.len() == n,
+            target_ids@.len() == i,
+            target_fresh@.len() == i,
+            forall|k: int| #![trigger target_fresh@[k]]
+                0 <= k < i ==> target_fresh@[k] == (take_old@[k] >= m),
+            forall|k: int| #![trigger target_ids@[k]]
+                0 <= k < i ==>
+                    target_ids@[k] == if take_old@[k] < m {
+                        old_ids@[take_old@[k] as int]
+                    } else {
+                        fresh_ids@[k]
+                    },
+        decreases n - i,
+    {
+        let t = take_old[i];
+        if t < m {
+            target_ids.push(old_ids[t]);
+            target_fresh.push(false);
+        } else {
+            target_ids.push(fresh_ids[i]);
+            target_fresh.push(true);
+        }
+        i = i + 1;
+    }
+
+    let r = PlanInputs { current, removed, target_ids, target_fresh };
+
+    proof {
+        lemma_nodup_unwrap(r.current@);
+        lemma_nodup_unwrap(old_ids@);
+        lemma_nodup_wrap(r.current@);
+
+        // (Q) `current`의 원소는 전부 `target_ids`에 있다 — **구조적으로**.
+        assert forall|x: u64| #[trigger] r.current@.contains(x) implies
+            r.target_ids@.contains(x) by {
+            let k = choose|k: int| 0 <= k < r.current@.len() && r.current@[k] == x;
+            let q = rank[k];
+            let i0 = taker@[q] as int;
+            assert(0 <= i0 < n);
+            assert(take_old@[i0] == q);
+            assert(r.target_ids@[i0] == old_ids@[q]);
+            assert(r.target_ids@.contains(r.target_ids@[i0]));
+        }
+
+        // (fresh ↔ contains)
+        assert forall|i2: int| 0 <= i2 < r.target_ids@.len() implies
+            (#[trigger] r.target_fresh@[i2] ==> !r.current@.contains(r.target_ids@[i2]))
+            && (!r.target_fresh@[i2] ==> r.current@.contains(r.target_ids@[i2])) by {
+            if take_old@[i2] < m {
+                assert(taker@[take_old@[i2] as int] < n);
+                assert(r.current@.contains(old_ids@[take_old@[i2] as int]));
+            } else {
+                assert(!old_ids@.contains(fresh_ids@[i2]));
+            }
+        }
+
+        // (target_ids no_duplicates) — 네 갈래 경우 분석.
+        assert forall|a: int, b: int|
+            0 <= a < r.target_ids@.len() && 0 <= b < r.target_ids@.len() && a != b implies
+            r.target_ids@[a] != r.target_ids@[b] by {
+            let ta = take_old@[a];
+            let tb = take_old@[b];
+            if ta < m && tb < m {
+                assert(ta != tb);
+                assert(old_ids@[ta as int] != old_ids@[tb as int]);
+            } else if ta >= m && tb >= m {
+                assert(fresh_ids@[a] != fresh_ids@[b]);
+            } else if ta < m {
+                assert(!old_ids@.contains(fresh_ids@[b]));
+                assert(old_ids@.contains(old_ids@[ta as int]));
+            } else {
+                assert(!old_ids@.contains(fresh_ids@[a]));
+                assert(old_ids@.contains(old_ids@[tb as int]));
+            }
+        }
+
+        lemma_nodup_wrap(r.target_ids@);
+
+        // (removed ∩ current = ∅) — 같은 옛 슬롯을 두 번 쓸 수 없다.
+        assert forall|x: u64| #[trigger] r.removed@.contains(x) implies
+            !r.current@.contains(x) by {
+            let k = choose|k: int| 0 <= k < r.removed@.len() && r.removed@[k] == x;
+            if r.current@.contains(x) {
+                let k2 = choose|k2: int| 0 <= k2 < r.current@.len() && r.current@[k2] == x;
+                assert(old_ids@[rrank[k]] == old_ids@[rank[k2]]);
+                assert(taker@[rank[k2] as int] < n);
+                assert(rrank[k] != rank[k2]);
+                assert(false);
+            }
+        }
+
+        // (옛 순서 보존) — `current` 안의 자리 순서가 옛 인덱스 순서와 같다.
+        assert(selection_order_preserved(r.current@, old_ids@, take_old@, r.target_ids@)) by {
+            reveal(selection_order_preserved);
+            lemma_nodup_unwrap(r.current@);
+            assert forall|a: int, b: int| #![trigger take_old@[a], take_old@[b]]
+                0 <= a < r.target_ids@.len() && 0 <= b < r.target_ids@.len()
+                && take_old@[a] < old_ids@.len() && take_old@[b] < old_ids@.len()
+                && take_old@[a] < take_old@[b]
+                implies pos(r.current@, r.target_ids@[a]) < pos(r.current@, r.target_ids@[b]) by {
+                let qa = take_old@[a] as int;
+                let qb = take_old@[b] as int;
+                assert(taker@[qa] < n);
+                assert(taker@[qb] < n);
+                r.current@.index_of_first_ensures(old_ids@[qa]);
+                r.current@.index_of_first_ensures(old_ids@[qb]);
+                assert(pos(r.current@, old_ids@[qa]) == whr[qa]);
+                assert(pos(r.current@, old_ids@[qb]) == whr[qb]);
+                assert(whr[qa] < whr[qb]);
+            }
+        }
+    }
+
+    r
+}
+
+pub struct SelectedPlan {
+    pub current: Vec<u64>,
+    pub removed: Vec<u64>,
+    pub target_ids: Vec<u64>,
+    pub target_fresh: Vec<bool>,
+    pub ops: Vec<PlanOp>,
+}
+
+pub fn plan_from_selection(
+    old_ids: &Vec<u64>,
+    take_old: &Vec<usize>,
+    fresh_ids: &Vec<u64>,
+) -> (r: SelectedPlan)
+    requires
+        old_ids@.no_duplicates(),
+        fresh_ids@.len() == take_old@.len(),
+        forall|i: int| #![trigger take_old@[i]]
+            0 <= i < take_old@.len() && take_old@[i] >= old_ids@.len()
+                ==> !old_ids@.contains(fresh_ids@[i]),
+        forall|a: int, b: int| #![trigger take_old@[a], take_old@[b]]
+            0 <= a < b < take_old@.len()
+                && take_old@[a] < old_ids@.len() && take_old@[b] < old_ids@.len()
+                ==> take_old@[a] != take_old@[b],
+        forall|a: int, b: int| #![trigger take_old@[a], take_old@[b]]
+            0 <= a < b < take_old@.len()
+                && take_old@[a] >= old_ids@.len() && take_old@[b] >= old_ids@.len()
+                ==> fresh_ids@[a] != fresh_ids@[b],
+    ensures
+        r.target_ids@.len() == take_old@.len(),
+        r.target_fresh@.len() == r.target_ids@.len(),
+        forall|i: int| #![trigger r.target_fresh@[i]]
+            0 <= i < take_old@.len() ==> r.target_fresh@[i] == (take_old@[i] >= old_ids@.len()),
+        forall|i: int| #![trigger r.target_ids@[i]]
+            0 <= i < take_old@.len() ==>
+                r.target_ids@[i] == if take_old@[i] < old_ids@.len() {
+                    old_ids@[take_old@[i] as int]
+                } else {
+                    fresh_ids@[i]
+                },
+        forall|k: int| #![trigger r.ops@[k]]
+            0 <= k < r.ops@.len() ==>
+                r.ops@[k].idx < r.target_ids@.len()
+                && r.ops@[k].spawn == r.target_fresh@[r.ops@[k].idx as int],
+        ({
+            let d = apply_ops(r.current@, r.ops@, r.ops@.len() as int);
+            &&& d.len() >= r.target_ids@.len()
+            &&& d.subrange(d.len() - r.target_ids@.len(), d.len() as int) =~= r.target_ids@
+        }),
+        forall|x: u64| #![trigger r.removed@.contains(x)]
+            r.removed@.contains(x) ==> !r.current@.contains(x),
+{
+    let pi = plan_inputs(old_ids, take_old, fresh_ids);
+    proof { lemma_nodup_unwrap(pi.current@); lemma_nodup_unwrap(pi.target_ids@); }
+    let ops = plan_writes_converging(&pi.current, &pi.target_ids, &pi.target_fresh);
+    SelectedPlan {
+        current: pi.current,
+        removed: pi.removed,
+        target_ids: pi.target_ids,
+        target_fresh: pi.target_fresh,
+        ops,
+    }
+}
+
+/// **사전조건 P를 `take_old` 항으로 옮긴 것**. `keep`으로 표시된 retained
+/// 슬롯들의 **옛 인덱스가 증가**해야 한다.
+///
+/// `current` 안의 자리 순서는 옛 인덱스 순서와 같으므로
+/// (`selection_order_preserved`) 이것은 `kept_order_preserved`와 같은 말이고,
+/// 그 번역은 `plan_lis_from_selection` 안에서 기계검사된다.
+///
+/// **불투명인 이유**: `kept_order_preserved`와 같다 — 2변수 양화자다.
+#[verifier::opaque]
+pub open spec fn take_order_preserved(old_len: nat, take_old: Seq<usize>, keep: Seq<bool>) -> bool {
+    forall|a: int, b: int| #![trigger keep[a], keep[b]]
+        0 <= a < b < take_old.len()
+            && keep[a] && take_old[a] < old_len
+            && keep[b] && take_old[b] < old_len
+            ==> take_old[a] < take_old[b]
+}
+
+/// **음성 대조 — 번역된 P가 공허하지 않음**. 표시된 두 슬롯이 옛 인덱스를
+/// 거꾸로(1 → 0) 가져가면 거짓이어야 한다. `kept_order_preserved`의 음성
+/// 대조(`lemma_kept_order_rejects_inversion`)와 같은 모양의 반례다.
+pub proof fn lemma_take_order_rejects_inversion()
+    ensures
+        !take_order_preserved(2, seq![1usize, 0usize], seq![true, true]),
+{
+    reveal(take_order_preserved);
+    let take_old = seq![1usize, 0usize];
+    let keep = seq![true, true];
+    assert(take_old[0] == 1usize);
+    assert(take_old[1] == 0usize);
+    assert(keep[0] == true);
+    assert(keep[1] == true);
+}
+
+/// **양성 대조 — 항상 거짓인 술어가 아님**. 같은 자리에서 `take_old`만
+/// 증가시키면 참이 된다(= 이 사전조건을 만족시키는 입력이 실제로 있다).
+pub proof fn lemma_take_order_accepts_increasing()
+    ensures
+        take_order_preserved(2, seq![0usize, 1usize], seq![true, true]),
+{
+    reveal(take_order_preserved);
+    let take_old = seq![0usize, 1usize];
+    let keep = seq![true, true];
+    assert forall|a: int, b: int| #![trigger keep[a], keep[b]]
+        0 <= a < b < take_old.len()
+            && keep[a] && take_old[a] < 2nat
+            && keep[b] && take_old[b] < 2nat
+        implies take_old[a] < take_old[b] by {
+        assert(a == 0 && b == 1);
+    }
+}
+
+/// LIS 경로(후보 D-LIS·E-LIS) — 같은 선택에 LIS의 "유지" 표시(`keep`)를 얹어
+/// `plan_writes`까지 간다.
+///
+/// **P만 남는다**: 다른 사전조건 다섯(Q 포함)은 `plan_inputs`가 세우고, P는
+/// 여기 `take_order_preserved`로 남는다. P 자체(= `lis_indices`가 그것을
+/// 세우는가)는 여전히 검증 밖이고, 그것만이 남은 미검증 계약이다.
+pub fn plan_lis_from_selection(
+    old_ids: &Vec<u64>,
+    take_old: &Vec<usize>,
+    fresh_ids: &Vec<u64>,
+    keep: &Vec<bool>,
+) -> (r: SelectedPlan)
+    requires
+        old_ids@.no_duplicates(),
+        fresh_ids@.len() == take_old@.len(),
+        keep@.len() == take_old@.len(),
+        forall|i: int| #![trigger take_old@[i]]
+            0 <= i < take_old@.len() && take_old@[i] >= old_ids@.len()
+                ==> !old_ids@.contains(fresh_ids@[i]),
+        forall|a: int, b: int| #![trigger take_old@[a], take_old@[b]]
+            0 <= a < b < take_old@.len()
+                && take_old@[a] < old_ids@.len() && take_old@[b] < old_ids@.len()
+                ==> take_old@[a] != take_old@[b],
+        forall|a: int, b: int| #![trigger take_old@[a], take_old@[b]]
+            0 <= a < b < take_old@.len()
+                && take_old@[a] >= old_ids@.len() && take_old@[b] >= old_ids@.len()
+                ==> fresh_ids@[a] != fresh_ids@[b],
+        take_order_preserved(old_ids@.len(), take_old@, keep@),
+    ensures
+        r.target_ids@.len() == take_old@.len(),
+        r.target_fresh@.len() == r.target_ids@.len(),
+        forall|i: int| #![trigger r.target_fresh@[i]]
+            0 <= i < take_old@.len() ==> r.target_fresh@[i] == (take_old@[i] >= old_ids@.len()),
+        forall|i: int| #![trigger r.target_ids@[i]]
+            0 <= i < take_old@.len() ==>
+                r.target_ids@[i] == if take_old@[i] < old_ids@.len() {
+                    old_ids@[take_old@[i] as int]
+                } else {
+                    fresh_ids@[i]
+                },
+        forall|k: int| #![trigger r.ops@[k]]
+            0 <= k < r.ops@.len() ==>
+                r.ops@[k].idx < r.target_ids@.len()
+                && r.ops@[k].spawn == r.target_fresh@[r.ops@[k].idx as int],
+        ({
+            let d = apply_ops(r.current@, r.ops@, r.ops@.len() as int);
+            &&& d.len() >= r.target_ids@.len()
+            &&& d.subrange(d.len() - r.target_ids@.len(), d.len() as int) =~= r.target_ids@
+        }),
+        forall|x: u64| #![trigger r.removed@.contains(x)]
+            r.removed@.contains(x) ==> !r.current@.contains(x),
+{
+    let pi = plan_inputs(old_ids, take_old, fresh_ids);
+    proof {
+        // P 번역 — 여기서만 세 불투명 술어를 편다.
+        reveal(take_order_preserved);
+        reveal(selection_order_preserved);
+        reveal(kept_order_preserved);
+        lemma_nodup_unwrap(pi.current@);
+        lemma_nodup_unwrap(pi.target_ids@);
+        assert forall|a: int, b: int| #![trigger keep@[a], keep@[b]]
+            0 <= a < b < pi.target_ids@.len()
+                && keep@[a] && !pi.target_fresh@[a]
+                && keep@[b] && !pi.target_fresh@[b]
+            implies pos(pi.current@, pi.target_ids@[a]) < pos(pi.current@, pi.target_ids@[b]) by {
+            assert(take_old@[a] < old_ids@.len());
+            assert(take_old@[b] < old_ids@.len());
+            assert(take_old@[a] < take_old@[b]);
+        }
+    }
+    let ops = plan_writes(&pi.current, &pi.target_ids, &pi.target_fresh, keep);
+    SelectedPlan {
+        current: pi.current,
+        removed: pi.removed,
+        target_ids: pi.target_ids,
+        target_fresh: pi.target_fresh,
+        ops,
+    }
+}
+
 } // verus!

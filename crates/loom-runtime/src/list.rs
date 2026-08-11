@@ -148,36 +148,90 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
 // Shared matching/reposition logic for candidates D and E
 // ============================================================================
 
-/// One target position: either an entity retained from the previous order,
-/// or one that needs to be freshly spawned and mounted there.
-enum Slot {
-    Retained(Entity),
-    Fresh { entity: Entity, text: String },
-}
-
-struct Matched {
-    /// `(new_key_index, entity)` for every entity retained from the old
-    /// order.
-    retained: Vec<(usize, Entity)>,
-    /// Old entities whose key no longer appears anywhere in the new keys.
-    removed: Vec<Entity>,
-}
-
-/// Key-matches `old_order` against `new_keys` (first-match-wins; Phase 1's
-/// demo doesn't exercise duplicate keys — key == display text, see D/E doc
-/// comments below).
-fn match_keys(old_order: &[(String, Entity)], new_keys: &[String]) -> Matched {
-    let mut pool: Vec<(String, Entity)> = old_order.to_vec();
-    let mut retained = Vec::with_capacity(new_keys.len());
-    for (i, key) in new_keys.iter().enumerate() {
+/// Key-matches `old_order` against `new_keys` and reports the result as an
+/// **index selection**: `take_old[i]` is the old index new slot `i` takes
+/// over, or `>= old_order.len()` when slot `i` is fresh.
+///
+/// **2026-08-11 — 조립이 검증 크레이트로 넘어갔다.** 예전에는 이 함수가
+/// `(retained, removed)`를 내고 호출부 네 곳이 거기서 `current`와 `target`을
+/// *따로* 조립했다. 그래서 `plan_writes`의 사전조건 Q("`current`에 target 밖
+/// 원소가 없다")가 릴리스 빌드에서 사라지는 `debug_assert!` 하나에만 걸려
+/// 있었다. 지금은 `loom_flush_core::plan_inputs`가 이 선택 하나로부터
+/// `current`와 `target_ids`를 **함께** 만들므로 Q가 그 함수의 **사후조건으로
+/// 증명**된다 — 매칭이 옳든 그르든 상관없이 구조적으로 참이다. 여기 남은 것은
+/// 키 비교(String)뿐이다.
+///
+/// first-match-wins + 소비(`pool.remove`) 규율은 그대로다. **중복 키는 실제로
+/// 발생한다**: `crates/loom-bench`의 POD 축 × W7(`value_update`) 셀에서
+/// fresh 민터의 공역(100만)이 n=10,000에서 부족해지며 rep의 34%가 중복 키를
+/// D/E에 먹인다. 그 경우 같은 키의 두 번째 등장은 pool에 짝이 남아 있으면
+/// 그것과 매치되고 없으면 fresh가 되며, 필요한 성질은 전부 성립한다(전수 확인:
+/// `formal-verification/verus/match-keys-exhaustive.py`). 이 자리에 있던
+/// "Phase 1's demo doesn't exercise duplicate keys"는 사실이 아니어서 함께
+/// 정정했다.
+fn match_keys(old_order: &[(String, Entity)], new_keys: &[String]) -> Vec<usize> {
+    let mut pool: Vec<(String, usize)> = old_order
+        .iter()
+        .enumerate()
+        .map(|(j, (key, _))| (key.clone(), j))
+        .collect();
+    let mut take_old = Vec::with_capacity(new_keys.len());
+    for key in new_keys {
         if let Some(pos) = pool.iter().position(|(k, _)| k == key) {
-            let (_, entity) = pool.remove(pos);
-            retained.push((i, entity));
+            let (_, j) = pool.remove(pos);
+            take_old.push(j);
+        } else {
+            take_old.push(old_order.len());
         }
     }
-    let removed = pool.into_iter().map(|(_, e)| e).collect();
-    Matched { retained, removed }
+    take_old
 }
+
+/// `loom_flush_core::plan_inputs`(및 두 래퍼)의 **구조적 사전조건 넷**을
+/// 디버그 빌드에서 실제로 검사한다.
+///
+/// 이번 이관으로 비검증 코드가 지는 짐은 여섯(현재/타깃 무중복, 길이,
+/// fresh↔포함, P, Q)에서 **넷**으로 줄었고, 남은 넷은 전부 *원시 입력에 대한
+/// 구조적 사실*이지 `current`/`target`의 상호작용에 대한 명제가 아니다:
+///
+/// 1. **옛 Entity가 서로 다르다.** 귀납적으로 닫혀 있다 —
+///    `ListRows`/`OrderKeyMembers`는 `Default`(빈 Vec)로만 생기고 코드 전체에서
+///    오직 `plan_*`의 `target_ids`로만 대입되는데, 그 유일성은 이제
+///    `plan_inputs`의 **사후조건**이다. 즉 검사가 보는 것은 귀납의 기저다.
+/// 2. **`take_old`가 단사다.** `match_keys`의 소비(`pool.remove`) 규율이 준다.
+/// 3. **fresh Entity가 옛 것과 겹치지 않는다.** `commands.spawn()`은 live가
+///    아닌 새 Entity를 주고, 같은 시스템의 `despawn()`은 Commands 큐에 들어가
+///    나중에 적용되므로 이 reconcile 중에 인덱스 재활용이 일어날 수 없다.
+/// 4. **fresh Entity끼리도 다르다.** 같은 이유.
+///
+/// (2)~(4)는 지금까지 **아무도 검사하지 않던 것**이라 debug 검사가 순증이다.
+fn selection_preconditions_hold(old_ids: &[u64], take_old: &[usize], fresh_ids: &[u64]) -> bool {
+    use std::collections::HashSet;
+    let m = old_ids.len();
+    let mut olds: HashSet<u64> = HashSet::with_capacity(m);
+    if !old_ids.iter().all(|bits| olds.insert(*bits)) {
+        return false;
+    }
+    let mut taken: HashSet<usize> = HashSet::with_capacity(take_old.len());
+    let mut fresh: HashSet<u64> = HashSet::new();
+    for (i, &t) in take_old.iter().enumerate() {
+        if t < m {
+            if !taken.insert(t) {
+                return false;
+            }
+        } else if olds.contains(&fresh_ids[i]) || !fresh.insert(fresh_ids[i]) {
+            return false;
+        }
+    }
+    true
+}
+
+/// 위 넷을 어긴 채로 진행하면 무슨 일이 나는지 한 곳에 적어 둔다 —
+/// `debug_assert!` 메시지를 네 호출부에 복사하지 않기 위한 상수.
+const SELECTION_PRECONDITION_MSG: &str =
+    "plan_inputs의 구조적 사전조건 위반 — 옛 Entity 중복 / take_old 비단사 / \
+     fresh Entity 재사용 중 하나다. 이 상태로 진행하면 current·target_ids의 \
+     무중복과 fresh↔포함 대응이 깨져 DOM 순서 보증이 성립하지 않는다.";
 
 /// Emits `SpawnRow`/`Reposition` writes to bring `current` (the DOM-ordered
 /// entities *before* this reconcile) into the exact order `target`
@@ -207,56 +261,36 @@ fn match_keys(old_order: &[(String, Entity)], new_keys: &[String]) -> Matched {
 /// re-run this fix produced). `Chain`'s `next_of`/`unlink`/`insert_before`
 /// are all O(1), so adjacency checks and moves no longer cost more than the
 /// handful of rows that actually move.
-fn place_in_order<R: crate::RowSpawner>(
-    site: &R::Ctx,
-    parent: NodeHandle,
-    current: &[Entity],
-    target: &[Slot],
-    out: &mut crate::RowSpawnCtx,
-) {
-    // 순서 결정은 전부 검증된 `loom_flush_core::plan_writes`가 한다 — 이
-    // 함수에 남은 일은 그 계획을 `DomWrite`로 옮겨 적는 것뿐이다.
-    // **수렴까지 증명된 판본**을 쓴다(2026-08-01). `plan_writes`(LIS 변형용)와
-    // 달리 `keep`이 없어 불변식이 전부 무조건이고, 그래서 "방출한 op를 적용하면
-    // DOM의 뒤쪽 |target|개가 목표 순서와 일치한다"가 **사후조건으로** 증명된다
-    // (RQ5 #4 정리 (2) — `formal-verification/verus/README.md` 참고).
-    let ops = loom_flush_core::plan_writes_converging(
-        &current.iter().map(|e| e.to_bits()).collect::<Vec<u64>>(),
-        &target.iter().map(|s| slot_entity(s).to_bits()).collect::<Vec<u64>>(),
-        &target.iter().map(|s| matches!(s, Slot::Fresh { .. })).collect::<Vec<bool>>(),
-    );
-    emit_plan::<R>(site, parent, target, &ops, out);
-}
-
-/// `Slot`에서 Entity 하나를 꺼낸다.
-fn slot_entity(slot: &Slot) -> Entity {
-    match slot {
-        Slot::Fresh { entity, .. } => *entity,
-        Slot::Retained(entity) => *entity,
-    }
-}
-
+/// **2026-08-11**: 이 설명이 가리키던 `place_in_order`는 사라졌다 — 하던 일
+/// (`current`/`target` 조립 + `plan_writes_converging` 호출)이 통째로
+/// `loom_flush_core::plan_from_selection` 안으로 들어갔고, 그래서 그 함수의
+/// 사후조건이 `plan_writes_converging`의 사전조건을 실제로 충족하는지가
+/// **한 검증 단위 안에서 기계검사**된다(예전에는 그 연결이 이 파일의 주석과
+/// `debug_assert!`였다). 여기 남은 것은 아래 `emit_plan` — 계획을 `DomWrite`로
+/// 옮겨 적는 것뿐이다.
+///
 /// 검증된 계획(`PlanOp` 열, 방출 순서 그대로)을 실제 `DomWrite`로 옮긴다.
 /// **순서 판단은 여기 없다** — `before` anchor도 `plan_writes`가 정한 것을
 /// 그대로 쓴다. 이 함수가 하는 일은 Entity/텍스트를 붙이는 것뿐이다.
+///
+/// `texts[i]`는 슬롯 `i`의 표시 텍스트(= 키, Phase 1 범위)다. 예전에 여기
+/// 있던 `unreachable!("plan_writes marks spawn only for Fresh slots")`는
+/// 없앴다 — `op.spawn == target_fresh[op.idx]`가 `plan_*`의 **사후조건**이라
+/// 런타임 갈래 자체가 없어졌다.
 fn emit_plan<R: crate::RowSpawner>(
     site: &R::Ctx,
     parent: NodeHandle,
-    target: &[Slot],
+    target_ids: &[u64],
+    texts: &[String],
     ops: &[loom_flush_core::PlanOp],
     out: &mut crate::RowSpawnCtx,
 ) {
     for op in ops {
-        let slot = &target[op.idx];
-        let entity = slot_entity(slot);
-        // `plan_writes`의 anchor는 u64(Entity::to_bits)이므로 되돌린다.
+        // 검증 코어의 id는 u64(`Entity::to_bits`)이므로 되돌린다.
+        let entity = Entity::from_bits(target_ids[op.idx]);
         let before = op.before.map(Entity::from_bits);
         if op.spawn {
-            let text = match slot {
-                Slot::Fresh { text, .. } => text.clone(),
-                Slot::Retained(_) => unreachable!("plan_writes marks spawn only for Fresh slots"),
-            };
-            R::emit(site, out, entity, parent, &text, before);
+            R::emit(site, out, entity, parent, &texts[op.idx], before);
         } else {
             out.pending.push(DomWrite::Reposition { parent, entity, before });
         }
@@ -275,8 +309,14 @@ fn emit_plan<R: crate::RowSpawner>(
 /// 사라졌으므로, Chain 연산의 사전조건 준수까지 기계적으로 검증된다.
 /// `formal-verification/verus/README.md` 참고.
 ///
+/// **2026-08-11 (3단계)**: `current`/`target` **조립**도 옮겼다. 이제 이 파일이
+/// 검증 코어에 넘기는 것은 키 매칭의 결과인 인덱스 선택(`take_old`)뿐이고,
+/// `plan_writes`의 사전조건 여섯 중 다섯이 코어의 사후조건으로 선다. 남은
+/// 미검증 계약은 아래 `lis_indices`가 P를 세운다는 것 하나다.
+///
 /// `Entity`는 Verus가 다룰 수 없는 불투명 타입이라 `to_bits()`로 `u64`를
 /// 만들어 넘긴다(단사이므로 동일성·구별성 보존).
+///
 /// Returns the set of indices (into `sequence`) forming *a* longest
 /// strictly-increasing subsequence (there can be several of the same
 /// length; this returns one valid choice, not necessarily unique).
@@ -315,123 +355,92 @@ fn lis_indices(sequence: &[usize]) -> std::collections::HashSet<usize> {
     result
 }
 
-/// The **LIS-optimized** variant of `place_in_order` — RQ1's other noted
+/// The **LIS-optimized** variant's "keep" marking — RQ1's other noted
 /// variant-axis choice ("이동 최소화: 순열 매칭만 vs LIS"). Retained entities
 /// whose *old* positions form a longest increasing subsequence (relative to
 /// their new-order positions) are provably already in the correct relative
 /// order and need **zero** `Reposition` calls; only entities outside that
 /// subsequence actually move. For a pure "swap the two ends" workload this
-/// finds the true minimum (2 moves) where `place_in_order`'s matching-only
-/// approach was shown by measurement to move nearly every retained entity
+/// finds the true minimum (2 moves) where the matching-only approach was
+/// shown by measurement to move nearly every retained entity
 /// (research-questions/RQ1-dynamic-control-flow-scheduling.md's Phase 1
-/// Track L section) — see this function's sibling for that non-LIS variant
-/// and why both are kept as separate, comparable candidates rather than one
-/// replacing the other.
-fn place_in_order_lis<R: crate::RowSpawner>(
-    site: &R::Ctx,
-    parent: NodeHandle,
-    current: &[Entity],
-    target: &[Slot],
-    out: &mut crate::RowSpawnCtx,
-) {
-    let old_index_of: std::collections::HashMap<Entity, usize> =
-        current.iter().enumerate().map(|(i, &e)| (e, i)).collect();
-
-    // Old-index sequence for retained entities only, in target order —
-    // fresh entities have no old position to participate with.
-    let retained_old_indices: Vec<usize> = target
-        .iter()
-        .filter_map(|slot| match slot {
-            Slot::Retained(e) => old_index_of.get(e).copied(),
-            Slot::Fresh { .. } => None,
-        })
-        .collect();
+/// Track L section) — the two variants stay separate, directly comparable
+/// candidates rather than one replacing the other.
+///
+/// **2026-08-11 — 입력이 `current` 안의 자리에서 옛 인덱스로 바뀌었다.**
+/// 예전에는 `HashMap<Entity, usize>`로 `current` 안의 자리를 만들어 그 수열에
+/// LIS를 돌렸다. `current`는 옛 순서를 보존하는 부분열이므로 "옛 인덱스"와
+/// "`current` 안의 자리"는 **순서 동형**이고, `lis_indices`는 값의 대소만
+/// 보므로(비교가 `sequence[ti] < val` 하나뿐) 고르는 집합이 글자 그대로 같다.
+/// 방출되는 write가 바뀌지 않는 이유이고, 덤으로 reconcile마다 짓던 해시맵
+/// 하나가 없어졌다.
+fn lis_keep(take_old: &[usize], old_len: usize) -> Vec<bool> {
+    // Old-index sequence for retained slots only, in target order — fresh
+    // slots have no old position to participate with.
+    let retained_old_indices: Vec<usize> =
+        take_old.iter().copied().filter(|&t| t < old_len).collect();
     let lis = lis_indices(&retained_old_indices);
 
-    // `keep_in_place[i]` is only meaningful when `target[i]` is `Retained`;
-    // built by walking retained slots in order and checking LIS membership
-    // by their position *within the retained-only subsequence*.
-    let mut keep_in_place = vec![false; target.len()];
+    // `keep[i]` is only meaningful when slot `i` is retained; built by
+    // walking retained slots in order and checking LIS membership by their
+    // position *within the retained-only subsequence*.
+    let mut keep = vec![false; take_old.len()];
     let mut retained_seen = 0;
-    for (i, slot) in target.iter().enumerate() {
-        if matches!(slot, Slot::Retained(_)) {
+    for (i, &t) in take_old.iter().enumerate() {
+        if t < old_len {
             if lis.contains(&retained_seen) {
-                keep_in_place[i] = true;
+                keep[i] = true;
             }
             retained_seen += 1;
         }
     }
 
-    // 순서 결정은 검증된 `plan_writes`가 한다 — LIS가 고른 "유지" 표시는
-    // `keep`으로 넘긴다.
-    //
     // **`keep`이 지켜야 하는 조건 P**:
     // 표시된 원소들의 `current` 내 상대 순서가 target 순서와 같아야 한다.
     // 이것이 정확히 필요충분조건임은 전수 탐색으로 확인됐다(2026-08-02) —
     // P를 위반하면 **100%** 순서가 깨진다.
     //
-    // **2026-08-08**: P는 이제 `plan_writes`의 Verus `requires`다
-    // (`loom_flush_core::kept_order_preserved`). 즉 이 호출은 기계가 읽는
-    // 계약을 지고 있고, "LIS 판단은 검증 밖"이라는 경계가 **정확히 어디인지**가
-    // 코드에 박혀 있다. 다만 `lis_indices`가 P를 세운다는 것(= LIS 건전성)은
-    // 여전히 미증명이라 그 계약을 실제로 지키는지는 아래 디버그 빌드 검사가
-    // 본다. 여기서 필요한 건 건전성뿐이고 **최적성은 아니다** — LIS가 최적이
-    // 아니면 이동이 더 나올 뿐 순서는 깨지지 않는다(성능 성질).
+    // **2026-08-08**: P는 `plan_writes`의 Verus `requires`가 됐다
+    // (`loom_flush_core::kept_order_preserved`).
+    // **2026-08-11**: 그리고 이제 `plan_lis_from_selection`의 `requires`가
+    // `take_old` 항으로 적힌 같은 명제(`take_order_preserved`)다 — 두 형태가
+    // 같다는 것(`selection_order_preserved`를 거친 번역)은 검증 크레이트 안에서
+    // 기계검사된다. **남은 미검증 계약은 정확히 이것 하나**다: `lis_indices`가
+    // 실제로 P를 세우는가(= LIS 건전성). 그래서 이 디버그 검사는 남긴다.
+    // 필요한 건 건전성뿐이고 **최적성은 아니다** — LIS가 최적이 아니면 이동이
+    // 더 나올 뿐 순서는 깨지지 않는다(성능 성질).
     debug_assert!(
         {
             let mut last: Option<usize> = None;
             let mut ok = true;
-            for (i, slot) in target.iter().enumerate() {
-                if keep_in_place[i] {
-                    if let Slot::Retained(e) = slot {
-                        let pos = old_index_of[e];
-                        if last.is_some_and(|l| pos <= l) {
-                            ok = false;
-                        }
-                        last = Some(pos);
+            for (i, &t) in take_old.iter().enumerate() {
+                if keep[i] && t < old_len {
+                    if last.is_some_and(|l| t <= l) {
+                        ok = false;
                     }
+                    last = Some(t);
                 }
             }
             ok
         },
-        "lis_indices가 사전조건 P를 위반했다 — 표시된 원소들의 current 내 \
-         상대 순서가 target 순서와 다르다. 이 상태로 진행하면 DOM 순서가 깨진다."
+        "lis_indices가 사전조건 P를 위반했다 — 표시된 원소들의 옛 인덱스가 \
+         target 순서로 증가하지 않는다. 이 상태로 진행하면 DOM 순서가 깨진다."
     );
-    // **사전조건 Q** (2026-08-09 신설): `current`에 target 밖 원소(extras)가
-    // 없어야 한다. 이것 없이는 `plan_writes`의 수렴 사후조건이 **거짓**이다 —
-    // `keep`이 인접성 검사를 단락하므로 target에 없는 원소는 영영 치워지지
-    // 않는다(최소 반례 `current=[0,1] target=[0] keep=[true]`).
-    //
-    // 이 호출부는 구조적으로 이미 만족한다: `match_keys`가 `old_order`를
-    // retained/removed로 가르고 호출자가 `current = old_order − removed`를
-    // 만들므로 `current`는 정확히 retained 집합이며 전부 `Slot::Retained`로
-    // `target`에 들어 있다. P와 마찬가지로 그 사실을 디버그 빌드에서 실제로
-    // 검사해 경계를 코드에 박는다.
-    //
-    // **비-LIS 경로(`place_in_order`)는 이 조건이 필요 없다** — 거기서는
-    // 비인접이면 무조건 옮기므로 외래 원소가 저절로 앞으로 밀려난다.
-    // 두 경로의 진짜 비대칭이고, `keep` 단락이 사 오는 비용이다.
-    debug_assert!(
-        {
-            // 바로 위 P 검사가 `old_index_of` 맵으로 O(n)인 것과 같은 이유로
-            // 집합을 쓴다 — 순진한 이중 루프는 O(n²)이고, 이 경로는 디버그
-            // 빌드에서 긴 리스트를 돈다.
-            let in_target: std::collections::HashSet<Entity> =
-                target.iter().map(slot_entity).collect();
-            current.iter().all(|e| in_target.contains(e))
-        },
-        "current에 target 밖 원소가 있다 — plan_writes의 사전조건 Q 위반. \
-         LIS 경로는 keep으로 단락된 원소를 건드리지 않으므로 이 상태로 \
-         진행하면 그 원소가 DOM에 남아 순서가 깨진다."
-    );
-    let ops = loom_flush_core::plan_writes(
-        &current.iter().map(|e| e.to_bits()).collect::<Vec<u64>>(),
-        &target.iter().map(|s| slot_entity(s).to_bits()).collect::<Vec<u64>>(),
-        &target.iter().map(|s| matches!(s, Slot::Fresh { .. })).collect::<Vec<bool>>(),
-        &keep_in_place,
-    );
-    emit_plan::<R>(site, parent, target, &ops, out);
+    keep
 }
+
+// **사전조건 Q는 여기서 사라졌다** (2026-08-11). 예전에 이 자리에는
+// "`current`에 target 밖 원소(extras)가 없다"를 보는 `debug_assert!`가 있었고,
+// 그것이 릴리스 빌드에서 사라지는 바람에 `plan_writes`의 수렴 사후조건이
+// 비검증 코드의 선의에 걸려 있었다(Q 없이는 그 사후조건이 **거짓**이다 —
+// 최소 반례 `current=[0,1] target=[0] keep=[true]`). 지금은
+// `loom_flush_core::plan_inputs`가 `current`와 `target_ids`를 같은 선택에서
+// **함께** 만들고, Q는 그 함수의 **사후조건으로 증명**된다. 검사할 것이
+// 남아 있지 않다.
+//
+// **비-LIS 경로는 원래 Q가 필요 없다** — 거기서는 비인접이면 무조건 옮기므로
+// 외래 원소가 저절로 앞으로 밀려난다. 두 경로의 진짜 비대칭이고, `keep`
+// 단락이 사 오는 비용이다. 이 사실은 이관 뒤에도 그대로다.
 
 // ============================================================================
 // Candidate D — Keyed sequence sync (controller-side ordered Vec)
@@ -471,39 +480,48 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
             .filter_map(|&e| keys.get(e).ok().map(|k| (k.0.clone(), e)))
             .collect();
 
-        let matched = match_keys(&old_order, &new_keys);
-        for stale in &matched.removed {
-            // Read the handle before despawning — see `DomWrite::RemoveNode`'s
-            // doc comment for why this can't be deferred to apply time.
-            if let Ok(target) = dom_targets.get(*stale) {
-                pending.0.push(DomWrite::RemoveNode { node: target.0 });
-            }
-            commands.entity(*stale).despawn();
-        }
-        // `current` must reflect what the DOM will look like *after* the
-        // `RemoveNode` writes above take effect (they're emitted first, so
-        // the driver applies them first) — removed entities are excluded,
-        // or all subsequent position/adjacency math would be computed
-        // against stale slots that are about to disappear.
-        let current: Vec<Entity> = old_order
-            .iter()
-            .map(|(_, e)| *e)
-            .filter(|e| !matched.removed.contains(e))
-            .collect();
-
-        let mut retained_at: std::collections::HashMap<usize, Entity> =
-            matched.retained.into_iter().collect();
-        let target: Vec<Slot> = new_keys
+        let take_old = match_keys(&old_order, &new_keys);
+        let old_ids: Vec<u64> = old_order.iter().map(|(_, e)| e.to_bits()).collect();
+        // fresh row는 **슬롯 순서대로** spawn한다 — 옛 코드가 target을 조립하며
+        // 하던 것과 같은 순서라 Entity id 배정이 그대로다. despawn보다 앞서지만
+        // `Commands::despawn`은 sync point까지 미뤄지므로 id 재활용이 끼어들 수
+        // 없고, `pending`에 들어가는 write 순서(RemoveNode 먼저)도 그대로다.
+        let fresh_ids: Vec<u64> = new_keys
             .iter()
             .enumerate()
-            .map(|(i, key)| match retained_at.remove(&i) {
-                Some(e) => Slot::Retained(e),
-                None => Slot::Fresh {
-                    entity: commands.spawn(RowKey(key.clone())).id(),
-                    text: key.clone(),
-                },
+            .map(|(i, key)| {
+                if take_old[i] >= old_ids.len() {
+                    commands.spawn(RowKey(key.clone())).id().to_bits()
+                } else {
+                    0
+                }
             })
             .collect();
+        debug_assert!(
+            selection_preconditions_hold(&old_ids, &take_old, &fresh_ids),
+            "{SELECTION_PRECONDITION_MSG}"
+        );
+
+        // `current`(= DOM에서 살아남는 옛 row들)와 `target_ids`/`target_fresh`를
+        // **함께** 만드는 것이 이 호출이다 — 그래서 사전조건 Q가 구조적으로
+        // 참이고, 그 사실이 `plan_writes_converging`의 `requires`를 실제로
+        // 충족한다는 것까지 한 검증 단위 안에서 확인된다. `plan_writes`(LIS
+        // 변형용)와 달리 `keep`이 없어 불변식이 전부 무조건이고, "방출한 op를
+        // 적용하면 DOM의 뒤쪽 |target|개가 목표 순서와 일치한다"가 사후조건으로
+        // 증명돼 있다(RQ5 #4 정리 (2) — `formal-verification/verus/README.md`).
+        let plan = loom_flush_core::plan_from_selection(&old_ids, &take_old, &fresh_ids);
+
+        // `plan.removed`는 `plan.current`와 서로소임이 증명돼 있다(사후조건) —
+        // 즉 여기서 despawn하는 row가 뒤이어 배치되는 일이 있을 수 없다.
+        for bits in &plan.removed {
+            // Read the handle before despawning — see `DomWrite::RemoveNode`'s
+            // doc comment for why this can't be deferred to apply time.
+            let stale = Entity::from_bits(*bits);
+            if let Ok(target) = dom_targets.get(stale) {
+                pending.0.push(DomWrite::RemoveNode { node: target.0 });
+            }
+            commands.entity(stale).despawn();
+        }
 
         {
             let mut out = crate::RowSpawnCtx {
@@ -512,16 +530,10 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 row_bindings: row_bindings.0,
                 row_variants: variant_mode.0,
             };
-            place_in_order::<R>(site, anchor.0, &current, &target, &mut out);
+            emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
         }
 
-        rows.0 = target
-            .iter()
-            .map(|s| match s {
-                Slot::Retained(e) => *e,
-                Slot::Fresh { entity, .. } => *entity,
-            })
-            .collect();
+        rows.0 = plan.target_ids.iter().map(|b| Entity::from_bits(*b)).collect();
     }
 }
 
@@ -551,32 +563,36 @@ fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
             .filter_map(|&e| keys.get(e).ok().map(|k| (k.0.clone(), e)))
             .collect();
 
-        let matched = match_keys(&old_order, &new_keys);
-        for stale in &matched.removed {
-            if let Ok(target) = dom_targets.get(*stale) {
-                pending.0.push(DomWrite::RemoveNode { node: target.0 });
-            }
-            commands.entity(*stale).despawn();
-        }
-        let current: Vec<Entity> = old_order
-            .iter()
-            .map(|(_, e)| *e)
-            .filter(|e| !matched.removed.contains(e))
-            .collect();
-
-        let mut retained_at: std::collections::HashMap<usize, Entity> =
-            matched.retained.into_iter().collect();
-        let target: Vec<Slot> = new_keys
+        let take_old = match_keys(&old_order, &new_keys);
+        let old_ids: Vec<u64> = old_order.iter().map(|(_, e)| e.to_bits()).collect();
+        // D와 같은 순서·같은 이유 — `list_reconcile_d_system` 참고.
+        let fresh_ids: Vec<u64> = new_keys
             .iter()
             .enumerate()
-            .map(|(i, key)| match retained_at.remove(&i) {
-                Some(e) => Slot::Retained(e),
-                None => Slot::Fresh {
-                    entity: commands.spawn(RowKey(key.clone())).id(),
-                    text: key.clone(),
-                },
+            .map(|(i, key)| {
+                if take_old[i] >= old_ids.len() {
+                    commands.spawn(RowKey(key.clone())).id().to_bits()
+                } else {
+                    0
+                }
             })
             .collect();
+        debug_assert!(
+            selection_preconditions_hold(&old_ids, &take_old, &fresh_ids),
+            "{SELECTION_PRECONDITION_MSG}"
+        );
+
+        let keep = lis_keep(&take_old, old_ids.len());
+        let plan =
+            loom_flush_core::plan_lis_from_selection(&old_ids, &take_old, &fresh_ids, &keep);
+
+        for bits in &plan.removed {
+            let stale = Entity::from_bits(*bits);
+            if let Ok(target) = dom_targets.get(stale) {
+                pending.0.push(DomWrite::RemoveNode { node: target.0 });
+            }
+            commands.entity(stale).despawn();
+        }
 
         {
             let mut out = crate::RowSpawnCtx {
@@ -585,16 +601,10 @@ fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 row_bindings: row_bindings.0,
                 row_variants: variant_mode.0,
             };
-            place_in_order_lis::<R>(site, anchor.0, &current, &target, &mut out);
+            emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
         }
 
-        rows.0 = target
-            .iter()
-            .map(|s| match s {
-                Slot::Retained(e) => *e,
-                Slot::Fresh { entity, .. } => *entity,
-            })
-            .collect();
+        rows.0 = plan.target_ids.iter().map(|b| Entity::from_bits(*b)).collect();
     }
 }
 
@@ -662,43 +672,49 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
         let old_order: Vec<(String, Entity)> =
             old_sorted.iter().map(|(k, e, _)| (k.clone(), *e)).collect();
 
-        let matched = match_keys(&old_order, &new_keys);
-        for stale in &matched.removed {
-            // Read the handle before despawning — see `DomWrite::RemoveNode`'s
-            // doc comment for why this can't be deferred to apply time.
-            if let Ok(target) = dom_targets.get(*stale) {
-                pending.0.push(DomWrite::RemoveNode { node: target.0 });
-            }
-            commands.entity(*stale).despawn();
-        }
-        // See D's identical comment: `current` must exclude entities whose
-        // `RemoveNode` write was just emitted above.
-        let current: Vec<Entity> = old_order
-            .iter()
-            .map(|(_, e)| *e)
-            .filter(|e| !matched.removed.contains(e))
-            .collect();
-
-        let mut retained_at: std::collections::HashMap<usize, Entity> =
-            matched.retained.into_iter().collect();
-        let target: Vec<Slot> = new_keys
+        let take_old = match_keys(&old_order, &new_keys);
+        let old_ids: Vec<u64> = old_order.iter().map(|(_, e)| e.to_bits()).collect();
+        // D와 같은 순서·같은 이유(`list_reconcile_d_system` 참고). **E의 차이는
+        // 유지된다** — fresh row가 `OrderedKey` + 슬롯 인덱스 `OrderKey`로
+        // 태어난다.
+        let fresh_ids: Vec<u64> = new_keys
             .iter()
             .enumerate()
-            .map(|(i, key)| match retained_at.remove(&i) {
-                Some(e) => Slot::Retained(e),
-                None => Slot::Fresh {
-                    entity: commands.spawn((OrderedKey(key.clone()), OrderKey(i as u64))).id(),
-                    text: key.clone(),
-                },
+            .map(|(i, key)| {
+                if take_old[i] >= old_ids.len() {
+                    commands
+                        .spawn((OrderedKey(key.clone()), OrderKey(i as u64)))
+                        .id()
+                        .to_bits()
+                } else {
+                    0
+                }
             })
             .collect();
+        debug_assert!(
+            selection_preconditions_hold(&old_ids, &take_old, &fresh_ids),
+            "{SELECTION_PRECONDITION_MSG}"
+        );
+
+        let plan = loom_flush_core::plan_from_selection(&old_ids, &take_old, &fresh_ids);
+
+        for bits in &plan.removed {
+            // Read the handle before despawning — see `DomWrite::RemoveNode`'s
+            // doc comment for why this can't be deferred to apply time.
+            let stale = Entity::from_bits(*bits);
+            if let Ok(target) = dom_targets.get(stale) {
+                pending.0.push(DomWrite::RemoveNode { node: target.0 });
+            }
+            commands.entity(stale).despawn();
+        }
 
         // Dense re-tag: only entities whose target index actually changed
         // get an `OrderKey` write. Freshly spawned entities already got
         // their final `OrderKey` at spawn time above.
-        for (i, slot) in target.iter().enumerate() {
-            if let Slot::Retained(entity) = slot {
-                if let Ok((_, mut key)) = keyed.get_mut(*entity) {
+        for (i, &t) in take_old.iter().enumerate() {
+            if t < old_ids.len() {
+                let entity = Entity::from_bits(plan.target_ids[i]);
+                if let Ok((_, mut key)) = keyed.get_mut(entity) {
                     if key.0 != i as u64 {
                         key.0 = i as u64;
                     }
@@ -713,16 +729,10 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 row_bindings: row_bindings.0,
                 row_variants: variant_mode.0,
             };
-            place_in_order::<R>(site, anchor.0, &current, &target, &mut out);
+            emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
         }
 
-        members.0 = target
-            .iter()
-            .map(|s| match s {
-                Slot::Retained(e) => *e,
-                Slot::Fresh { entity, .. } => *entity,
-            })
-            .collect();
+        members.0 = plan.target_ids.iter().map(|b| Entity::from_bits(*b)).collect();
     }
 }
 
@@ -755,36 +765,43 @@ fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
         let old_order: Vec<(String, Entity)> =
             old_sorted.iter().map(|(k, e, _)| (k.clone(), *e)).collect();
 
-        let matched = match_keys(&old_order, &new_keys);
-        for stale in &matched.removed {
-            if let Ok(target) = dom_targets.get(*stale) {
-                pending.0.push(DomWrite::RemoveNode { node: target.0 });
-            }
-            commands.entity(*stale).despawn();
-        }
-        let current: Vec<Entity> = old_order
-            .iter()
-            .map(|(_, e)| *e)
-            .filter(|e| !matched.removed.contains(e))
-            .collect();
-
-        let mut retained_at: std::collections::HashMap<usize, Entity> =
-            matched.retained.into_iter().collect();
-        let target: Vec<Slot> = new_keys
+        let take_old = match_keys(&old_order, &new_keys);
+        let old_ids: Vec<u64> = old_order.iter().map(|(_, e)| e.to_bits()).collect();
+        let fresh_ids: Vec<u64> = new_keys
             .iter()
             .enumerate()
-            .map(|(i, key)| match retained_at.remove(&i) {
-                Some(e) => Slot::Retained(e),
-                None => Slot::Fresh {
-                    entity: commands.spawn((OrderedKey(key.clone()), OrderKey(i as u64))).id(),
-                    text: key.clone(),
-                },
+            .map(|(i, key)| {
+                if take_old[i] >= old_ids.len() {
+                    commands
+                        .spawn((OrderedKey(key.clone()), OrderKey(i as u64)))
+                        .id()
+                        .to_bits()
+                } else {
+                    0
+                }
             })
             .collect();
+        debug_assert!(
+            selection_preconditions_hold(&old_ids, &take_old, &fresh_ids),
+            "{SELECTION_PRECONDITION_MSG}"
+        );
 
-        for (i, slot) in target.iter().enumerate() {
-            if let Slot::Retained(entity) = slot {
-                if let Ok((_, mut key)) = keyed.get_mut(*entity) {
+        let keep = lis_keep(&take_old, old_ids.len());
+        let plan =
+            loom_flush_core::plan_lis_from_selection(&old_ids, &take_old, &fresh_ids, &keep);
+
+        for bits in &plan.removed {
+            let stale = Entity::from_bits(*bits);
+            if let Ok(target) = dom_targets.get(stale) {
+                pending.0.push(DomWrite::RemoveNode { node: target.0 });
+            }
+            commands.entity(stale).despawn();
+        }
+
+        for (i, &t) in take_old.iter().enumerate() {
+            if t < old_ids.len() {
+                let entity = Entity::from_bits(plan.target_ids[i]);
+                if let Ok((_, mut key)) = keyed.get_mut(entity) {
                     if key.0 != i as u64 {
                         key.0 = i as u64;
                     }
@@ -799,16 +816,10 @@ fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 row_bindings: row_bindings.0,
                 row_variants: variant_mode.0,
             };
-            place_in_order_lis::<R>(site, anchor.0, &current, &target, &mut out);
+            emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
         }
 
-        members.0 = target
-            .iter()
-            .map(|s| match s {
-                Slot::Retained(e) => *e,
-                Slot::Fresh { entity, .. } => *entity,
-            })
-            .collect();
+        members.0 = plan.target_ids.iter().map(|b| Entity::from_bits(*b)).collect();
     }
 }
 

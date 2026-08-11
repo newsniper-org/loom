@@ -40,11 +40,15 @@ crates.io의 어떤 vstd 릴리스보다 앞서 있어(버전 문자열이 같�
 것은 `HashMapWithView`(std HashMap 얇은 래퍼)뿐이고, API가 어긋나면 빌드가
 시끄럽게 실패하므로 조용한 불일치는 생기지 않는다.
 
-현재 결과(2026-08-08 실측): **28 verified, 0 errors**(모델 파일
-`flush_order.rs`) + **45 verified, 0 errors**(`crates/loom-flush-core`,
-`verus --crate-type=lib`, **4.7초**). Verus 업스트림 설치본 `/usr/bin/verus`,
-Z3 4.12.5. (45번째는 사전조건 P와 그 음성 대조 — 아래 "P를 `requires`로
-올렸다" 절.)
+현재 결과(2026-08-11 실측): **28 verified, 0 errors**(모델 파일
+`flush_order.rs`) + **80 verified, 0 errors**(`crates/loom-flush-core`,
+`verus --crate-type=lib`, **13.5초**, 경고 0). Verus 업스트림 설치본
+`/usr/bin/verus`, Z3 4.12.5. 마지막 9개는 경계 함수 `plan_inputs`와 두 래퍼,
+그리고 번역된 P와 그 대조 2건 — 맨 아래 "경계를 옮겼다" 절.
+
+**이 줄은 계속 밀린다.** 2026-08-08에 `45`로 적힌 뒤 그날 안에 `71`이 됐는데도
+여기만 남아 있었다(바로 아래 "주의"가 말하는 것과 같은 종류의 표류다). 고칠
+때는 아래 명령을 실제로 돌린 원문을 옮길 것.
 
 **주의**: 이 줄에 한동안 `25 + 22`가 적혀 있었고 `cargo verus verify` 기준이라고
 쓰여 있었다 — 둘 다 틀렸다. 그 명령은 위 31행이 설명한 vstd 불일치로 **실행조차
@@ -976,3 +980,121 @@ verus formal-verification/verus/flush_order.rs             → 28 verified, 0 er
   양화자라는 **성능 근거**지 수학적 필연이 아니다.
 - 다음 수: `match_keys`를 `loom-flush-core`로 옮겨 Q를 검증 안으로 끌어들이는
   것. Q 쪽 구조적 논증이 P보다 훨씬 단순하다.
+
+## 경계를 옮겼다 — Q가 사후조건이 됐다 (2026-08-11)
+
+바로 위 절의 "다음 수"를 했다. 다만 `match_keys` **전체**를 옮기지는 않았다 —
+아래 "왜 이 모양인가" 참고.
+
+### 무엇이 어디로 갔나
+
+**매칭과 구성을 분리**했다. 키 비교(String)는 `list.rs`(비검증)에 남기고, 그
+결과를 **인덱스 선택** `take_old: Vec<usize>`(새 슬롯 `i`가 가져갈 옛 인덱스,
+`>= old_ids.len()`이면 fresh)로 표현해 검증 코어에 넘긴다. 코어는 그 선택
+하나로부터 `current`와 `target_ids`/`target_fresh`를 **함께** 만든다.
+
+그래서 **Q가 구조적으로 참**이다 — 매칭이 옳든 그르든 상관없다. `current`의
+원소는 정의상 "어떤 슬롯이 가져간 옛 원소"이고, 그 슬롯의 `target_ids`가 바로
+그 원소이기 때문이다. Q는 이제 `plan_inputs`의 **사후조건**이고, `list.rs`의
+Q `debug_assert!`는 **삭제됐다**(검사할 것이 남아 있지 않다).
+
+새로 생긴 것(전부 `crates/loom-flush-core/src/lib.rs`):
+
+| 이름 | 무엇 |
+|---|---|
+| `plan_inputs` | 경계 함수. `(old_ids, take_old, fresh_ids)` → `PlanInputs { current, removed, target_ids, target_fresh }` |
+| `plan_from_selection` | 비-LIS 경로(D·E). 위를 부르고 이어서 `plan_writes_converging`까지 |
+| `plan_lis_from_selection` | LIS 경로(D-LIS·E-LIS). 위를 부르고 이어서 `plan_writes` |
+| `selection_order_preserved` | `current`가 옛 순서를 보존한다(불투명). P 번역의 재료 |
+| `take_order_preserved` | P를 `take_old` 항으로 옮긴 형태(불투명) + 음성/양성 대조 2건 |
+
+### `plan_inputs`가 실제로 세우는 사후조건
+
+```
+r.target_ids@.len() == take_old@.len()
+r.target_fresh@.len() == r.target_ids@.len()
+forall|i| r.target_fresh@[i] == (take_old@[i] >= old_ids@.len())
+forall|i| r.target_ids@[i] == if take_old@[i] < old_ids@.len()
+                                  { old_ids@[take_old@[i]] } else { fresh_ids@[i] }
+seq_nodup(r.current@)                      // == r.current@.no_duplicates()
+seq_nodup(r.target_ids@)                   // == r.target_ids@.no_duplicates()
+forall|x| r.current@.contains(x) ==> r.target_ids@.contains(x)          // ← Q
+forall|i| (r.target_fresh@[i] ==> !r.current@.contains(r.target_ids@[i]))
+       && (!r.target_fresh@[i] ==> r.current@.contains(r.target_ids@[i]))
+forall|x| r.removed@.contains(x) ==> !r.current@.contains(x)
+selection_order_preserved(r.current@, old_ids@, take_old@, r.target_ids@)
+```
+
+즉 `plan_writes`의 **여섯 사전조건 중 다섯**(Q + 무중복 2 + 길이 + fresh↔포함)이
+여기서 선다. 남는 것은 **P 하나**뿐이고, 그마저도 `plan_lis_from_selection`이
+`take_order_preserved`(= P를 `take_old` 항으로 옮긴 것)로 받아 `current` 항의
+P(`kept_order_preserved`)로 **번역하는 것까지 기계검사**한다. 번역 다리가
+`selection_order_preserved`다.
+
+덤으로 `removed ∩ current = ∅`이 증명된다 — despawn하는 row가 곧이어 배치되는
+일이 있을 수 없다는 뜻이고, 예전 코드는 이걸 아무 데서도 확인하지 않았다.
+
+무중복 둘을 불투명 `seq_nodup`으로 낸 이유는 이 모듈의 기존 처방과 같다(raw
+`no_duplicates`는 2변수 양화자). 소비자(두 래퍼)가 자기 안에서만 편다.
+
+### 왜 `match_keys` 전체가 아니라 "인덱스 선택"인가
+
+정찰은 Verus의 String 지원으로 `match_keys` 전체 이관이 **가능**함을 확인했다
+(`&String == &String`이 아니라 `*a == *b` 형태를 써야 한다는 조건 하에).
+그런데도 인덱스 선택으로 쪼갠 이유:
+
+- **Q에 키가 전혀 필요 없다.** Q는 Entity 수준 명제이고 어떤 키 조건도 요구하지
+  않는다(전수 확인: 적대적 스윕에서도 위반 0건). 키를 검증 코어에 들여도 Q
+  증명이 한 줄도 쉬워지지 않는다.
+- **`Vec<String>` 클론이 검증 경계를 넘나들면 트랙 L 측정이 흔들린다.** 지금
+  구조는 `list.rs`가 이미 만들어 둔 것만 `u64`/`usize`로 넘긴다.
+- **중복 키가 실제로 발생한다**(아래) — 키를 계약에 넣으면 그 계약을 벤치가
+  위반한다.
+
+### 남는 것 (숨기지 않음)
+
+- **`lis_indices`가 P를 세운다는 LIS 건전성은 여전히 미증명이다.** 이번에도
+  아니다. 다만 남은 미검증 계약이 **정확히 그것 하나**가 됐다.
+- **비검증 코드가 지는 짐: 여섯 → 넷**, 그리고 성격이 바뀌었다. 예전 넷은
+  `current`/`target`의 *상호작용*에 대한 명제였고, 지금 넷은 원시 입력에 대한
+  **구조적 사실**이다: 옛 Entity 유일성 / `take_old` 단사성 / fresh Entity가 옛
+  것과 겹치지 않음 / fresh끼리 다름. `list.rs`의
+  `selection_preconditions_hold`가 디버그 빌드에서 넷 **전부**를 검사한다
+  (예전에는 뒤 셋을 아무도 검사하지 않았다). 첫 번째는 귀납적으로 닫혀 있다 —
+  `ListRows`/`OrderKeyMembers`는 `Default`로만 생기고 오직 `target_ids`로만
+  대입되는데 그 유일성이 이제 사후조건이다.
+- **rlimit 여유가 줄었다.** 모듈 전체가 34.4M → 48.6M rlimit(smt-run 7.0s →
+  12.3s). 늘어난 몫의 대부분은 새 함수 자신이 아니라(`plan_inputs` 단독 0.54M)
+  **기존 최대 비용 증명 `chain_unlink_denotes_remove`가 10.6M → 13.2M로
+  오른 것**이다 — 이 모듈이 이미 문서화한 "새 심볼이 모듈 문맥을 흔든다"
+  현상이고, `--profile-all`은 그 함수 인스턴스화의 87%를 `Seq::no_duplicates`
+  하나(vstd `seq_lib.rs:520`)로 지목한다. 기본값(`--rlimit 10`)에서는 통과하지만
+  임계가 **3 → 7**로 올라갔다. 즉 여유가 3.3배에서 1.4배가 됐다. 새 코드를
+  별도 서브모듈로 가두는 안도 시도했으나 오히려 기본값에서 실패했다(더 나쁨).
+  다음에 이 모듈을 건드리는 사람은 `chain_unlink_denotes_remove`부터 손봐야
+  한다.
+
+### 방출 동일성
+
+`cargo test -p loom-runtime --test write_identity` 통과 — 후보 5종 × R1/R2 ×
+8단계 골든이 한 글자도 안 바뀌었다. `cargo test --workspace` 195 통과,
+`loom-track-n --cases 40` 6 arm 전부 통과.
+
+두 군데가 "같은 결과가 나오는 이유"를 특별히 적어 둔다:
+
+1. **fresh row spawn이 despawn 앞으로 옮겨졌다.** `Commands::spawn`은 호출
+   시점에 Entity를 예약하고 `despawn`은 sync point까지 미뤄지므로 id 배정이
+   같고, `pending`에 들어가는 write 순서(RemoveNode 먼저)도 그대로다.
+2. **LIS 입력이 `current` 안의 자리에서 옛 인덱스로 바뀌었다.** `current`는 옛
+   순서를 보존하는 부분열이라 두 수열은 순서 동형이고, `lis_indices`는 값의
+   대소만 보므로(`sequence[ti] < val` 하나뿐) 고르는 집합이 글자 그대로 같다.
+   덤으로 reconcile마다 짓던 `HashMap<Entity, usize>` 하나가 없어졌다.
+
+### 곁다리 — 사실이 아니던 주석 하나
+
+`list.rs`의 `match_keys`에 있던 "Phase 1's demo doesn't exercise duplicate
+keys"는 **틀렸다**. `crates/loom-bench`의 POD 축 × W7(`value_update`) 셀에서
+fresh 민터의 공역(100만)이 n=10,000에서 부족해져 rep의 34%가 중복 키를 D/E에
+먹인다. 성질은 전부 성립하므로 수집분이 무효가 되지는 않지만(전수 확인:
+`match-keys-exhaustive.py`), 주석은 이번에 고쳤다. 별건으로 남길 것: 그 공역
+부족은 W7의 "10% 값 변경" 조항을 계통적으로 미달시킨다(RQ1 §3.1 계측 정확도).
