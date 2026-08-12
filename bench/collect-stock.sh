@@ -58,7 +58,11 @@ TOTAL_GROUPS="${TOTAL_GROUPS:-40}"
 HEADED="${HEADED:-1}"
 THROTTLE="${THROTTLE:-1}"
 CDP_PORT="${CDP_PORT:-9222}"
-URL="http://localhost:$PORT/demo/list_bench.html?collect=$NAME&group=$FIRST_GROUP"
+# `CELLS=core`면 §8의 스로틀 조항이 지목한 핵심 격자만 돈다(스로틀 통과용).
+CELLS="${CELLS:-all}"
+CELLS_Q=""
+[ "$CELLS" = "core" ] && CELLS_Q="&cells=core"
+URL="http://localhost:$PORT/demo/list_bench.html?collect=$NAME&group=$FIRST_GROUP$CELLS_Q"
 
 if [ "$THROTTLE" != "1" ]; then
   case "$BIN" in

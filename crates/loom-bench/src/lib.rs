@@ -1199,6 +1199,25 @@ struct Cell {
     write_variant: loom_runtime::WriteVariant,
 }
 
+/// §3.3의 **핵심 격자**인가 — "{W1,W2,W3,W4,W5,W7} × {R1,R2} × n=1,000".
+/// §8의 4× 스로틀이 지목한 범위이고, §3.3의 write 변형 이중 측정 셀도 이 안에
+/// 있으므로(그 조항이 {W1..W4}×{R1,R2}를 지목) 양 변형 모두 스로틀 대상이다.
+fn is_core_grid(c: &Cell) -> bool {
+    const CORE: [Workload; 6] = [
+        Workload::Swap,
+        Workload::Shuffle,
+        Workload::Shuffle10,
+        Workload::HeadInsert,
+        Workload::Append,
+        Workload::ValueUpdate,
+    ];
+    c.item == ItemAxis::Pod
+        && c.n == 1000
+        && c.row_inner == 0
+        && !c.row_variants
+        && CORE.contains(&c.workload)
+}
+
 /// **§3.3 "측정 셀 집합(아래로 사전 고정)"의 기계 번역.**
 ///
 /// 각 블록의 주석이 조항 원문이다. 여기 없는 셀은 재지 않고, 여기 있는 셀은
@@ -1459,8 +1478,18 @@ async fn run_all() -> Result<(), JsValue> {
     // 방지". 개정 #9 이전에는 `run_combination` 안에서 워크로드 순서를 셔플했고,
     // 이제 한 호출이 한 셀이므로 셔플의 자리가 여기다. 시드는 고정이라
     // 재현 가능하고, 순서는 `?group=<i>`가 그 셔플된 목록을 인덱싱한다.
+    // `?cells=core` — §8의 스로틀 조항이 지목한 범위만 돈다.
+    //
+    // §8: "저사양 프록시: Chromium CDP 4× CPU throttle을 **(i) 트랙 L 핵심 격자**,
+    // (ii) 트랙 T의 ... 에 **추가**". "추가"이므로 비스로틀 전수 통과와 스로틀
+    // 통과가 **둘 다** 있어야 하고, 스로틀 쪽은 핵심 격자로 한정된다. 셀 순서가
+    // 시드 셔플이라 인덱스 구간으로는 핵심 격자만 고를 수 없으므로 여기서 거른다.
+    let core_only = query_param("cells").is_some_and(|v| v == "core");
     let cells = {
-        let base = cell_list();
+        let mut base = cell_list();
+        if core_only {
+            base.retain(is_core_grid);
+        }
         let order = shuffled_indices(base.len(), "track-l-cells", "cell-order");
         order.into_iter().map(|i| base[i]).collect::<Vec<_>>()
     };
@@ -1584,7 +1613,13 @@ async fn run_all() -> Result<(), JsValue> {
                 opts.set_body(&JsValue::from_str(&payload));
                 let req = window.fetch_with_str_and_init(&format!("/__collect?name={name}.part"), &opts);
                 // POST가 서버에 닿은 뒤에 이동해야 조각이 유실되지 않는다.
-                let href = format!("?collect={name}&group={g}");
+                // `cells=core`가 붙어 있으면 **이동 후에도 유지**해야 한다 —
+                // 안 그러면 두 번째 셀부터 전체 목록으로 돌아가 인덱스가 어긋난다.
+                let href = if core_only {
+                    format!("?collect={name}&group={g}&cells=core")
+                } else {
+                    format!("?collect={name}&group={g}")
+                };
                 wasm_bindgen_futures::spawn_local(async move {
                     let _ = wasm_bindgen_futures::JsFuture::from(req).await;
                     if let Some(w) = web_sys::window() {
