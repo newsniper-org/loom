@@ -903,12 +903,35 @@ async fn run_combination<T, F>(
         // 뽑는다 — 측정 반복이 워밍업이 이미 데운 바로 그 난수열을 다시 보면
         // 캐시 워밍 편향이 생긴다. 워밍업도 라운드로빈으로 돌려 측정 직전의
         // 상태가 후보 간에 같아지게 한다.
-        for w in 0..WARMUP {
+        //
+        // **워밍업도 셀 상한을 존중한다 (2026-08-12, 실측으로 드러남)**.
+        // §8의 셀 상한 검사는 2026-08-12까지 측정 루프 안에만 있었다. 평소엔
+        // 무해했다 — 워밍업이 50 × 후보수 = 300 tick뿐이었으니까. 그런데 개정
+        // #9-1로 W5를 조항대로("100건 연속 append 시퀀스 1회 = 1반복") 고치자
+        // 워밍업이 **100배**(30,000 tick)가 됐고, W5 × R2 셀이 워밍업에서만
+        // 41분 넘게 돌았다(실측).
+        //
+        // 상한 타이머는 셀 시작(= 워밍업 포함)부터 재므로, 워밍업이 상한을
+        // 넘기면 측정 루프의 첫 검사가 rep 0 직후 바로 발동해 **후보당 표본
+        // 1개짜리 `over_cell_cap` 레코드**가 나온다. 시간은 다 쓰고 쓸 수 있는
+        // 데이터는 안 나오는 최악의 조합이다. 여기서 끊으면 표본이 0개인
+        // 상한초과 레코드가 되는데, §8이 "'측정 불가(상한 초과)' 프로파일
+        // 등재 — 그 자체가 유효한 결과 데이터"라고 한 그것이고 정직하다.
+        let mut warmup_capped = false;
+        'warmup: for w in 0..WARMUP {
             for &ci in &cand_order {
                 candidates[ci].set_and_tick(initial.clone());
                 double_raf().await; // §8 복원↔측정 경계
                 let mut rng = Pcg64::from_seed(derive_seed("warmup", &cid, w));
                 run_one_rep(&mut candidates[ci], workload, &initial, &mut rng, &fresh);
+            }
+            if measure_now() - cell_started_ms > CELL_CAP_MS {
+                warmup_capped = true;
+                report_progress(&format!(
+                    "{cid} — 워밍업 {}/{WARMUP}에서 셀 상한 초과, 측정 생략",
+                    w + 1
+                ));
+                break 'warmup;
             }
         }
 
@@ -922,8 +945,11 @@ async fn run_combination<T, F>(
         // 길이에서 remove_middle이 돌았다). 추가 tick 없이 첫 rep 값을 붙잡아
         // 마지막 rep 값과 대조하는 것이 전부다.
         let mut first_counts = vec![None::<loom_runtime::DomOpCounts>; candidates.len()];
-        let mut over_cap = false;
+        let mut over_cap = warmup_capped;
         'measure: for rep in 0..reps {
+            if warmup_capped {
+                break 'measure;
+            }
             for &ci in &cand_order {
                 let candidate = &mut candidates[ci];
                 // Reset to the identical baseline (untimed) before each

@@ -180,10 +180,17 @@ while [ "$(count_parts)" -lt "$EXPECTED" ]; do
     echo "[collect-stock] 타임아웃 ${TIMEOUT}초 초과" >&2
     exit 1
   fi
-  if [ $((EL % 60)) -eq 0 ] && [ "$EL" -gt 0 ]; then
+  # **`EL % 60`이 아니라 "분이 넘어갔는가"로 판정한다 (2026-08-12 수리)**.
+  # `sleep 5`는 정확히 5초가 아니고 루프 본문(grep 두 번, tail 한 번)도 시간을
+  # 먹으므로 `EL`이 60의 배수를 **건너뛰기** 시작한다. 실측: 1~11분은 매분
+  # 찍히다가 그 뒤 25분간 한 줄도 안 찍혔고, 그동안 수집은 멀쩡히 돌고 있었다.
+  # 침묵이 정상 동작과 구별되지 않으면 heartbeat이 아니다.
+  MIN=$((EL / 60))
+  if [ "$MIN" -gt "${LAST_MIN:-0}" ]; then
+    LAST_MIN="$MIN"
     DONE="$(count_parts)"
     PROG="$(tail -1 "$ROOT/bench/collected/$NAME.progress.json" 2>/dev/null || echo '')"
-    echo "[collect-stock] $((EL/60))분 경과 — 그룹 $DONE/$EXPECTED  $PROG"
+    echo "[collect-stock] ${MIN}분 경과 — 그룹 $DONE/$EXPECTED  $PROG"
   fi
   sleep 5
 done
