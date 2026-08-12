@@ -62,15 +62,16 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                         target: target.0,
                         text: new_text.clone(),
                     });
-                    // **2026-07-28 R2 축 수리**: 이 슬롯의 아이템이 바뀌었으므로
-                    // 그 아이템에서 파생된 binding도 전부 다시 써야 한다.
-                    // 이것이 RQ1이 C의 비용으로 예측한 "O(n×binding) retained-slot
-                    // value-patch"이고, 그 전까지 계측에 존재하지 않던 부분이다
-                    // (§9 C 기각 조항이 겨냥하는 바로 그 비용).
-                    let extra = crate::extra_binding_texts(row_bindings.0, &new_text);
-                    if !extra.is_empty() {
-                        pending.0.push(DomWrite::SetRowBindingTexts { row: entity, texts: extra });
-                    }
+                    // **개정 #9-11(2026-08-12)로 여기서 하던 일이 사라졌다.**
+                    // 예전에는 이 자리에서 `SetRowBindingTexts`로 R2 바인딩 핸들에
+                    // 직접 썼다("O(n×binding) retained-slot value-patch"). 이제
+                    // 바인딩은 자기 entity + 자기 `Signal`을 갖고, 아래
+                    // `RowSpawner::revalue`가 그 Signal을 갈아 끼우면
+                    // `patch_row_binding_system`이 `Changed` 게이팅을 거쳐 패치한다.
+                    // **같은 비용을 조항이 정한 기계로 내는 것**이지 비용을 없앤 게
+                    // 아니다 — 여기서 write를 계속 내면 이중 기록이 되고, 게다가
+                    // `RowBindingTargets`가 더 이상 존재하지 않아 전부
+                    // `dropped_writes`로 떨어진다.
                     // **R3(§3.2) — 이질 브랜치 row**: 값이 바뀌면 그 값에서
                     // 파생된 브랜치도 바뀔 수 있다. §10이 전환형을 "슬롯 entity
                     // 컴포넌트 교체(archetype move)형"으로 사전 고정했으므로

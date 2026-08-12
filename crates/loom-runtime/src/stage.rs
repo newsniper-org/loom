@@ -87,12 +87,21 @@ pub struct StageTimings {
     /// 단일 디스패치 지점의 DOM 배치 적용 구간 — §7.1의 E 보조 "DOM 연산 시간".
     /// `LoomApp::tick`이 직접 채운다(스케줄 바깥이라 마커 System으로는 못 잼).
     pub dom_apply_ms: f64,
-    /// tick 전체(= M1(a)). 위 세 구간의 합보다 크며, 그 차이가 스케줄 오버헤드다.
+    /// **R2(§3.2) row 깊이 축의 patch 구간** (개정 #9-11, 2026-08-12).
+    /// row 내부 바인딩 patch System + 중첩 조건부 reconcile System의 시간.
+    ///
+    /// `systems_ms`와 **분리**하는 이유: §7.1이 E 기각 (ii)의 "매칭 비용"을
+    /// "reconcile System(해시 매칭 + LIS + successor 검색) 시간 + 이동 집합 정렬
+    /// 구간"으로 정의했다. row 바인딩 패치는 그 어느 것도 아니므로 같은 구간에
+    /// 합산하면 그 조항이 재려는 양이 오염된다. 축이 꺼져 있으면 0이다.
+    pub row_patch_ms: f64,
+    /// tick 전체(= M1(a)). 위 구간들의 합보다 크며, 그 차이가 스케줄 오버헤드다.
     pub total_ms: f64,
 
     // --- 내부 스탬프(마커 System 간 전달용) ---
     t_systems_start: f64,
     t_systems_end: f64,
+    t_row_patch_start: f64,
 }
 
 /// 후보 System **앞**에 놓이는 마커.
@@ -110,4 +119,17 @@ pub fn stage_mark_sync_end(mut t: ResMut<StageTimings>) {
     let now = now_ms();
     t.systems_ms = t.t_systems_end - t.t_systems_start;
     t.sync_point_ms = now - t.t_systems_end;
+    // 축이 꺼져 있으면 아래 두 마커가 아예 등록되지 않으므로 여기서 0으로
+    // 되돌려 둔다 — 지난 tick 값이 남아 프로파일에 유령이 서지 않게.
+    t.row_patch_ms = 0.0;
+}
+
+/// R2 patch System 묶음 **앞**(= `stage_mark_sync_end` 뒤).
+pub fn stage_mark_row_patch_start(mut t: ResMut<StageTimings>) {
+    t.t_row_patch_start = now_ms();
+}
+
+/// R2 patch System 묶음 **뒤**.
+pub fn stage_mark_row_patch_end(mut t: ResMut<StageTimings>) {
+    t.row_patch_ms = now_ms() - t.t_row_patch_start;
 }

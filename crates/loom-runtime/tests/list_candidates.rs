@@ -578,7 +578,7 @@ mod row_bindings_axis {
     }
 
     #[test]
-    fn r2_gives_every_k_row_the_configured_extra_static_children() {
+    fn r2_gives_every_k_row_the_configured_bindings_plus_one_conditional() {
         let (mut dom, root) = MockDom::new_root();
         let mut app = LoomApp::new();
         app.set_row_bindings(8); // RQ1-benchmark-protocol.md §3.2's R2: "binding 8개"
@@ -593,10 +593,12 @@ mod row_bindings_axis {
         let rows = dom.child_handles(root);
         assert_eq!(rows.len(), 2);
         for row in rows {
+            // 개정 #9-11: 자식 = 바인딩 7개(= 8 − row 자신의 텍스트) + **중첩
+            // 조건부 앵커 1개**. 조항 원문이 "binding 8개 + 중첩 조건부 1개"다.
             assert_eq!(
                 dom.children[&row.0].len(),
-                7,
-                "each row must carry 7 extra static children (8 total bindings, 1 primary)"
+                8,
+                "row마다 바인딩 7개 + 중첩 조건부 앵커 1개 = 8개 자식이어야 한다"
             );
         }
     }
@@ -624,7 +626,11 @@ mod row_bindings_axis {
         app.tick(&mut dom);
         assert_eq!(dom.child_handles(root).len(), 2);
         for row in dom.child_handles(root) {
-            assert_eq!(dom.children[&row.0].len(), 3, "every respawned row must carry all 3 extra children again");
+            assert_eq!(
+                dom.children[&row.0].len(),
+                4,
+                "재스폰된 row마다 바인딩 3개 + 조건부 앵커 1개가 다시 만들어져야 한다"
+            );
         }
     }
 
@@ -643,7 +649,7 @@ mod row_bindings_axis {
             .id();
         app.tick(&mut dom);
         for row in dom.child_handles(root) {
-            assert_eq!(dom.children[&row.0].len(), 4, "initial rows still get their 4 extra children once");
+            assert_eq!(dom.children[&row.0].len(), 5, "초기 row는 바인딩 4개 + 조건부 앵커 1개를 한 번만 받는다");
         }
 
         // Pure swap of the two existing rows (no new/removed keys) must not
@@ -655,8 +661,8 @@ mod row_bindings_axis {
         for row in dom.child_handles(root) {
             assert_eq!(
                 dom.children[&row.0].len(),
-                4,
-                "a pure reorder must not add/remove any retained row's extra children"
+                5,
+                "순수 재정렬은 retained row의 자식을 하나도 더하거나 빼면 안 된다"
             );
         }
     }
@@ -680,7 +686,10 @@ mod r2_value_derived_bindings {
         let (mut dom, root) = MockDom::new_root();
         let mut app = LoomApp::new();
         app.set_row_bindings(8); // R2
-        app.add_systems(system);
+        // 개정 #9-11: 파생 바인딩 패치가 이제 `revalue` → `patch_row_binding_system`
+        // 경로를 타므로 그 System 묶음이 등록돼 있어야 관측된다.
+        app.add_instrumented_systems(system);
+        app.add_row_depth_systems();
         let initial: Vec<String> = (0..4).map(|i| format!("item-{i}")).collect();
         let e = app
             .world
@@ -914,7 +923,8 @@ fn r2_row_bindings_survive_value_change() {
     let (mut dom, root) = MockDom::new_root();
     let mut app = LoomApp::new();
     app.set_row_bindings(8);
-    app.add_systems(list_reconcile_c_system::<String>);
+    app.add_instrumented_systems(list_reconcile_c_system::<String>);
+    app.add_row_depth_systems();
     let entity = app
         .world
         .spawn((
@@ -931,11 +941,11 @@ fn r2_row_bindings_survive_value_change() {
         .collect();
     assert_eq!(
         rows_after_spawn,
-        vec![7, 7],
-        "spawn 후 row마다 binding span 7개(= row_bindings 8 − row 자신의 텍스트)"
+        vec![8, 8],
+        "spawn 후 row마다 바인딩 span 7개(= row_bindings 8 − row 자신의 텍스트) + 조건부 앵커 1개"
     );
 
-    // 값 변경 — C의 SetText + SetRowBindingTexts 경로.
+    // 값 변경 — C의 SetText + `revalue` → `patch_row_binding_system` 경로.
     app.world.get_mut::<Signal<Vec<String>>>(entity).unwrap().0 =
         vec!["zz".to_string(), "yy".to_string()];
     app.tick(&mut dom);
@@ -947,7 +957,7 @@ fn r2_row_bindings_survive_value_change() {
     assert_eq!(
         rows_after_patch, rows_after_spawn,
         "값이 바뀌어도 binding 자식은 살아 있어야 한다 — 파괴되면 뒤이은 \
-         SetRowBindingTexts가 떨어져 나간 노드에 쓰게 되고, R2 축이 재려던 \
+         바인딩 patch가 떨어져 나간 노드에 쓰게 되고, R2 축이 재려던 \
          'O(n×binding) retained-slot value-patch'가 측정에서 사라진다"
     );
 }

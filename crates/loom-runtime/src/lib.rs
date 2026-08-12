@@ -358,26 +358,10 @@ pub enum DomWrite {
     /// RQ1 Track T candidate F: show/hide without despawn (see
     /// `DomOps::set_visible`).
     SetVisible { node: NodeHandle, visible: bool },
-    /// RQ1 row-depth axis (R1/R2, `RowBindings`): appends `texts.len()` extra
-    /// static text children under a row — standing in for "N bindings per
-    /// row" (RQ1-benchmark-protocol.md §3.2's R2, "binding 8개"). Named by
-    /// `Entity` like `SpawnRow`'s `before`: the row may have been spawned
-    /// earlier in the *same* flush batch, so its `NodeHandle` isn't resolved
-    /// until this write is actually applied (by then the row's `SpawnRow`
-    /// write — always emitted first — has already attached its `DomTarget`).
-    /// Models row-*creation* cost scaling with depth (correctly stresses K's
-    /// full-recreate-every-tick cost against D/E's move-only cost, which is
-    /// what RQ1 §9's D-vs-K rejection gate at R2 needs) — not candidate C's
-    /// separate "O(n×binding) retained-slot value-patch" cost, which would
-    /// need each binding independently re-compared/rewritten on every tick,
-    /// not just created once. Stated plainly: this axis doesn't test that
-    /// half of R2's prediction, and RQ1 §9's C adoption conditions don't
-    /// need R2 data at all (R1-only), so it isn't required to.
-    AppendStaticChildren { row: Entity, texts: Vec<String> },
     /// Compiler-generated conditionals (`{cond() && <X/>}`, loom-compiler's
     /// codegen.rs): appends one static text child under an *already
-    /// resolved* parent node. Unlike `AppendStaticChildren`, no
-    /// `Entity`-to-`NodeHandle` resolution is needed here — the parent (the
+    /// resolved* parent node. No `Entity`-to-`NodeHandle` resolution is
+    /// needed here — the parent (the
     /// conditional's wrapper element) was created directly via
     /// `DomOps::create_element` before any reconcile System ever ran, so it
     /// already has a real `NodeHandle` by the time this write is emitted.
@@ -397,8 +381,6 @@ pub enum DomWrite {
     /// 재정렬(= 슬롯 값 교체)은 이 write를 row마다 한 번씩 내게 된다 —
     /// 그것이 §9 C 기각 조항이 겨냥하는 비용이다. keyed 후보(D/E)는 retained
     /// row의 아이템이 바뀌지 않으므로 이 write를 내지 않는다(그 비대칭이 곧
-    /// RQ1의 예측).
-    SetRowBindingTexts { row: Entity, texts: Vec<String> },
     /// RQ1 Track T F 계열: 노드를 fragment로 분리한다. 결과 핸들은
     /// `LoomApp::tick`이 `FragmentTable`에 적재해 `CondBlock`이 정수로만
     /// 참조하게 한다.
@@ -477,15 +459,6 @@ pub struct FragmentHandle(pub u32);
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DetachedFragment(pub FragmentHandle);
 
-/// RQ1 row 깊이 축(R2)의 추가 binding들이 붙은 DOM 노드 핸들. **2026-07-28
-/// 신설** — 그 전까지 추가 binding은 핸들 없는 정적 텍스트 노드라 한 번
-/// 만들어지면 다시 쓸 수 없었고, 그 때문에 §9 C 기각 조항이 겨냥하는
-/// "O(n×binding) retained-slot value-patch" 비용이 계측에 존재하지 않았다
-/// (상세는 RQ1의 "C 기각 조건 재검토" 절). 핸들을 들고 있어야 슬롯 값이
-/// 바뀔 때 파생 binding을 재기록할 수 있다.
-#[derive(Component, Debug, Clone, Default)]
-pub struct RowBindingTargets(pub Vec<NodeHandle>);
-
 #[derive(Resource, Default)]
 pub struct PendingDomWrites(pub Vec<DomWrite>);
 
@@ -493,8 +466,11 @@ pub struct PendingDomWrites(pub Vec<DomWrite>);
 /// beyond its own primary content (default 1 = R1, "binding 1개"). Read by
 /// every Track L candidate's spawn path (`list_reconcile_k_system` here;
 /// `list_reconcile_c_system`/`place_in_order`/`place_in_order_lis` in
-/// `list.rs`) — see `DomWrite::AppendStaticChildren`'s doc comment for what
-/// this axis does and doesn't model.
+/// `list.rs`). **개정 #9-11(2026-08-12)로 이 축의 모델이 바뀌었다**: 예전에는
+/// row당 정적 텍스트 자식 `n-1`개였고, 이제는 `RowBinding` entity `n-1`개
+/// (각자 `Signal<String>` + `DomTarget`, `Changed` 게이팅)와 중첩 조건부 1개다 —
+/// §3.2 문언("binding 8개 + 중첩 조건부 1개") 그대로. `RowBinding`의 doc comment에
+/// 왜 바꿨는지와 그 변경이 어느 후보에 어떤 방향인지 상세.
 #[derive(Resource, Clone, Copy)]
 pub struct RowBindings(pub usize);
 
@@ -530,6 +506,37 @@ pub(crate) fn row_variant_is_a(text: &str) -> bool {
 
 pub(crate) fn extra_binding_texts(row_bindings: usize, primary: &str) -> Vec<String> {
     (1..row_bindings).map(|i| format!("{primary}-bind{i}")).collect()
+}
+
+/// **R2(§3.2)의 row 내부 바인딩 하나.** 개정 #9-11로 신설.
+///
+/// 2026-08-12 이전의 R2는 `RowBindingTargets(Vec<NodeHandle>)` — reconcile System이
+/// 명령형으로 핸들에 직접 쓰는 구조였다. 값 패치 비용(C의 O(n×binding))은 그것으로도
+/// 잡혔지만, docs/03이 말하는 binding은 **`Changed<Signal<T>>`로 게이팅된 좁은 System
+/// 하나가 DOM op 하나를 내는 것**이다. 그래서 옛 구조는 binding당 변경 감지, 8n개
+/// entity가 만드는 archetype 폭, patch System의 쿼리 순회, entity spawn/despawn 비용을
+/// 하나도 재지 않았다 — §9의 D 기각(iii)·D 양성·E 기각(i)이 전부 R2 셀에 걸려 있는데도.
+///
+/// 이 marker가 붙은 entity는 `Signal<String>` + `DomTarget`을 갖고
+/// `patch_row_binding_system`이 자기 것만 골라 패치한다. `patch_text_system::<String>`을
+/// 그냥 쓰지 않는 이유는 `Signal<String>`이 `<input>` 양방향 바인딩과 같은 타입이라
+/// 교차 매칭될 수 있기 때문이다(`patch_input_system`의 doc comment와 같은 사유).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct RowBinding;
+
+/// **R2의 "중첩 조건부 1개"**(§3.2). row마다 하나씩 달리는 조건부 블록의 앵커.
+/// 실효값은 row의 아이템에서 파생되므로(`row_cond_is_shown`) 슬롯 값이 제자리에서
+/// 바뀌는 후보 C에서는 토글이 실제로 일어나고, retained row를 갖는 D·E에서는
+/// 일어나지 않는다 — R3 브랜치와 같은 비대칭이며 같은 이유다.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct RowCond;
+
+/// 값 → 중첩 조건부의 실효값. `row_variant_is_a`와 같은 이유로 결정적이어야 한다
+/// (§7 M2가 "시드 고정 하에 결정적 수치"를 요구).  마지막 바이트의 하위 2비트를
+/// 보므로 `row_variant_is_a`(하위 1비트)와 **독립적이지 않게** 겹치지 않도록 다른
+/// 비트를 쓴다 — 두 축이 같은 조건에서 동시에 뒤집히면 R2와 R3의 효과가 교락된다.
+pub(crate) fn row_cond_is_shown(text: &str) -> bool {
+    text.as_bytes().last().map(|b| (b >> 1) % 2 == 0).unwrap_or(true)
 }
 
 /// row 하나를 만들 때 생성기가 쓸 수 있는 것들. `Commands`와 write 큐만 있고
@@ -640,9 +647,66 @@ impl RowSpawner for DefaultRow {
             text: text.to_string(),
             before,
         });
-        let extra = extra_binding_texts(out.row_bindings, text);
-        if !extra.is_empty() {
-            out.pending.push(DomWrite::AppendStaticChildren { row, texts: extra });
+        // **R2(§3.2) — 깊은 row = "binding 8개 + 중첩 조건부 1개"** (개정 #9-11,
+        // 2026-08-12). 축이 꺼져 있으면(`row_bindings == 1`) 아래는 통째로 건너뛰고
+        // 방출 write 열이 R1에서 한 글자도 안 바뀐다 — 변경을 R2 셀에만 가둔다.
+        //
+        // 이전 구현은 `AppendStaticChildren`으로 핸들만 만들고 reconcile System이
+        // 명령형으로 썼다. 이제 바인딩 하나가 **자기 entity + 자기 Signal**을 갖고
+        // `patch_row_binding_system`이 `Changed`로 게이팅해 패치한다(`RowBinding`의
+        // doc comment에 왜 바꿨는지 상세). 그 결과 K는 재정렬마다 8n개 entity를
+        // 만들고 지우게 되는데, 그것이 조항이 정한 row 모양에서 대조군이 실제로
+        // 내는 비용이다.
+        if out.row_bindings > 1 {
+            let mut owned = Vec::with_capacity(out.row_bindings);
+            for extra in extra_binding_texts(out.row_bindings, text) {
+                // `ChildOf`로 row에 매단다 — Bevy의 `Children`이
+                // `#[relationship_target(.., linked_spawn)]`이라 **row를 despawn하면
+                // 이 entity들도 함께 사라진다**. 손으로 정리하면 list.rs의 despawn
+                // 지점 여섯 곳을 전부 고쳐야 하고 하나라도 빠뜨리면 World가 매 틱
+                // 누적된다(실제로 K에서 그 누수가 났고 `tests/r2_axis.rs`가 잡았다).
+                // CLAUDE.md 2-1 — 이미 잘 풀린 메커니즘은 그대로 재사용한다.
+                let child = out
+                    .commands
+                    .spawn((Signal(extra.clone()), RowBinding, ::bevy_ecs::hierarchy::ChildOf(row)))
+                    .id();
+                out.pending.push(DomWrite::SpawnElement {
+                    entity: child,
+                    parent: WriteParent::Entity(row),
+                    tag: "span",
+                    class: None,
+                    loom_id: None,
+                    text: Some(extra),
+                });
+                owned.push(child);
+            }
+            // 중첩 조건부 1개. 앵커 엘리먼트를 먼저 만들고(`DomTarget`이 붙어야
+            // `cond_reconcile_b_system`이 자식을 그 아래에 넣는다) 실효값은 row의
+            // 아이템에서 파생한다. arm은 B — 트랙 T 판정(2026-08-07)이 "B 유지,
+            // F 계열 기각"이므로 기준선 arm을 쓰는 것이 맞고, 조건부 후보 판정은
+            // 트랙 T의 일이지 트랙 L의 row 깊이 축이 정할 일이 아니다.
+            let cond = out
+                .commands
+                .spawn((
+                    Signal(row_cond_is_shown(text)),
+                    cond::CondBlock::default(),
+                    RowCond,
+                    ::bevy_ecs::hierarchy::ChildOf(row),
+                ))
+                .id();
+            out.pending.push(DomWrite::SpawnElement {
+                entity: cond,
+                parent: WriteParent::Entity(row),
+                tag: "span",
+                class: None,
+                loom_id: None,
+                text: None,
+            });
+            owned.push(cond);
+            // `ChildOf`가 정리를 맡고 `RowOwned`는 **순서 있는 접근**을 맡는다 —
+            // `revalue`가 "마지막이 조건부, 나머지가 바인딩"이라는 고정 배치로
+            // 인덱싱하기 때문이다(`Children`의 순서에 기대지 않는다).
+            out.commands.entity(row).insert(RowOwned(owned));
         }
         // **R3(§3.2) — 이질 브랜치 row** (2026-08-07 수리). 그 전까지 이 축을
         // 실제로 적용하는 후보는 C 하나뿐이었고, D/D-LIS/E/E-LIS는
@@ -663,6 +727,43 @@ impl RowSpawner for DefaultRow {
                 out.commands.entity(row).insert(RowVariantB);
             }
         }
+    }
+
+    /// **C 전용 경로** — 슬롯의 아이템이 제자리에서 바뀌었을 때 그 값에서 파생된
+    /// 것들을 갱신한다. R2 축이 꺼져 있으면 `owned`가 비어 있어 통째로 no-op이다.
+    ///
+    /// `Signal`을 `insert`로 덮어쓰면 변경 표시가 서므로 `patch_row_binding_system`과
+    /// `cond_reconcile_b_system`이 **평범하게** 반응한다 — 여기서 DOM write를 직접
+    /// 내지 않는 것이 요점이다. 옛 구현(`SetRowBindingTexts`)은 reconcile System이
+    /// DOM에 직접 썼고, 그래서 binding당 변경 감지라는 것이 존재하지 않았다.
+    fn revalue(
+        _site: &NoRowCtx,
+        out: &mut RowSpawnCtx,
+        _row: Entity,
+        owned: &[Entity],
+        text: &str,
+    ) {
+        let Some((&cond, bindings)) = owned.split_last() else {
+            return;
+        };
+        for (i, &child) in bindings.iter().enumerate() {
+            out.commands.entity(child).insert(Signal(format!("{text}-bind{}", i + 1)));
+        }
+        out.commands.entity(cond).insert(Signal(row_cond_is_shown(text)));
+    }
+}
+
+/// R2 바인딩의 patch System — docs/03 "반응성 파이프라인"의 좁은 System 하나.
+/// `Changed<Signal<String>>`로 게이팅되고 DOM op를 정확히 하나 낸다.
+pub fn patch_row_binding_system(
+    q: Query<(&Signal<String>, &DomTarget), (Changed<Signal<String>>, With<RowBinding>)>,
+    mut pending: ResMut<PendingDomWrites>,
+) {
+    for (signal, target) in &q {
+        pending.0.push(DomWrite::SetText {
+            target: target.0,
+            text: signal.0.clone(),
+        });
     }
 }
 
@@ -877,6 +978,38 @@ impl LoomApp {
         self
     }
 
+    /// **R2(§3.2) row 깊이 축의 patch System 묶음**을 등록한다(개정 #9-11).
+    /// `set_row_bindings(n>1)`인 앱만 부르면 되고, 부르지 않으면 스케줄에 아무것도
+    /// 안 붙으므로 R1 셀의 실행 경로가 한 System도 달라지지 않는다.
+    ///
+    /// **sync point 뒤에 놓는 것이 요점이다**: 후보 C의 `RowSpawner::revalue`가
+    /// `Commands`로 `Signal`을 갈아 끼우므로, 그 변경 표시를 같은 tick에 보려면
+    /// `ApplyDeferred` 이후여야 한다. 그리고 `systems_ms`(§7.1이 E 기각 (ii)의
+    /// "매칭 비용"으로 정의한 구간) 밖이어야 그 조항이 재려는 양이 안 오염된다 —
+    /// 그래서 자기 구간(`row_patch_ms`)을 따로 잰다.
+    /// **전제**: 후보 System은 `add_instrumented_systems`로 등록돼 있어야 한다.
+    /// 아래 순서 제약이 그쪽이 놓는 `stage_mark_sync_end`를 기준점으로 삼기
+    /// 때문이고, 그것이 곧 "sync point 뒤"의 유일한 표현이다. 측정 경로가
+    /// 그 등록 방식을 쓰므로 테스트도 같은 방식을 써야 한다 — 다른 경로로
+    /// 검증하면 그 자체가 계측과 판정 대상의 어긋남이다.
+    pub fn add_row_depth_systems(&mut self) -> &mut Self {
+        assert!(
+            self.world.get_resource::<StageTimings>().is_some(),
+            "add_row_depth_systems는 add_instrumented_systems 뒤에 불러야 한다 \
+             (순서 기준점이 stage_mark_sync_end다)"
+        );
+        self.schedule.add_systems(
+            (
+                stage::stage_mark_row_patch_start,
+                (patch_row_binding_system, cond::cond_reconcile_b_system),
+                stage::stage_mark_row_patch_end,
+            )
+                .chain_ignore_deferred()
+                .after(stage::stage_mark_sync_end),
+        );
+        self
+    }
+
     /// Runs one reactive tick: execute all registered patch Systems, then
     /// apply the DOM writes they produced at the single sync point. This is
     /// the whole "No-VDOM" pipeline — no tree is diffed anywhere in it.
@@ -958,32 +1091,6 @@ impl LoomApp {
                 }
                 DomWrite::RemoveNode { node } => dom.remove_node(node),
                 DomWrite::SetVisible { node, visible } => dom.set_visible(node, visible),
-                DomWrite::AppendStaticChildren { row, texts } => {
-                    let Some(handle) = self.dom_target(row) else {
-                        self.dropped_writes += 1;
-                        continue;
-                    };
-                    // 2026-07-28: `append_static_text`(핸들 없는 텍스트 노드)
-                    // 대신 추적되는 엘리먼트를 만든다 — 그래야 슬롯 값이 바뀔 때
-                    // 재기록할 수 있고, R2가 "binding 8개"를 실제로 모델링하게
-                    // 된다(binding site = 동적 텍스트를 갖는 엘리먼트).
-                    let mut targets = Vec::with_capacity(texts.len());
-                    for text in &texts {
-                        let child = dom.create_element(handle, "span", None);
-                        dom.set_text_content(child, text);
-                        targets.push(child);
-                    }
-                    self.world.entity_mut(row).insert(RowBindingTargets(targets));
-                }
-                DomWrite::SetRowBindingTexts { row, texts } => {
-                    let Some(targets) = self.world.get::<RowBindingTargets>(row).cloned() else {
-                        self.dropped_writes += 1;
-                        continue;
-                    };
-                    for (handle, text) in targets.0.iter().zip(texts.iter()) {
-                        dom.set_text_content(*handle, text);
-                    }
-                }
                 DomWrite::DetachToFragment { block, node } => {
                     let handle = dom.detach_to_fragment(node);
                     self.world.entity_mut(block).insert(DetachedFragment(handle));

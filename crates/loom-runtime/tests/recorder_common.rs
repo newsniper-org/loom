@@ -35,12 +35,18 @@ fn render(ids: &mut Ids, w: &DomWrite) -> String {
             let (e, b) = (ids.of(entity), ids.opt(before));
             format!("Reposition({parent:?}, {e}, before={b})")
         }
+        // 개정 #9-11로 R2가 내는 write. `SpawnRow`와 같은 이유로 entity와
+        // parent entity를 둘 다 정규화해야 골든이 id 할당 변화에 안 흔들린다.
+        DomWrite::SpawnElement { entity, parent, tag, class, loom_id, text } => {
+            let e = ids.of(entity);
+            let p = match parent {
+                loom_runtime::WriteParent::Entity(pe) => ids.of(pe),
+                loom_runtime::WriteParent::Node(n) => format!("{n:?}"),
+            };
+            format!("SpawnElement({e}, parent={p}, {tag}, class={class:?}, loom_id={loom_id:?}, text={text:?})")
+        }
         DomWrite::RemoveNode { node } => format!("RemoveNode({node:?})"),
         DomWrite::ClearChildren { parent } => format!("ClearChildren({parent:?})"),
-        DomWrite::AppendStaticChildren { row, texts } => {
-            let r = ids.of(row);
-            format!("AppendStaticChildren({r}, {texts:?})")
-        }
         other => format!("{other:?}"),
     }
 }

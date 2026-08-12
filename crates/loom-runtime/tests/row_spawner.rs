@@ -30,13 +30,7 @@ fn render(w: &DomWrite) -> String {
         }
         DomWrite::RemoveNode { node } => format!("RemoveNode({node:?})"),
         DomWrite::ClearChildren { parent } => format!("ClearChildren({parent:?})"),
-        DomWrite::AppendStaticChildren { row, texts } => {
-            format!("AppendStaticChildren({row:?}, {texts:?})")
-        }
         DomWrite::SetText { target, text } => format!("SetText({target:?}, {text:?})"),
-        DomWrite::SetRowBindingTexts { row, texts } => {
-            format!("SetRowBindingTexts({row:?}, {texts:?})")
-        }
         other => format!("{other:?}"),
     }
 }
