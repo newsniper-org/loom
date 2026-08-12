@@ -36,6 +36,8 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), F>,
     mut slots: Query<(&mut SlotValue, &DomTarget)>,
     owned: Query<&crate::RowOwned>,
+    variant_nodes: Query<&crate::RowVariantNode>,
+    variant_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
@@ -100,10 +102,34 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                                 commands.entity(entity)
                                     .remove::<crate::RowVariantB>()
                                     .insert(crate::RowVariantA);
+                                // **구조 분기 전환 B→A**(개정 #9-12): `<em>` 래퍼를
+                                // 실제로 걷어낸다. 핸들은 despawn 전에 읽어야 한다 —
+                                // Commands는 sync point에서 적용되고 write 적용 루프는
+                                // 그 뒤에 돌기 때문(`DomWrite::RemoveNode` doc 참고).
+                                if let Some(node) = variant_nodes.get(entity).ok().copied() {
+                                    if let Ok(target) = variant_targets.get(node.0) {
+                                        pending.0.push(DomWrite::RemoveNode { node: target.0 });
+                                    }
+                                    commands.entity(node.0).despawn();
+                                    commands.entity(entity).remove::<crate::RowVariantNode>();
+                                }
                             } else {
                                 commands.entity(entity)
                                     .remove::<crate::RowVariantA>()
                                     .insert(crate::RowVariantB);
+                                // 전환 A→B: 래퍼를 새로 만든다.
+                                let em = commands
+                                    .spawn(::bevy_ecs::hierarchy::ChildOf(entity))
+                                    .id();
+                                pending.0.push(DomWrite::SpawnElement {
+                                    entity: em,
+                                    parent: crate::WriteParent::Entity(entity),
+                                    tag: "em",
+                                    class: None,
+                                    loom_id: None,
+                                    text: Some(new_text.clone()),
+                                });
+                                commands.entity(entity).insert(crate::RowVariantNode(em));
                             }
                         }
                     }
@@ -946,6 +972,8 @@ pub fn list_reconcile_c_system<T>(
     lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
     slots: Query<(&mut SlotValue, &DomTarget)>,
     owned: Query<&crate::RowOwned>,
+    variant_nodes: Query<&crate::RowVariantNode>,
+    variant_targets: Query<&DomTarget>,
     commands: Commands,
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
@@ -958,6 +986,8 @@ pub fn list_reconcile_c_system<T>(
         lists,
         slots,
         owned,
+        variant_nodes,
+        variant_targets,
         commands,
         pending,
         row_bindings,
@@ -972,6 +1002,8 @@ pub fn list_reconcile_c_system_with<T, R: crate::RowSpawner>(
     >,
     slots: Query<(&mut SlotValue, &DomTarget)>,
     owned: Query<&crate::RowOwned>,
+    variant_nodes: Query<&crate::RowVariantNode>,
+    variant_targets: Query<&DomTarget>,
     commands: Commands,
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
@@ -980,5 +1012,16 @@ pub fn list_reconcile_c_system_with<T, R: crate::RowSpawner>(
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
-    c_body::<T, R, _>(&site, lists, slots, owned, commands, pending, row_bindings, variant_mode);
+    c_body::<T, R, _>(
+        &site,
+        lists,
+        slots,
+        owned,
+        variant_nodes,
+        variant_targets,
+        commands,
+        pending,
+        row_bindings,
+        variant_mode,
+    );
 }

@@ -499,6 +499,19 @@ pub struct RowVariantA;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RowVariantB;
 
+/// **브랜치 B rows의 구조 차이를 담는 래퍼 노드**(개정 #9-12, 2026-08-12).
+///
+/// 개정 #8 말미가 "§3.2의 R3 문언은 '값에 따라 `<A/>`/`<B/>` **구조 분기**'인데
+/// DOM 구조는 A/B가 동일하다 — 분기는 ECS archetype 수준에만 존재한다"를 별도
+/// 미이행으로 등재하고 "재수집 전에 별도로 결정할 것"으로 남겼다. 개정 #9가 그
+/// 결정을 내렸다: **구조를 실제로 다르게 만든다.** A는 텍스트만, B는 `<em>` 래퍼가
+/// 하나 더 붙는다 — 최소한이지만 진짜 구조 차이다.
+///
+/// 값에서 파생되므로 슬롯 아이템이 제자리에서 바뀌는 C에서는 전환마다 DOM 조작이
+/// 실제로 발생하고, retained row를 갖는 keyed 후보에서는 발생하지 않는다.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct RowVariantNode(pub Entity);
+
 /// 값 → 브랜치. 결정적이어야 시드 고정 하에 M2가 결정적 수치가 된다(§7 M2).
 pub(crate) fn row_variant_is_a(text: &str) -> bool {
     text.as_bytes().last().map(|b| b % 2 == 0).unwrap_or(true)
@@ -725,6 +738,21 @@ impl RowSpawner for DefaultRow {
                 out.commands.entity(row).insert(RowVariantA);
             } else {
                 out.commands.entity(row).insert(RowVariantB);
+                // **구조 분기**(개정 #9-12): B만 `<em>` 래퍼를 하나 더 갖는다.
+                // `ChildOf`이므로 row가 despawn되면 함께 사라진다.
+                let em = out
+                    .commands
+                    .spawn(::bevy_ecs::hierarchy::ChildOf(row))
+                    .id();
+                out.pending.push(DomWrite::SpawnElement {
+                    entity: em,
+                    parent: WriteParent::Entity(row),
+                    tag: "em",
+                    class: None,
+                    loom_id: None,
+                    text: Some(text.to_string()),
+                });
+                out.commands.entity(row).insert(RowVariantNode(em));
             }
         }
     }

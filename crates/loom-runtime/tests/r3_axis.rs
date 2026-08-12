@@ -127,3 +127,67 @@ fn keyed_candidates_do_not_transition_branches_on_reorder() {
         assert_eq!(was_a, now_a, "keyed 후보에서 브랜치가 전환됐다 — 예측과 다르다");
     }
 }
+
+// ---------------------------------------------------------------------------
+// 개정 #9-12(2026-08-12) — **구조 분기가 DOM에 실제로 나타나는가**.
+//
+// 개정 #8 말미가 등재한 미이행: §3.2의 R3 문언은 "값에 따라 `<A/>`/`<B/>` **구조
+// 분기**"인데 DOM 구조는 A/B가 동일했고 분기는 ECS archetype 수준에만 있었다.
+// 개정 #9가 "구조를 실제로 다르게 만든다"로 결정했으므로(A = 텍스트만,
+// B = `<em>` 래퍼 추가), 여기서 그것이 DOM까지 내려가는지 본다.
+//
+// **위쪽 marker 검사만으로는 부족한 이유**: marker가 붙어도 DOM이 같으면 §9 C
+// 기각 (ii)가 재는 전환 비용에 DOM 조작분이 빠진다 — 계측이 "존재한다"와 "조항이
+// 요구하는 걸 잰다"의 차이가 정확히 여기서 벌어진다.
+// ---------------------------------------------------------------------------
+mod support;
+
+#[test]
+fn variant_b_rows_carry_a_real_structural_wrapper_and_a_rows_do_not() {
+    use support::MockDom;
+    let (mut dom, root) = MockDom::new_root();
+    let mut app = LoomApp::new();
+    app.set_row_variant_mode(true);
+    app.add_instrumented_systems(list_reconcile_c_system::<String>);
+    let initial: Vec<String> = ITEMS.iter().map(|s| s.to_string()).collect();
+    app.world.spawn((Signal(initial), ListRows::default(), DomTarget(root)));
+    app.tick(&mut dom);
+
+    // `row_variant_is_a`는 마지막 바이트가 짝수면 A. ITEMS = a0,a1,a2,a3 이므로
+    // 인덱스 0·2가 A, 1·3이 B다.
+    let rows = dom.child_handles(root);
+    assert_eq!(rows.len(), ITEMS.len());
+    let children: Vec<usize> = rows.iter().map(|r| dom.children[&r.0].len()).collect();
+    assert_eq!(
+        children,
+        vec![0, 1, 0, 1],
+        "B 브랜치 row만 `<em>` 래퍼를 하나 더 가져야 한다 — 구조가 같으면 \
+         R3는 여전히 archetype 수준에만 존재하는 것이다"
+    );
+}
+
+#[test]
+fn c_transition_actually_adds_and_removes_the_wrapper_in_the_dom() {
+    use support::MockDom;
+    let (mut dom, root) = MockDom::new_root();
+    let mut app = LoomApp::new();
+    app.set_row_variant_mode(true);
+    app.add_instrumented_systems(list_reconcile_c_system::<String>);
+    let list = app
+        .world
+        .spawn((Signal(vec!["a0".to_string()]), ListRows::default(), DomTarget(root)))
+        .id();
+    app.tick(&mut dom);
+    let row = dom.child_handles(root)[0];
+    assert_eq!(dom.children[&row.0].len(), 0, "a0은 A 브랜치라 래퍼가 없다");
+
+    // A → B: 래퍼가 생겨야 한다.
+    app.world.get_mut::<Signal<Vec<String>>>(list).unwrap().0 = vec!["a1".to_string()];
+    app.tick(&mut dom);
+    assert_eq!(dom.children[&row.0].len(), 1, "A→B 전환에서 `<em>` 래퍼가 안 생겼다");
+
+    // B → A: 래퍼가 사라져야 한다.
+    app.world.get_mut::<Signal<Vec<String>>>(list).unwrap().0 = vec!["a2".to_string()];
+    app.tick(&mut dom);
+    assert_eq!(dom.children[&row.0].len(), 0, "B→A 전환에서 `<em>` 래퍼가 안 걷혔다");
+}
