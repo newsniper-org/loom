@@ -1197,6 +1197,17 @@ struct Cell {
     workload: Workload,
     /// §10 write 변형 축. §3.3이 이중 측정을 요구한 셀에서만 두 값이 다 나온다.
     write_variant: loom_runtime::WriteVariant,
+    /// W6 전용 좌표 `(후보 인덱스, 시행 번호)`. `Some`이면 이 셀은 스트레스
+    /// 러너가 돈다. **(후보 × 시행)마다 셀 하나**인 이유는 아래 세 가지다:
+    ///
+    /// 1. §8 "셀당 벽시계 상한 30분"이 셀 단위 규정인데, 6후보 × 5시행을 한 셀에
+    ///    묶으면 그 셀 하나가 최대 15시간을 먹는다(실측: K가 n≈5,300에서 이미
+    ///    30분을 채웠고 10^4까지면 시행당 ~106분이다).
+    /// 2. §8 "셀마다 fresh page load"가 그때 비로소 지켜진다. 한 페이지에 30개
+    ///    실행을 몰면 뒤쪽 arm은 앞쪽이 어질러 놓은 힙 위에서 측정된다.
+    /// 3. 브라우저가 죽어도 **그 셀 하나만** 잃는다. 실제로 2026-08-12 첫 수집이
+    ///    W6 도중 죽어 74분치가 날아갔다.
+    stress: Option<(usize, u32)>,
 }
 
 /// §3.3의 **핵심 격자**인가 — "{W1,W2,W3,W4,W5,W7} × {R1,R2} × n=1,000".
@@ -1231,6 +1242,7 @@ fn cell_list() -> Vec<Cell> {
         row_variants: rv,
         workload: w,
         write_variant: loom_runtime::WriteVariant::Conditional,
+        stress: None,
     };
     let mut v = Vec::new();
 
@@ -1268,8 +1280,14 @@ fn cell_list() -> Vec<Cell> {
     v.push(pod(1000, 1, 0, true, Workload::Shuffle));
 
     // "W6: 4후보 전부(v1.1 — 처리 기록 E-2·M-9)." n·row 축이 없다 —
-    // 워크로드 정의 자체가 "n=0에서 시작"이다.
-    v.push(pod(0, 1, 0, false, Workload::Stress));
+    // 워크로드 정의 자체가 "n=0에서 시작"이다. §8의 "독립 5시행"과 "셀마다
+    // fresh page load"를 함께 지키려면 (후보 × 시행)마다 셀 하나여야 한다
+    // (`Cell::stress`의 doc comment에 근거 셋).
+    for ci in 0..6usize {
+        for trial in 0..W6_TRIALS {
+            v.push(Cell { stress: Some((ci, trial)), ..pod(0, 1, 0, false, Workload::Stress) });
+        }
+    }
 
     // "W8: R1 × 4후보." — 조항의 W8 정의가 "외부 100 × 내부 100 중첩에서
     // 외부 head-insert"이므로 크기가 워크로드 정의에 박혀 있다.
@@ -1290,6 +1308,7 @@ fn cell_list() -> Vec<Cell> {
         row_variants: false,
         workload: Workload::ValueUpdate,
         write_variant: loom_runtime::WriteVariant::Conditional,
+        stress: None,
     });
 
     // -----------------------------------------------------------------------
@@ -1325,11 +1344,14 @@ fn cell_list() -> Vec<Cell> {
     v
 }
 
-/// **W6(§3.1 "스트레스")** — "n=0에서 head-insert **10^4회** 연속".
+/// W6의 독립 시행 수(§8: "연속 1회 실행 × **독립 5시행**").
+const W6_TRIALS: u32 = 5;
+
+/// **W6(§3.1 "스트레스")의 한 셀** = (후보 하나, 시행 하나).
+/// "n=0에서 head-insert **10^4회** 연속".
 ///
-/// §8 반복 프로토콜이 이 워크로드만 따로 정의한다: "W6 = 연속 1회 실행 × 독립
-/// 5시행(**반복 개념 없음**)". 그래서 다른 셀과 같은 워밍업/측정 루프를 못 타고
-/// 여기 전용 러너가 있다.
+/// §8이 이 워크로드만 따로 정의한다: "W6 = 연속 1회 실행 × 독립 5시행(**반복
+/// 개념 없음**)". 그래서 다른 셀의 워밍업/측정 루프를 안 탄다.
 ///
 /// §7 M1의 W6 보고 규칙(v1.1 — E-2): "전 arm에 대해 (i) amortized 총 시간·삽입당
 /// median, (ii) **단발 최대 flush 시간**(sync point 정지시간)을 동일 표에 병기 —
@@ -1340,83 +1362,88 @@ fn cell_list() -> Vec<Cell> {
 /// 간격 소진 시 국소 재라벨)이 아니라 **매 reconcile마다 `0..n-1` 조밀 재태그**다
 /// (`OrderKey`의 doc comment가 그 축소를 이미 명시). 즉 "재라벨 이벤트"라는 사건
 /// 자체가 이 구현에 존재하지 않으므로 0을 적으면 "한 번도 안 일어났다"로 읽히는
-/// 거짓이 된다. `null` = **해당 없음**이고, 이 어긋남은 개정 #9 후속으로 등재된다.
-#[allow(clippy::too_many_arguments)]
-async fn run_w6_stress(
+/// 거짓이 된다. `null` = **해당 없음**이고, 이 어긋남은 개정 #9 후속으로 등재됐다.
+async fn run_w6_cell(
     document: &web_sys::Document,
     scratch_parent: &web_sys::Node,
+    candidate_index: usize,
+    trial: u32,
     out: &mut String,
     first_entry: &mut bool,
 ) {
     const INSERTS: usize = 10_000;
-    const TRIALS: u32 = 5;
 
-    for trial in 0..TRIALS {
-        let container = document.create_element("div").unwrap();
-        scratch_parent.append_child(&container).unwrap();
-        let node: web_sys::Node = container.clone().into();
+    let container = document.create_element("div").unwrap();
+    scratch_parent.append_child(&container).unwrap();
+    let node: web_sys::Node = container.clone().into();
 
-        let mut candidates: Vec<Candidate<ItemId>> = all_makers()
-            .iter()
-            .map(|maker| maker(document, &node, Vec::new(), 1, 0))
-            .collect();
-        let cid = format!("w6|trial={trial}");
+    let maker = all_makers::<ItemId>()[candidate_index];
+    let mut candidate = maker(document, &node, Vec::new(), 1, 0);
+    let cid = format!("w6|cand={candidate_index}|trial={trial}");
 
-        for candidate in candidates.iter_mut() {
-            let started = measure_now();
-            let mut rng = Pcg64::from_seed(derive_seed("w6", &cid, trial));
-            let mut items: Vec<ItemId> = Vec::with_capacity(INSERTS);
-            let mut per_insert: Vec<f64> = Vec::with_capacity(INSERTS);
-            let mut max_flush = 0.0_f64;
-            let mut over_cap = false;
+    let started = measure_now();
+    let mut rng = Pcg64::from_seed(derive_seed("w6", &cid, trial));
+    let mut items: Vec<ItemId> = Vec::with_capacity(INSERTS);
+    let mut per_insert: Vec<f64> = Vec::with_capacity(INSERTS);
+    let mut max_flush = 0.0_f64;
+    let mut over_cap = false;
 
-            for _ in 0..INSERTS {
-                items.insert(0, ItemId(1_000_000 + (rng.next() as u32 % 1_000_000)));
-                per_insert.push(candidate.set_and_tick(items.clone()));
-                // (ii) 단발 최대 flush 시간 = sync point 정지시간(§7.1).
-                max_flush = max_flush.max(candidate.last_stages.sync_point_ms);
-                // §8 셀 상한 — 초과는 중단이 아니라 "측정 불가" 프로파일 등재다.
-                if measure_now() - started > CELL_CAP_MS {
-                    over_cap = true;
-                    break;
-                }
-            }
-
-            let total: f64 = per_insert.iter().sum();
-            let median = median_of(&per_insert);
-            if !*first_entry {
-                out.push_str(",\n");
-            }
-            *first_entry = false;
-            out.push_str(&format!(
-                "  {{\"candidate\": \"{}\", \"workload\": \"stress\", \"clause\": \"W6\", \
-                 \"item_type\": \"ItemId(POD u32)\", \"n\": 0, \"row_bindings\": 1, \
-                 \"row_inner\": 0, \"row_variants\": false, \"write_variant\": \"Conditional\", \
-                 \"trial\": {}, \"inserts_completed\": {}, \"inserts_target\": {}, \
-                 \"amortized_total_ms\": {:.3}, \"per_insert_median_ms\": {:.5}, \
-                 \"max_single_flush_ms\": {:.5}, \"relabel_events\": null, \
-                 \"over_cell_cap\": {}, \"user_agent\": \"{}\"}}",
-                candidate.name,
-                trial,
-                per_insert.len(),
-                INSERTS,
-                total,
-                median,
-                max_flush,
-                over_cap,
-                user_agent(),
-            ));
+    for i in 0..INSERTS {
+        items.insert(0, ItemId(1_000_000 + (rng.next() as u32 % 1_000_000)));
+        per_insert.push(candidate.set_and_tick(items.clone()));
+        // (ii) 단발 최대 flush 시간 = sync point 정지시간(§7.1).
+        max_flush = max_flush.max(candidate.last_stages.sync_point_ms);
+        // §8 셀 상한 — 초과는 중단이 아니라 "측정 불가" 프로파일 등재다.
+        if measure_now() - started > CELL_CAP_MS {
+            over_cap = true;
+            break;
+        }
+        // 진행 heartbeat: 이 셀은 수십 분이 걸릴 수 있고, 로그가 멈춰 보이면
+        // 죽은 건지 도는 건지 구별이 안 된다(2026-08-12에 실제로 그랬다).
+        if i % 500 == 499 {
             report_progress(&format!(
-                "W6 trial {trial} {} — {}/{INSERTS} inserts, total {total:.0}ms, max flush {max_flush:.3}ms{}",
+                "W6 {} trial {trial} — {}/{INSERTS}, {:.0}s 경과",
                 candidate.name,
-                per_insert.len(),
-                if over_cap { " (상한 초과)" } else { "" }
+                i + 1,
+                (measure_now() - started) / 1000.0
             ));
             double_raf().await;
         }
-
-        container.remove();
     }
+
+    let total: f64 = per_insert.iter().sum();
+    let median = median_of(&per_insert);
+    if !*first_entry {
+        out.push_str(",\n");
+    }
+    *first_entry = false;
+    out.push_str(&format!(
+        "  {{\"candidate\": \"{}\", \"workload\": \"stress\", \"clause\": \"W6\", \
+         \"item_type\": \"ItemId(POD u32)\", \"n\": 0, \"row_bindings\": 1, \
+         \"row_inner\": 0, \"row_variants\": false, \"write_variant\": \"Conditional\", \
+         \"trial\": {}, \"inserts_completed\": {}, \"inserts_target\": {}, \
+         \"amortized_total_ms\": {:.3}, \"per_insert_median_ms\": {:.5}, \
+         \"max_single_flush_ms\": {:.5}, \"relabel_events\": null, \
+         \"cell_wall_ms\": {:.1}, \"over_cell_cap\": {}, \"user_agent\": \"{}\"}}",
+        candidate.name,
+        trial,
+        per_insert.len(),
+        INSERTS,
+        total,
+        median,
+        max_flush,
+        measure_now() - started,
+        over_cap,
+        user_agent(),
+    ));
+    report_progress(&format!(
+        "W6 완료 — {} trial {trial}: {}/{INSERTS} inserts, total {total:.0}ms, max flush {max_flush:.3}ms{}",
+        candidate.name,
+        per_insert.len(),
+        if over_cap { " (상한 초과)" } else { "" }
+    ));
+
+    container.remove();
 }
 
 async fn run_all() -> Result<(), JsValue> {
@@ -1511,8 +1538,8 @@ async fn run_all() -> Result<(), JsValue> {
 
     for cell in selected {
         // W6은 §8이 "반복 개념 없음"으로 따로 정의했으므로 전용 러너를 탄다.
-        if cell.workload == Workload::Stress {
-            run_w6_stress(&document, &container_node, &mut report, &mut first_entry).await;
+        if let Some((ci, trial)) = cell.stress {
+            run_w6_cell(&document, &container_node, ci, trial, &mut report, &mut first_entry).await;
             continue;
         }
         match cell.item {

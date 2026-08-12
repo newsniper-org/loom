@@ -39,10 +39,11 @@ rm -f "$OUT" "$ROOT/bench/collected/$NAME.progress.json" "$PARTS"
 #   그룹 = 조합*7 + 워크로드  (워크로드 7종)
 # 예) R3만: FIRST_GROUP=35 TOTAL_GROUPS=42 bench/collect-stock.sh ...
 FIRST_GROUP="${FIRST_GROUP:-0}"
-# 개정 #9로 셀 목록이 §3.3 문언 그대로가 됐다(27셀 + write 변형 이중 12셀 = 39,
-# W6 포함 40). 셀 수가 바뀌면 여기도 바꿔야 하므로 하네스가 진행 로그에 찍는
-# 총 셀 수와 대조할 것.
-TOTAL_GROUPS="${TOTAL_GROUPS:-40}"
+# 개정 #9로 셀 목록이 §3.3 문언 그대로가 됐다: 기본 57(핵심격자 12 + W10 4 +
+# 스케일링 6 + R3 1 + W6 30 + W8 1 + W9 1 + W11 1 + heap 1) + write 변형 이중 12
+# = 69. 셀 수가 바뀌면 여기도 바꿔야 한다 — 하네스가 범위 밖 인덱스에서 빈
+# 결과를 내므로 그것으로 대조할 것.
+TOTAL_GROUPS="${TOTAL_GROUPS:-69}"
 
 # -----------------------------------------------------------------------------
 # §8 "격리": "성능 측정은 **headed 자동화**(CDP/WebDriver), 정합성 게이트는
@@ -74,21 +75,32 @@ if [ "$THROTTLE" != "1" ]; then
 fi
 
 # headed면 xvfb로 감싼다. `-a`는 빈 디스플레이 번호를 알아서 고른다.
+#
+# **`env -u WAYLAND_DISPLAY`가 필수다 (2026-08-12, 실제로 당했다)**: `xvfb-run`은
+# `DISPLAY`만 가상 디스플레이로 바꾸고 `WAYLAND_DISPLAY`는 건드리지 않는다.
+# Wayland 세션에서는 Chrome이 그쪽을 먼저 잡으므로, xvfb로 감쌌는데도 **사용자의
+# 실제 데스크톱에 창이 뜬다**. 그러면 (1) 사용자 작업을 방해하고, (2) 그 창이
+# 닫히면 캠페인이 통째로 죽고, (3) 무엇보다 §8 "격리"(새 프로필, 확장 없음)가
+# 깨진다 — 사용자가 쓰고 있는 컴포지터·다른 창·포커스 변화가 측정에 섞인다.
+# `--ozone-platform=x11`은 그 위에 한 겹 더 못을 박는 것이다.
 LAUNCH=()
 if [ "$HEADED" = "1" ]; then
-  LAUNCH=(xvfb-run -a --server-args="-screen 0 1920x1080x24")
+  LAUNCH=(xvfb-run -a --server-args="-screen 0 1920x1080x24" env -u WAYLAND_DISPLAY)
 fi
 
 case "$BIN" in
   *firefox*)
     # `--no-remote` + 빈 프로필: 이미 떠 있는 사용자 세션에 붙지 않게.
     FF_FLAGS=(--no-remote --profile "$PROFILE")
+    # Firefox도 같은 이유로 X11을 강제한다.
+    [ "$HEADED" = "1" ] && export MOZ_ENABLE_WAYLAND=0
     [ "$HEADED" = "1" ] || FF_FLAGS+=(--headless)
     "${LAUNCH[@]}" "$BIN" "${FF_FLAGS[@]}" "$URL" >/dev/null 2>&1 &
     ;;
   *)
     CR_FLAGS=(--no-first-run --no-default-browser-check
               --user-data-dir="$PROFILE" --enable-features=SharedArrayBuffer)
+    [ "$HEADED" = "1" ] && CR_FLAGS+=(--ozone-platform=x11)
     [ "$HEADED" = "1" ] || CR_FLAGS+=(--headless=new)
     [ "$THROTTLE" = "1" ] || CR_FLAGS+=(--remote-debugging-port="$CDP_PORT")
     "${LAUNCH[@]}" "$BIN" "${CR_FLAGS[@]}" "$URL" >/dev/null 2>&1 &
