@@ -39,25 +39,70 @@ rm -f "$OUT" "$ROOT/bench/collected/$NAME.progress.json" "$PARTS"
 #   그룹 = 조합*7 + 워크로드  (워크로드 7종)
 # 예) R3만: FIRST_GROUP=35 TOTAL_GROUPS=42 bench/collect-stock.sh ...
 FIRST_GROUP="${FIRST_GROUP:-0}"
-TOTAL_GROUPS="${TOTAL_GROUPS:-42}"
+# 개정 #9로 셀 목록이 §3.3 문언 그대로가 됐다(27셀 + write 변형 이중 12셀 = 39,
+# W6 포함 40). 셀 수가 바뀌면 여기도 바꿔야 하므로 하네스가 진행 로그에 찍는
+# 총 셀 수와 대조할 것.
+TOTAL_GROUPS="${TOTAL_GROUPS:-40}"
+
+# -----------------------------------------------------------------------------
+# §8 "격리": "성능 측정은 **headed 자동화**(CDP/WebDriver), 정합성 게이트는
+# headless 허용." — 개정 #9-7로 이행. 표시 장치가 없는 머신에서는 `xvfb-run`이
+# 진짜 디스플레이를 준다(headless 모드와 달리 합성·래스터 경로가 실제로 돈다).
+#
+# §8 "하드웨어·스로틀": "저사양 프록시: Chromium CDP **4× CPU throttle**을
+# (i) 트랙 L 핵심 격자 ... 에 추가." — `THROTTLE=4`로 켠다. stock 브라우저를
+# `--remote-debugging-port`로 띄우고 `bench/e2e/apply-throttle.mjs`가 붙어서
+# 셀마다(= 페이지 이동마다) 다시 건다. 브라우저 빌드는 stock 그대로다(개정 #4).
+#
+# Firefox/WebKit은 §8이 "스로틀 수단 부재로 비스로틀만"으로 이미 한계를 명기했다.
+HEADED="${HEADED:-1}"
+THROTTLE="${THROTTLE:-1}"
+CDP_PORT="${CDP_PORT:-9222}"
 URL="http://localhost:$PORT/demo/list_bench.html?collect=$NAME&group=$FIRST_GROUP"
+
+if [ "$THROTTLE" != "1" ]; then
+  case "$BIN" in
+    *firefox*)
+      echo "THROTTLE은 Chromium CDP 전용이다 — §8이 Firefox/WebKit은 비스로틀만으로 명기" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+# headed면 xvfb로 감싼다. `-a`는 빈 디스플레이 번호를 알아서 고른다.
+LAUNCH=()
+if [ "$HEADED" = "1" ]; then
+  LAUNCH=(xvfb-run -a --server-args="-screen 0 1920x1080x24")
+fi
 
 case "$BIN" in
   *firefox*)
     # `--no-remote` + 빈 프로필: 이미 떠 있는 사용자 세션에 붙지 않게.
-    "$BIN" --headless --no-remote --profile "$PROFILE" "$URL" >/dev/null 2>&1 &
+    FF_FLAGS=(--no-remote --profile "$PROFILE")
+    [ "$HEADED" = "1" ] || FF_FLAGS+=(--headless)
+    "${LAUNCH[@]}" "$BIN" "${FF_FLAGS[@]}" "$URL" >/dev/null 2>&1 &
     ;;
   *)
-    "$BIN" --headless=new --no-first-run --no-default-browser-check \
-      --user-data-dir="$PROFILE" \
-      --enable-features=SharedArrayBuffer "$URL" >/dev/null 2>&1 &
+    CR_FLAGS=(--no-first-run --no-default-browser-check
+              --user-data-dir="$PROFILE" --enable-features=SharedArrayBuffer)
+    [ "$HEADED" = "1" ] || CR_FLAGS+=(--headless=new)
+    [ "$THROTTLE" = "1" ] || CR_FLAGS+=(--remote-debugging-port="$CDP_PORT")
+    "${LAUNCH[@]}" "$BIN" "${CR_FLAGS[@]}" "$URL" >/dev/null 2>&1 &
     ;;
 esac
 PID=$!
+
+THROTTLE_PID=""
+if [ "$THROTTLE" != "1" ]; then
+  (cd "$ROOT/bench/e2e" && node ../../bench/e2e/apply-throttle.mjs "$CDP_PORT" "$THROTTLE") &
+  THROTTLE_PID=$!
+  echo "4× CPU 스로틀 감시 시작 (pid $THROTTLE_PID, 포트 $CDP_PORT)"
+fi
 # 정리는 **절대 스크립트를 죽이면 안 된다**. 2026-08-03에 Chrome이 프로필
 # 디렉터리에 아직 쓰는 중이라 `rm -rf`가 실패했고, `set -e` + trap 조합에서
 # 그 실패가 스크립트 종료 코드가 되어 뒤이은 Firefox 수집이 통째로 건너뛰어졌다.
 cleanup() {
+  [ -n "$THROTTLE_PID" ] && kill "$THROTTLE_PID" 2>/dev/null || true
   local rc=$?
   kill "$PID" 2>/dev/null || true
   sleep 1
