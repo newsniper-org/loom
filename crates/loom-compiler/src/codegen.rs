@@ -2683,7 +2683,7 @@ fn emit_row_site_systems(
     )
     .unwrap();
     writeln!(body, "                // R3 축(§3.2)은 트랙 L 하네스 전용이므로 컴파일러 산출물에서는 항상 꺼져 있다.").unwrap();
-    writeln!(body, "                let out = &mut ::loom_runtime::RowSpawnCtx {{ commands: &mut commands, pending: &mut pending.0, row_bindings: 1, row_variants: false }};").unwrap();
+    writeln!(body, "                let out = &mut ::loom_runtime::RowSpawnCtx {{ commands: &mut commands, pending: &mut pending.0, row_bindings: 1, row_inner: 0, row_variants: false }};").unwrap();
     for child in cond_children {
         emit_cond_child(&mut body, child, "::loom_runtime::WriteParent::Node(anchor.0)", "items", candidate, "                ");
     }

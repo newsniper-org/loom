@@ -190,3 +190,73 @@ fn keyed_reorder_does_not_touch_bindings_but_k_rebuilds_them_all() {
         "K가 바인딩 entity를 재사용했다 — 전량 재스폰이라면 전부 새 entity여야 한다"
     );
 }
+
+// ---------------------------------------------------------------------------
+// **W8(§3.1 "중첩 증폭")** — 개정 #9-3. "외부 100 × 내부 100 중첩에서 외부
+// head-insert(C의 O(n_out×n_in) 표적)".
+//
+// §3.4가 등록한 예측: 유리 = D·E, 불리 = C(증폭). 그 예측이 성립하려면 내부
+// 리스트 값이 **row의 아이템에서 파생**돼야 한다 — 그래야 슬롯 아이템이 제자리에서
+// 바뀌는 C만 n_in개를 다시 쓴다. 여기서 그 구조를 고정한다.
+// ---------------------------------------------------------------------------
+
+const INNER: usize = 5;
+
+fn app_with_inner(register: impl FnOnce(&mut LoomApp), inner: usize) -> (LoomApp, MockDom, Entity) {
+    let (mut dom, root) = MockDom::new_root();
+    let mut app = LoomApp::new();
+    app.set_row_inner(inner);
+    register(&mut app);
+    app.add_row_depth_systems();
+    let initial: Vec<String> = ITEMS.iter().map(|s| s.to_string()).collect();
+    let list = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(root))).id();
+    app.tick(&mut dom);
+    (app, dom, list)
+}
+
+#[test]
+fn w8_row_carries_a_real_nested_list() {
+    let (app, dom, _list) = app_with_inner(
+        |a| { a.add_instrumented_systems(list_reconcile_d_system::<String>); },
+        INNER,
+    );
+    let root = NodeHandle(0);
+    for row in dom.child_handles(root) {
+        let kids = dom.child_handles(row);
+        assert_eq!(kids.len(), 1, "row는 `<ul>` 하나만 직접 자식으로 가져야 한다");
+        assert_eq!(
+            dom.child_handles(kids[0]).len(),
+            INNER,
+            "내부 `<ul>` 아래에 항목 {INNER}개가 있어야 한다 — 이게 '중첩'이다"
+        );
+    }
+    assert_eq!(
+        app.world.iter_entities().filter(|e| e.contains::<RowBinding>()).count(),
+        ITEMS.len() * INNER
+    );
+}
+
+#[test]
+fn w8_c_rewrites_the_whole_inner_list_but_d_does_not() {
+    // 이것이 §3.4가 W8에 등록한 비대칭 그 자체다.
+    let (mut c_app, mut c_dom, c_list) = app_with_inner(
+        |a| { a.add_instrumented_systems(list_reconcile_c_system::<String>); },
+        INNER,
+    );
+    let mut shifted: Vec<String> = ITEMS.iter().map(|s| s.to_string()).collect();
+    shifted.insert(0, "zz".to_string()); // 외부 head-insert
+    let c_patched = step(&mut c_app, &mut c_dom, c_list, shifted.clone());
+    assert_eq!(
+        c_patched,
+        ITEMS.len() * INNER,
+        "C는 head-insert로 전 슬롯의 아이템이 밀리므로 슬롯마다 내부 {INNER}개를 \
+         전부 다시 써야 한다 — 조항이 말한 O(n_out×n_in) 증폭"
+    );
+
+    let (mut d_app, mut d_dom, d_list) = app_with_inner(
+        |a| { a.add_instrumented_systems(list_reconcile_d_system::<String>); },
+        INNER,
+    );
+    let d_patched = step(&mut d_app, &mut d_dom, d_list, shifted);
+    assert_eq!(d_patched, 0, "D는 retained row를 안 건드리므로 내부 재기록이 없어야 한다");
+}

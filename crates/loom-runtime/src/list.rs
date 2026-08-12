@@ -41,6 +41,7 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    row_inner: Res<crate::RowInner>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
@@ -90,6 +91,7 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                             commands: &mut commands,
                             pending: &mut pending.0,
                             row_bindings: row_bindings.0,
+                            row_inner: row_inner.0,
                             row_variants: variant_mode.0,
                         };
                         R::revalue(site, &mut out, entity, owned_slice, &new_text);
@@ -150,6 +152,7 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                         commands: &mut commands,
                         pending: &mut pending.0,
                         row_bindings: row_bindings.0,
+                        row_inner: row_inner.0,
                         row_variants: variant_mode.0,
                     };
                     // 꼬리 성장은 항상 append이므로 앵커 없음.
@@ -405,6 +408,7 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    row_inner: Res<crate::RowInner>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
@@ -465,6 +469,7 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 commands: &mut commands,
                 pending: &mut pending.0,
                 row_bindings: row_bindings.0,
+                row_inner: row_inner.0,
                 row_variants: variant_mode.0,
             };
             emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
@@ -488,6 +493,7 @@ fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    row_inner: Res<crate::RowInner>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
@@ -538,6 +544,7 @@ fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 commands: &mut commands,
                 pending: &mut pending.0,
                 row_bindings: row_bindings.0,
+                row_inner: row_inner.0,
                 row_variants: variant_mode.0,
             };
             emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
@@ -595,6 +602,7 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    row_inner: Res<crate::RowInner>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
@@ -666,6 +674,7 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 commands: &mut commands,
                 pending: &mut pending.0,
                 row_bindings: row_bindings.0,
+                row_inner: row_inner.0,
                 row_variants: variant_mode.0,
             };
             emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
@@ -688,6 +697,7 @@ fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    row_inner: Res<crate::RowInner>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
@@ -755,6 +765,7 @@ fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 commands: &mut commands,
                 pending: &mut pending.0,
                 row_bindings: row_bindings.0,
+                row_inner: row_inner.0,
                 row_variants: variant_mode.0,
             };
             emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
@@ -891,6 +902,7 @@ macro_rules! keyed_candidate_systems {
             commands: Commands,
             pending: ResMut<PendingDomWrites>,
             row_bindings: Res<crate::RowBindings>,
+            row_inner: Res<crate::RowInner>,
             variant_mode: Res<crate::RowVariantMode>,
         ) where
             T: Send + Sync + Clone + ToString + 'static,
@@ -903,6 +915,7 @@ macro_rules! keyed_candidate_systems {
                 commands,
                 pending,
                 row_bindings,
+                row_inner,
                 variant_mode,
             );
         }
@@ -917,6 +930,7 @@ macro_rules! keyed_candidate_systems {
             commands: Commands,
             pending: ResMut<PendingDomWrites>,
             row_bindings: Res<crate::RowBindings>,
+            row_inner: Res<crate::RowInner>,
             variant_mode: Res<crate::RowVariantMode>,
             site: Res<R::Ctx>,
         ) where
@@ -930,6 +944,7 @@ macro_rules! keyed_candidate_systems {
                 commands,
                 pending,
                 row_bindings,
+                row_inner,
                 variant_mode,
             );
         }
@@ -977,6 +992,7 @@ pub fn list_reconcile_c_system<T>(
     commands: Commands,
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    row_inner: Res<crate::RowInner>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
@@ -991,6 +1007,7 @@ pub fn list_reconcile_c_system<T>(
         commands,
         pending,
         row_bindings,
+        row_inner,
         variant_mode,
     );
 }
@@ -1007,6 +1024,7 @@ pub fn list_reconcile_c_system_with<T, R: crate::RowSpawner>(
     commands: Commands,
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
+    row_inner: Res<crate::RowInner>,
     variant_mode: Res<crate::RowVariantMode>,
     site: Res<R::Ctx>,
 ) where
@@ -1022,6 +1040,7 @@ pub fn list_reconcile_c_system_with<T, R: crate::RowSpawner>(
         commands,
         pending,
         row_bindings,
+        row_inner,
         variant_mode,
     );
 }

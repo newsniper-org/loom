@@ -499,6 +499,22 @@ pub struct RowVariantA;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RowVariantB;
 
+/// **W8(§3.1 "중첩 증폭")의 row별 내부 리스트 크기.** 0 = 꺼짐(기본).
+///
+/// 조항: "외부 100 × 내부 100 중첩에서 외부 head-insert(C의 O(n_out×n_in) 표적)".
+/// row마다 `<ul>` 하나와 그 아래 `RowInner.0`개의 `<li>`를 만든다. 내부 리스트는
+/// **스스로 재조정하지 않는다** — 값이 row의 아이템에서 파생되므로, 슬롯 아이템이
+/// 제자리에서 바뀌는 C에서만 n_in개가 다시 쓰이고 retained row를 갖는 D·E에서는
+/// 아무 일도 안 일어난다. 그 비대칭이 §3.4가 W8에 등록한 예측 그 자체다.
+#[derive(Resource, Clone, Copy)]
+pub struct RowInner(pub usize);
+
+impl Default for RowInner {
+    fn default() -> Self {
+        RowInner(0)
+    }
+}
+
 /// **브랜치 B rows의 구조 차이를 담는 래퍼 노드**(개정 #9-12, 2026-08-12).
 ///
 /// 개정 #8 말미가 "§3.2의 R3 문언은 '값에 따라 `<A/>`/`<B/>` **구조 분기**'인데
@@ -560,6 +576,8 @@ pub struct RowSpawnCtx<'a, 'w, 's> {
     pub commands: &'a mut Commands<'w, 's>,
     pub pending: &'a mut Vec<DomWrite>,
     pub row_bindings: usize,
+    /// W8(§3.1)의 row별 내부 리스트 크기. 0이면 내부 리스트를 안 만든다.
+    pub row_inner: usize,
     /// RQ1 §3.2의 R3 축이 켜져 있는가. `RowVariantMode`를 그대로 실어 나른다 —
     /// row를 만드는 지점이 곧 브랜치 marker를 붙일 지점이기 때문이다.
     pub row_variants: bool,
@@ -670,8 +688,8 @@ impl RowSpawner for DefaultRow {
         // doc comment에 왜 바꿨는지 상세). 그 결과 K는 재정렬마다 8n개 entity를
         // 만들고 지우게 되는데, 그것이 조항이 정한 row 모양에서 대조군이 실제로
         // 내는 비용이다.
-        if out.row_bindings > 1 {
-            let mut owned = Vec::with_capacity(out.row_bindings);
+        if out.row_bindings > 1 || out.row_inner > 0 {
+            let mut owned = Vec::with_capacity(out.row_bindings + out.row_inner);
             for extra in extra_binding_texts(out.row_bindings, text) {
                 // `ChildOf`로 row에 매단다 — Bevy의 `Children`이
                 // `#[relationship_target(.., linked_spawn)]`이라 **row를 despawn하면
@@ -693,11 +711,50 @@ impl RowSpawner for DefaultRow {
                 });
                 owned.push(child);
             }
-            // 중첩 조건부 1개. 앵커 엘리먼트를 먼저 만들고(`DomTarget`이 붙어야
+            // **W8 — row별 내부 리스트**(개정 #9-3). `<ul>` 하나 아래 `row_inner`개의
+            // `<li>`. 각 항목은 R2 바인딩과 같은 기계(`RowBinding` + `Signal<String>`)를
+            //쓴다 — 값이 row의 아이템에서 파생되므로 C의 값-통과가 n_in개를 다시
+            // 쓰고, 그것이 조항이 말한 O(n_out×n_in) 증폭이다.
+            if out.row_inner > 0 {
+                let ul = out.commands.spawn(::bevy_ecs::hierarchy::ChildOf(row)).id();
+                out.pending.push(DomWrite::SpawnElement {
+                    entity: ul,
+                    parent: WriteParent::Entity(row),
+                    tag: "ul",
+                    class: None,
+                    loom_id: None,
+                    text: None,
+                });
+                for i in 0..out.row_inner {
+                    let item_text = format!("{text}-in{i}");
+                    let item = out
+                        .commands
+                        .spawn((
+                            Signal(item_text.clone()),
+                            RowBinding,
+                            ::bevy_ecs::hierarchy::ChildOf(ul),
+                        ))
+                        .id();
+                    out.pending.push(DomWrite::SpawnElement {
+                        entity: item,
+                        parent: WriteParent::Entity(ul),
+                        tag: "li",
+                        class: None,
+                        loom_id: None,
+                        text: Some(item_text),
+                    });
+                    owned.push(item);
+                }
+            }
+
+            // 중첩 조건부 1개 — **R2 축에만 딸린다**(§3.2의 "binding 8개 + 중첩
+            // 조건부 1개"). W8은 조항이 조건부를 요구하지 않으므로 안 만든다.
+            // 앵커 엘리먼트를 먼저 만들고(`DomTarget`이 붙어야
             // `cond_reconcile_b_system`이 자식을 그 아래에 넣는다) 실효값은 row의
             // 아이템에서 파생한다. arm은 B — 트랙 T 판정(2026-08-07)이 "B 유지,
             // F 계열 기각"이므로 기준선 arm을 쓰는 것이 맞고, 조건부 후보 판정은
             // 트랙 T의 일이지 트랙 L의 row 깊이 축이 정할 일이 아니다.
+            if out.row_bindings > 1 {
             let cond = out
                 .commands
                 .spawn((
@@ -716,9 +773,12 @@ impl RowSpawner for DefaultRow {
                 text: None,
             });
             owned.push(cond);
+            }
             // `ChildOf`가 정리를 맡고 `RowOwned`는 **순서 있는 접근**을 맡는다 —
-            // `revalue`가 "마지막이 조건부, 나머지가 바인딩"이라는 고정 배치로
-            // 인덱싱하기 때문이다(`Children`의 순서에 기대지 않는다).
+            // `revalue`가 "R2가 켜져 있으면 마지막이 조건부, 나머지는 전부 값 파생
+            // 텍스트 바인딩"이라는 고정 배치로 인덱싱하기 때문이다(`Children`의
+            // 순서에 기대지 않는다). 그 조건은 `RowSpawnCtx`만 보고 결정되므로
+            // `revalue`가 World를 안 읽고도 같은 배치를 재구성할 수 있다.
             out.commands.entity(row).insert(RowOwned(owned));
         }
         // **R3(§3.2) — 이질 브랜치 row** (2026-08-07 수리). 그 전까지 이 축을
@@ -771,13 +831,29 @@ impl RowSpawner for DefaultRow {
         owned: &[Entity],
         text: &str,
     ) {
-        let Some((&cond, bindings)) = owned.split_last() else {
+        if owned.is_empty() {
             return;
-        };
-        for (i, &child) in bindings.iter().enumerate() {
-            out.commands.entity(child).insert(Signal(format!("{text}-bind{}", i + 1)));
         }
-        out.commands.entity(cond).insert(Signal(row_cond_is_shown(text)));
+        // R2가 켜져 있으면 마지막 하나가 조건부다(`emit`과 같은 조건 — World를
+        // 읽지 않고 `RowSpawnCtx`만으로 배치를 재구성한다).
+        let (texts, cond) = if out.row_bindings > 1 {
+            let (last, rest) = owned.split_last().unwrap();
+            (rest, Some(*last))
+        } else {
+            (owned, None)
+        };
+        let n_bind = out.row_bindings.saturating_sub(1);
+        for (i, &child) in texts.iter().enumerate() {
+            let next = if i < n_bind {
+                format!("{text}-bind{}", i + 1)
+            } else {
+                format!("{text}-in{}", i - n_bind)
+            };
+            out.commands.entity(child).insert(Signal(next));
+        }
+        if let Some(cond) = cond {
+            out.commands.entity(cond).insert(Signal(row_cond_is_shown(text)));
+        }
     }
 }
 
@@ -854,11 +930,12 @@ pub fn list_reconcile_k_system<T>(
     commands: Commands,
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<RowBindings>,
+    row_inner: Res<RowInner>,
     row_variants: Res<RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
-    k_body::<T, DefaultRow, _>(&NoRowCtx, q, commands, pending, row_bindings, row_variants);
+    k_body::<T, DefaultRow, _>(&NoRowCtx, q, commands, pending, row_bindings, row_inner, row_variants);
 }
 
 /// K를 **사이트별 row 모양**으로 monomorphize한 판본 (2026-08-07 신설).
@@ -871,12 +948,13 @@ pub fn list_reconcile_k_system_with<T, R: RowSpawner>(
     commands: Commands,
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<RowBindings>,
+    row_inner: Res<RowInner>,
     row_variants: Res<RowVariantMode>,
     site: Res<R::Ctx>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
 {
-    k_body::<T, R, _>(&site, q, commands, pending, row_bindings, row_variants);
+    k_body::<T, R, _>(&site, q, commands, pending, row_bindings, row_inner, row_variants);
 }
 
 fn k_body<T, R: RowSpawner, F: bevy_ecs::query::QueryFilter>(
@@ -885,6 +963,7 @@ fn k_body<T, R: RowSpawner, F: bevy_ecs::query::QueryFilter>(
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<RowBindings>,
+    row_inner: Res<RowInner>,
     row_variants: Res<RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
@@ -902,6 +981,7 @@ fn k_body<T, R: RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 commands: &mut commands,
                 pending: &mut pending.0,
                 row_bindings: row_bindings.0,
+                row_inner: row_inner.0,
                 row_variants: row_variants.0,
             };
             // `before: None` — `ClearChildren`가 이미 부모를 비웠으므로 순서대로
@@ -937,6 +1017,7 @@ impl LoomApp {
         let mut world = World::new();
         world.init_resource::<PendingDomWrites>();
         world.init_resource::<RowBindings>();
+        world.init_resource::<RowInner>();
         world.init_resource::<RowVariantMode>();
         // `RowSpawner::Ctx`의 기본값 — `DefaultRow`로 monomorphize된
         // `*_system_with`가 `Res<NoRowCtx>`를 요구한다.
@@ -948,13 +1029,21 @@ impl LoomApp {
         }
     }
 
-    /// RQ1 row-depth axis: set how many static text children each list row
-    /// carries beyond its primary content (default 1). Must be called
+    /// RQ1 row-depth axis: set how many bindings each list row carries
+    /// (default 1 = R1). 개정 #9-11 이후 이 값이 1보다 크면 row는 반응
+    /// 바인딩 `count-1`개와 중첩 조건부 1개를 갖는다. Must be called
     /// before any list reconcile System runs for it to take effect on that
     /// tick — matches the "configure once, then run" shape every other
     /// LoomApp setup step already follows (`add_systems`).
     pub fn set_row_bindings(&mut self, count: usize) -> &mut Self {
         self.world.insert_resource(RowBindings(count));
+        self
+    }
+
+    /// **W8(§3.1 "중첩 증폭") 축** — row마다 `<ul>` + `n`개의 `<li>`를 만든다.
+    /// 0(기본)이면 내부 리스트를 안 만들고 다른 셀의 방출이 안 바뀐다.
+    pub fn set_row_inner(&mut self, count: usize) -> &mut Self {
+        self.world.insert_resource(RowInner(count));
         self
     }
 
