@@ -30,22 +30,27 @@ N_RESAMPLES = 10_000
 CI = 0.99
 random.seed(20260802)
 
-DATA = "/home/ybi/loom-research/research-questions/data"
-VERSION = "v18"
-# §11-2 개정 #8로 **R3 셀만** 무효화됐고(축이 C 외 다섯 후보에 적용되지 않았다),
-# 다른 조합의 방출 write 열이 불변임은 `write_identity` 골든으로 확인됐다.
-# 그래서 R3 조합만 새 기반에서 다시 수집해 덮어쓴다.
-#
-# §2.5의 "상이한 기반의 측정치를 같은 판정에 혼용 금지"에 대해: R3 셀을 읽는
-# §9 조항은 C 기각 뒷 분기 하나뿐이고 그것은 **C 자신의 절대 임계값**
-# (archetype move 구간이 스크립트 시간의 50% 이상)이라, 새 기반 R3 셀과 옛 기반
-# 비-R3 셀이 한 판정식 안에서 만나지 않는다. 만약 앞으로 두 기반을 섞어 읽는
-# 조항이 생기면 이 오버레이는 성립하지 않으므로 전면 재수집으로 가야 한다.
-R3_OVERLAY = "v19-r3"
+# `RQ1_DATA_DIR`로 덮어쓸 수 있다 — **합성 픽스처로 이 스크립트 자신을 검증**하기
+# 위해서다(개정 #9로 로더·변형 선택·신설 프로파일이 전부 새 코드가 됐고, 실제
+# 데이터가 오기 전에 그것들이 도는지 확인해야 한다). 판정 실행은 언제나 기본
+# 경로를 쓰고, 출력 머리에 어느 디렉터리를 읽었는지 찍는다.
+DATA = os.environ.get("RQ1_DATA_DIR",
+                      "/home/ybi/loom-research/research-questions/data")
+# §11-2 **개정 #9(2026-08-12)로 트랙 L 전 수집분이 무효**다 — v1~v18(양 브라우저)과
+# v19-r3 전부. 개정 #8 때처럼 조합 하나만 오버레이하는 방식은 이번엔 성립하지
+# 않는다: R2를 조항 원문(반응 바인딩 8개 + 중첩 조건부 1개)으로, heap 아이템을
+# 128B로 바꾼 것이 **기존 셀의 수치 자체를 바꾸고**, §9 C 판정 하나가 R1 셀
+# (채택 a)과 R2 셀(기각)을 한 판정식 안에서 만나게 하기 때문이다.
+VERSION = "v21"
+# 옛 오버레이 기제는 남기지 않는다 — 전면 재수집이라 섞을 기반이 없다.
+# (개정 #8의 R3 오버레이 주석은 git 이력에 남아 있다.)
+INVALIDATED = [f"v{i}" for i in range(1, 19)] + ["v19-r3", "v20-chromium-headed"]
 
 # §3.1 워크로드 이름 ↔ 하네스 이름.
 W = {"W1": "swap", "W2": "shuffle", "W3": "shuffle10", "W4": "head_insert",
-     "W5": "append", "W7": "value_update"}
+     "W5": "append", "W6": "stress", "W7": "value_update", "W8": "head_insert",
+     "W9": "clear", "W10a": "replace50", "W10b": "replace100",
+     "W11": "remove_middle"}
 JUDGE_WORKLOADS = ["W1", "W2", "W3", "W4"]  # §9가 판정 셀로 지목하는 넷
 
 
@@ -120,7 +125,6 @@ def _read(path, base_tag):
     payload = json.load(open(path))
     # v16부터 stock 브라우저 수집 경로가 `{track_l, track_t}`로 감싸 보낸다
     # (§11 개정 #4 — Playwright 번들 Firefox가 대표 빌드가 아니어서 신설한 경로).
-    # v15 이하는 트랙 L 배열 그대로다.
     rows = payload["track_l"] if isinstance(payload, dict) else payload
     for r in rows:
         r["_base"] = base_tag
@@ -128,24 +132,35 @@ def _read(path, base_tag):
 
 
 def load(browser):
-    rows = _read(f"{DATA}/rq1-phase1-track-l-core-grid-{VERSION}-{browser}.json", VERSION)
-    if R3_OVERLAY:
-        path = f"{DATA}/rq1-phase1-track-l-core-grid-{R3_OVERLAY}-{browser}.json"
-        if os.path.exists(path):
-            # 옛 R3 셀은 §11-2 개정 #8로 **무효**다 — 남기지 않고 걷어낸다.
-            # 남겨 두면 어느 것이 쓰였는지가 조용해진다.
-            dropped = sum(1 for r in rows if r.get("row_variants"))
-            rows = [r for r in rows if not r.get("row_variants")]
-            added = [r for r in _read(path, R3_OVERLAY) if r.get("row_variants")]
-            rows.extend(added)
-            print(f"  [{browser}] R3 오버레이: 옛 셀 {dropped}건 제거(개정 #8), "
-                  f"새 기반 {R3_OVERLAY}에서 {len(added)}건 적재")
-        else:
-            print(f"  [{browser}] R3 오버레이 파일 없음 — R3 셀은 여전히 개정 #8로 **무효**다")
+    path = f"{DATA}/rq1-phase1-track-l-core-grid-{VERSION}-{browser}.json"
+    if not os.path.exists(path):
+        print(f"  [{browser}] {VERSION} 수집분이 아직 없다 — 판정 불가")
+        return [], {}
+    rows = _read(path, VERSION)
+
+    # 개정 #9로 무효화된 수집분이 디렉터리에 남아 있는 것은 §11-5(append-only)
+    # 때문이지 쓸 수 있다는 뜻이 아니다. **읽지 않는다**는 사실을 매 실행 찍는다 —
+    # 조용하면 다음 사람이 "왜 옛 데이터를 안 쓰지"를 물을 데가 없다.
+    stale = [v for v in INVALIDATED
+             if os.path.exists(f"{DATA}/rq1-phase1-track-l-core-grid-{v}-{browser}.json")]
+    if stale:
+        print(f"  [{browser}] 개정 #9로 무효인 수집분 {len(stale)}건은 읽지 않는다: "
+              f"{', '.join(stale[:4])}{' …' if len(stale) > 4 else ''}")
+
     idx = {}
     for r in rows:
-        key = (r["item_type"], r["n"], r["row_bindings"], r["row_variants"],
-               r["workload"], r["candidate"])
+        # W6은 인덱스에 안 넣는다: 후보당 **독립 5시행**이라 같은 키가 다섯 번
+        # 나오고(§8 "반복 개념 없음"), `samples_ms`가 없어 paired 비교의 대상도
+        # 아니다. `profile_new_cells`가 `rows`에서 직접 읽는다.
+        if r.get("clause") == "W6" or r.get("workload") == "stress":
+            continue
+        # **write 변형이 키에 들어간다**(개정 #9-6). 안 넣으면 같은 셀의 두 변형이
+        # 서로를 덮어써서 어느 쪽이 남았는지가 실행마다 달라진다.
+        key = (r["item_type"], r["n"], r["row_bindings"], r.get("row_inner", 0),
+               r["row_variants"], r["workload"], r["candidate"],
+               r.get("write_variant", "Conditional"))
+        if key in idx:
+            raise SystemExit(f"셀 키 충돌 — 같은 셀이 두 번 들어왔다: {key}")
         idx[key] = r
     return rows, idx
 
@@ -179,10 +194,59 @@ STR, N = "String(heap)", 1000
 POD = "ItemId(POD u32)"
 
 
-def cell(idx, workload, bindings, cand, variants=False, n=N, item=POD):
-    # §3.2 "기본 POD" — 판정 셀의 기본 아이템 타입은 POD다(v18부터 하네스도
-    # POD를 기본 축으로 수집한다). String은 W7 프로파일 전용.
-    return idx.get((item, n, bindings, variants, W[workload], cand))
+# §3.3이 write 변형 이중 측정을 요구한 셀 집합 — "{W1,W2,W3,W4} × {R1,R2} 및 W10".
+DOUBLED_WORKLOADS = {"W1", "W2", "W3", "W4", "W10a", "W10b"}
+# §10이 그 축을 등재한 후보는 C·D뿐이다. K·E의 Unconditional 레코드가 수집돼도
+# 판정에 쓰지 않는다(같은 셀을 6후보로 함께 돌린 부산물일 뿐).
+DOUBLED_CANDIDATES = {"C", "D", "D-LIS"}
+
+# 어느 셀에서 어느 변형이 골라졌는지 — 보고서 말미에 전부 찍는다.
+VARIANT_LOG = []
+# 선택은 **셀당 한 번만** 계산한다. 게이트 여러 개가 같은 셀을 조회하는데,
+# 매번 다시 고르면 (1) 로그가 중복되고 (2) 부트스트랩이 재실행돼 같은 셀의 CI가
+# 실행마다 조금씩 달라진 채 보고서에 여러 줄로 남는다 — 읽는 사람이 "왜 같은
+# 셀의 CI가 다르지"를 물을 데가 없다. 선택 자체는 median 비교라 결정적이다.
+_VARIANT_CACHE = {}
+
+
+def _raw(idx, workload, bindings, cand, variants, n, item, inner, wv):
+    return idx.get((item, n, bindings, inner, variants, W[workload], cand, wv))
+
+
+def cell(idx, workload, bindings, cand, variants=False, n=N, item=POD, inner=0):
+    """판정용 셀 하나.
+
+    §9 서두 "이중 측정 셀의 판정은 각 후보의 **셀별 우세 write 변형** 기준(양
+    변형이 모두 측정되므로 선택은 기계적 — 사후 재량 없음)". 조작화는 개정 #9
+    후속 등재(2026-08-12, **수집 전**)대로 **median이 더 작은 변형**이고, 동률이면
+    `Conditional`(2026-08-12 이전의 유일한 구현)이다.
+
+    두 변형의 paired CI를 함께 기록한다 — 선택이 등가 구간에서 일어났으면 그
+    사실이 보고서에 남아야 한다.
+    """
+    cond = _raw(idx, workload, bindings, cand, variants, n, item, inner, "Conditional")
+    if workload not in DOUBLED_WORKLOADS or cand not in DOUBLED_CANDIDATES:
+        return cond
+    ck = (id(idx), workload, bindings, cand, variants, n, item, inner)
+    if ck in _VARIANT_CACHE:
+        return _VARIANT_CACHE[ck]
+    unc = _raw(idx, workload, bindings, cand, variants, n, item, inner, "Unconditional")
+    if cond is None or unc is None:
+        # 한쪽이 없으면 이중 측정이 이행되지 않은 것이다 — 조용히 다른 쪽을
+        # 쓰지 않고, 있는 것을 돌려주되 사실을 남긴다.
+        if cond is not None and unc is None:
+            VARIANT_LOG.append((workload, bindings, cand, "Conditional",
+                                "무조건 변형 셀 없음 — 이중 측정 미이행"))
+        _VARIANT_CACHE[ck] = cond if cond is not None else unc
+        return _VARIANT_CACHE[ck]
+    mc, mu = statistics.median(cond["samples_ms"]), statistics.median(unc["samples_ms"])
+    lo, hi = paired_ratio_ci(unc["samples_ms"], cond["samples_ms"])
+    pick = "Unconditional" if mu < mc else "Conditional"
+    VARIANT_LOG.append((workload, bindings, cand, pick,
+                        f"cond={mc:.4f} uncond={mu:.4f}  "
+                        f"uncond/cond CI=[{lo:.3f}, {hi:.3f}] {verdict(lo, hi)}"))
+    _VARIANT_CACHE[ck] = unc if pick == "Unconditional" else cond
+    return _VARIANT_CACHE[ck]
 
 
 def compare(idx, workload, bindings, cand, base, **kw):
@@ -370,6 +434,91 @@ def gate_e(idx, browser):
 # W7 — 판정 셀은 아니지만 §3.4가 예고한 프로파일
 # ---------------------------------------------------------------------------
 
+def profile_new_cells(rows, idx, browser):
+    """개정 #9로 신설된 셀들 — **전부 프로파일 전용이다**.
+
+    §9의 어느 조항도 W6·W8·W9·W10·W11을 판정에 쓰지 않는다. 그래도 찍는 이유는
+    §3.4가 이 셀들을 "각 후보의 등록된 최선/최악 구간"으로 지목했기 때문이다 —
+    원칙 2(어느 후보든 기록된 최선/최악 구간이 행렬에 있어야 한다)의 이행 증거다.
+    """
+    print(f"\n{'-' * 78}\n개정 #9 신설 셀 프로파일 (판정 비참여)\n{'-' * 78}")
+
+    # W6 — §7 M1의 보고 규칙: amortized와 worst-case를 **같은 표에** 병기.
+    w6 = [r for r in rows if r.get("clause") == "W6"]
+    if w6:
+        print("  W6 스트레스 (n=0 → head-insert 10^4, 독립 5시행)")
+        print(f"    {'후보':8s} {'시행':>4s} {'삽입':>12s} {'총(ms)':>12s} "
+              f"{'삽입당 median':>14s} {'단발 최대 flush':>16s}  상한")
+        for r in sorted(w6, key=lambda x: (x["candidate"], x.get("trial", 0))):
+            capped = "초과" if r.get("over_cell_cap") else ""
+            print(f"    {r['candidate']:8s} {r.get('trial', 0):4d} "
+                  f"{r.get('inserts_completed', 0):>6d}/{r.get('inserts_target', 0):<5d} "
+                  f"{r.get('amortized_total_ms', float('nan')):12.1f} "
+                  f"{r.get('per_insert_median_ms', float('nan')):14.5f} "
+                  f"{r.get('max_single_flush_ms', float('nan')):16.5f}  {capped}")
+        # §3.3 "E는 재라벨 이벤트 전수 기록" — 개정 #9 후속 등재대로 **해당 없음**이다.
+        if all(r.get("relabel_events") is None for r in w6):
+            print("    * relabel_events = null(해당 없음). Phase 1의 E는 분수 인덱싱이")
+            print("      아니라 조밀 재태그라 '재라벨 이벤트'가 구현에 존재하지 않는다.")
+            print("      0이 아니라 null인 이유는 0이면 '한 번도 안 일어났다'로 읽혀")
+            print("      메커니즘 부재를 성질로 오독하는 공허한 확인이 되기 때문이다.")
+        # 상한 초과는 §8상 **유효한 결과 데이터**다 — 숨기지 않고 세어 둔다.
+        capped = [r for r in w6 if r.get("over_cell_cap")]
+        if capped:
+            names = sorted({r["candidate"] for r in capped})
+            print(f"    * 셀 상한(30분) 초과: {len(capped)}셀 / 후보 {', '.join(names)}")
+            print("      §8: '측정 불가(상한 초과)' 프로파일 등재 — 그 자체가 유효한 결과다.")
+
+    # W8 — C의 O(n_out×n_in) 증폭 표적. 중첩 축이므로 inner=100으로 조회한다.
+    print("  W8 중첩 증폭 (외부 100 × 내부 100, 외부 head-insert)")
+    base = cell(idx, "W8", 1, K, n=100, inner=100)
+    if not base:
+        print("    미계측")
+    else:
+        for cand in (C, D, D_NOLIS, E, "E-LIS"):
+            v, lo, hi, note = compare(idx, "W8", 1, cand, K, n=100, inner=100)
+            line(f"{cand} vs K", v, lo, hi, note)
+
+    # W9 — §3.4가 K의 **등록된 유일한 유리 구간**으로 잡은 셀.
+    print("  W9 clear (전량 삭제 — K·C의 fast path 표적)")
+    if not cell(idx, "W9", 1, K):
+        print("    미계측")
+    else:
+        for cand in (C, D, E):
+            v, lo, hi, note = compare(idx, "W9", 1, cand, K)
+            line(f"{cand} vs K", v, lo, hi, note)
+
+    # W10 — §9가 "판정 셀이 아님, 채택 기준 완화 방향 사용 금지"로 못박은 셀.
+    print("  W10 아이템 교체 (§9: 판정 셀 아님 — 지도·프로파일 전용)")
+    for wl, rate in (("W10a", "50%"), ("W10b", "100%")):
+        for rb in (1, 8):
+            if not cell(idx, wl, rb, K):
+                continue
+            for cand in (C, D):
+                v, lo, hi, note = compare(idx, wl, rb, cand, K)
+                line(f"{cand} vs K  R{rb} 교체율 {rate}", v, lo, hi, note)
+
+    # W11 — 개정 #9-8로 등재된 프로파일 전용 셀.
+    print("  W11 중간 삭제 (개정 #9-8 등재 — 프로파일 전용)")
+    if not cell(idx, "W11", 1, K):
+        print("    미계측")
+    else:
+        for cand in (C, D, E):
+            v, lo, hi, note = compare(idx, "W11", 1, cand, K)
+            line(f"{cand} vs K", v, lo, hi, note)
+
+
+def report_variant_choices():
+    """§9 서두가 요구한 "셀별 우세 write 변형"의 선택 내역 전수."""
+    if not VARIANT_LOG:
+        return
+    print(f"\n{'-' * 78}\nwrite 변형 선택 내역 (§9 서두 — 선택은 기계적)\n{'-' * 78}")
+    print("  조작화: median이 더 작은 변형(개정 #9 후속 등재, **수집 전** 결정).")
+    print("  등가 구간에서 고른 경우가 있는지 CI로 확인할 것.")
+    for wl, rb, cand, pick, note in VARIANT_LOG:
+        print(f"    {wl:5s} R{rb} {cand:6s} → {pick:14s}  {note}")
+
+
 def profile_w7(idx, browser):
     print(f"\n{'=' * 78}\nW7 (값 갱신) 프로파일 — {browser}   ※ §9 어느 조항에도 걸리지 않음\n{'=' * 78}")
     print("  §3.4 기대: 'C, D, E (retain 경로)' / 'K (전량 재스폰)'")
@@ -397,6 +546,25 @@ def integrity_checks(rows, browser):
     """
     print(f"\n{'=' * 78}\n무결성 점검 (판정 전) — {browser}\n{'=' * 78}")
     problems = []
+
+    # W6은 스키마가 다르다(§8 "반복 개념 없음" — `samples_ms`도 `live_node_slots`도
+    # 없다). 아래 공통 점검은 비교 가능한 셀에만 걸고, W6은 자기 항목으로 따로 본다.
+    w6_rows = [r for r in rows if r.get("clause") == "W6" or r.get("workload") == "stress"]
+    rows = [r for r in rows if r not in w6_rows]
+    if w6_rows:
+        bad = [r for r in w6_rows
+               if not r.get("over_cell_cap")
+               and r.get("inserts_completed") != r.get("inserts_target")]
+        if bad:
+            problems.append(
+                f"W6 {len(bad)}셀이 상한 초과가 아닌데 목표 삽입 수를 못 채웠다 — "
+                "중간에 조용히 끊긴 것이다")
+        n_capped = sum(1 for r in w6_rows if r.get("over_cell_cap"))
+        print(f"  W6: {len(w6_rows)}셀 중 상한 초과 {n_capped}셀 "
+              f"(§8상 '측정 불가(상한 초과)'는 유효한 결과 데이터)")
+        expected = 6 * 5
+        if len(w6_rows) != expected:
+            problems.append(f"W6 셀이 {len(w6_rows)}개 — 6후보 × 5시행 = {expected}이어야 한다")
 
     # (1) 노드 슬롯 누수 — 상주가 n에 비례해야 하고 tick 수에 비례하면 안 된다.
     worst = max(rows, key=lambda r: r["live_node_slots"] / max(r["n"], 1))
@@ -566,6 +734,8 @@ def crosscheck_m2(idx, browser):
 
 def main():
     print("RQ1 §9 트랙 L 판정 — 전 조항 일괄 적용")
+    if DATA != "/home/ybi/loom-research/research-questions/data":
+        print(f"  ** 주의: 기본이 아닌 데이터 경로를 읽는다 — {DATA} **")
     print(f"데이터: rq1-phase1-track-l-core-grid-{VERSION}-{{chromium,firefox}}.json")
     print("판정은 §8 커버리지 표대로 **Chromium(1차 판정)**에서만 — Firefox는 교차 확인.")
 
@@ -575,6 +745,8 @@ def main():
             rows, idx = load(browser)
         except FileNotFoundError:
             print(f"\n[{label}] 데이터 파일 없음 — 건너뜀")
+            continue
+        if not rows:
             continue
         r0 = rows[0]
         print(f"\n\n{'#' * 78}\n# {label}   (레코드 {len(rows)}, 워밍업 {r0.get('warmup', '?')} "
@@ -589,8 +761,10 @@ def main():
             "E": gate_e(idx, label),
         }
         profile_w7(idx, label)
+        profile_new_cells(rows, idx, label)
         crosscheck_m2(idx, label)
 
+    report_variant_choices()
     print(f"\n\n{'=' * 78}\n종합 (Chromium 1차 판정 기준)\n{'=' * 78}")
     c = results.get("chromium")
     if not c:
