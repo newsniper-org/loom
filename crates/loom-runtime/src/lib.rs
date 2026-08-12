@@ -499,6 +499,30 @@ pub struct RowVariantA;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RowVariantB;
 
+/// **§10의 "write 변형" 축**(개정 #9-6). 조건부 `PartialEq` vs 무조건 write.
+///
+/// §3.3이 "판정에 걸린 {W1,W2,W3,W4}×{R1,R2} 및 W10에서 C·D 각각 양 변형 측정"을
+/// 사전등록했고, §9 서두가 "판정은 각 후보의 **셀별 우세 write 변형** 기준(양
+/// 변형이 모두 측정되므로 선택은 기계적 — 사후 재량 없음)"이라고 못박았다.
+/// 2026-08-12까지 조건부 하나만 구현돼 있었고, 그래서
+///
+/// - 그 §9 규정이 **작동할 수 없었고**(고를 변형이 하나뿐),
+/// - §10의 근거 문언이 "재정렬 셀에서 **C 최선 = 무조건**"을 지목하므로
+///   **C가 자기 최선형으로 측정되고 있지 않았다**(§2.4 최선형 규율 위반).
+///
+/// 무조건 변형의 의미는 후보마다 다르다. C는 슬롯 값 비교를 건너뛰고 항상 쓴다.
+/// D는 키(=텍스트) 매칭이라 retained row의 텍스트가 정의상 같지만, 비교를 하지
+/// **않는** 구현은 대상 행 전부에 텍스트를 다시 쓴다 — 그것이 이 축이 D에 대해
+/// 재는 실제 구현 선택지다.
+#[derive(Resource, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum WriteVariant {
+    /// 값이 다를 때만 쓴다(2026-08-12까지의 유일한 구현).
+    #[default]
+    Conditional,
+    /// 비교 없이 항상 쓴다.
+    Unconditional,
+}
+
 /// **W8(§3.1 "중첩 증폭")의 row별 내부 리스트 크기.** 0 = 꺼짐(기본).
 ///
 /// 조항: "외부 100 × 내부 100 중첩에서 외부 head-insert(C의 O(n_out×n_in) 표적)".
@@ -1018,6 +1042,7 @@ impl LoomApp {
         world.init_resource::<PendingDomWrites>();
         world.init_resource::<RowBindings>();
         world.init_resource::<RowInner>();
+        world.init_resource::<WriteVariant>();
         world.init_resource::<RowVariantMode>();
         // `RowSpawner::Ctx`의 기본값 — `DefaultRow`로 monomorphize된
         // `*_system_with`가 `Res<NoRowCtx>`를 요구한다.
@@ -1037,6 +1062,12 @@ impl LoomApp {
     /// LoomApp setup step already follows (`add_systems`).
     pub fn set_row_bindings(&mut self, count: usize) -> &mut Self {
         self.world.insert_resource(RowBindings(count));
+        self
+    }
+
+    /// §10의 write 변형 축을 고른다(기본 = 조건부, 2026-08-12까지의 유일한 구현).
+    pub fn set_write_variant(&mut self, v: WriteVariant) -> &mut Self {
+        self.world.insert_resource(v);
         self
     }
 

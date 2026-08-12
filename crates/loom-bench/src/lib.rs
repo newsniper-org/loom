@@ -113,8 +113,16 @@ fn derive_seed(band: &str, cell_id: &str, rep: u32) -> u64 {
 /// 셀 ID — §8이 "시드 열 전 후보 공유"를 요구하므로 **후보 이름은 들어가지
 /// 않는다**. 그래야 같은 반복에서 6후보가 동일한 target 순열을 본다(paired
 /// bootstrap의 전제).
-fn cell_id(type_name: &str, n: usize, row_bindings: usize, row_variants: bool, workload: &str) -> String {
-    format!("{type_name}|n={n}|R{row_bindings}|variants={row_variants}|{workload}")
+fn cell_id(
+    type_name: &str,
+    n: usize,
+    row_bindings: usize,
+    row_inner: usize,
+    row_variants: bool,
+    write_variant: loom_runtime::WriteVariant,
+    workload: &str,
+) -> String {
+    format!("{type_name}|n={n}|R{row_bindings}|inner={row_inner}|variants={row_variants}|wv={write_variant:?}|{workload}")
 }
 
 /// A minimal POD item type (fixed-width `u32`) alongside `String` (heap),
@@ -128,6 +136,7 @@ impl std::fmt::Display for ItemId {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
 enum Workload {
     Swap,
     /// W2 (RQ1-benchmark-protocol.md §3.1) — full Fisher-Yates permutation,
@@ -153,10 +162,32 @@ enum Workload {
     /// 키 스킴을 바꾸면 §10에 없는 새 변형 축을 만드는 셈이므로 바꾸지 않고,
     /// 실측된 대로 보고한다.
     ValueUpdate,
+    /// **W9**(§3.1) — "clear: 전량 삭제(clear_children fast path 표적)".
+    /// 개정 #9-4로 신설. §3.4가 K의 **등록된 유일한 유리 구간**으로 잡아 둔
+    /// 셀인데 격자에 없었다 — 대조군의 최선 구간이 빠진 채 재고 있었다는
+    /// 뜻이고 원칙 1(허수아비 대조군 금지)에 직접 걸린다.
+    Clear,
+    /// **W10**(§3.1) — "아이템 교체: 개수·위치 불변, 아이템 정체성이 신규로
+    /// 교체 — 교체율 {50%, 100%}". 개정 #9-5로 신설. C의 값-통과 본령이자
+    /// D·E의 전량 미스매칭 표적. **§9가 "판정 셀이 아님 — 지도·프로파일
+    /// 전용"으로 못박은 셀이다**(채택 기준 완화 방향 사용 금지).
+    Replace50,
+    Replace100,
+}
+
+/// 반복(1측정치)이 무엇인가 — §8 "반복 프로토콜"의 워크로드별 재정의.
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    /// 조작 1회 = 1반복(기본).
+    Single,
+    /// **소비형 재정의**(§8): 연속 `k`회 시퀀스 1회 = 1반복(후 재구축).
+    /// W5가 여기 해당한다 — 조항이 시퀀스로 재정의한 이유가 D의 keyed 전액
+    /// 비용이 append **누적**에서 드러나기 때문이고, 단발로는 그 누적이 없다.
+    Sequence(u32),
 }
 
 impl Workload {
-    const ALL: [Workload; 7] = [
+    const ALL: [Workload; 10] = [
         Workload::Swap,
         Workload::Shuffle,
         Workload::Shuffle10,
@@ -164,6 +195,9 @@ impl Workload {
         Workload::Append,
         Workload::RemoveMiddle,
         Workload::ValueUpdate,
+        Workload::Clear,
+        Workload::Replace50,
+        Workload::Replace100,
     ];
 
     fn name(&self) -> &'static str {
@@ -175,13 +209,42 @@ impl Workload {
             Workload::Append => "append",
             Workload::RemoveMiddle => "remove_middle",
             Workload::ValueUpdate => "value_update",
+            Workload::Clear => "clear",
+            Workload::Replace50 => "replace50",
+            Workload::Replace100 => "replace100",
+        }
+    }
+
+    /// §3.1의 조항 ID. 데이터 소비자가 셀을 조문과 대조할 수 있게 레코드에 싣는다.
+    fn clause_id(&self) -> &'static str {
+        match self {
+            Workload::Swap => "W1",
+            Workload::Shuffle => "W2",
+            Workload::Shuffle10 => "W3",
+            Workload::HeadInsert => "W4",
+            Workload::Append => "W5",
+            Workload::ValueUpdate => "W7",
+            Workload::Clear => "W9",
+            Workload::Replace50 | Workload::Replace100 => "W10",
+            Workload::RemoveMiddle => "W11",
+        }
+    }
+
+    fn shape(&self) -> Shape {
+        match self {
+            // §8: "W5 = n=1,000에서 **100건 연속 append 시퀀스 1회 = 1반복**".
+            // 2026-08-12까지 단발 append였다(개정 #9-1).
+            Workload::Append => Shape::Sequence(100),
+            // §8: "W9 = 재구축 → clear 1회 = 1반복". 재구축은 측정 괄호 밖의
+            // 복원 단계가 이미 하고 있으므로 Single이 곧 그 정의다.
+            _ => Shape::Single,
         }
     }
 
     /// 이 워크로드가 `rng`를 전혀 쓰지 않는가 — 같은 baseline이면 시드와
     /// 무관하게 **같은 target**을 낸다.
     fn is_deterministic(&self) -> bool {
-        matches!(self, Workload::Swap | Workload::RemoveMiddle)
+        matches!(self, Workload::Swap | Workload::RemoveMiddle | Workload::Clear)
     }
 
     /// Fisher-Yates, using the shared per-rep `Rng` so every candidate in a
@@ -260,6 +323,26 @@ impl Workload {
                     v[i] = fresh(rng.next());
                 }
             }
+            // W9(§3.1) — 전량 삭제. `assert!`는 **입력**이 비어 있지 않을 것을
+            // 요구하는 것이고 출력이 비는 것은 이 워크로드의 정의다.
+            Workload::Clear => {
+                v.clear();
+            }
+            // W10(§3.1) — 개수·위치 불변, 아이템 정체성만 신규로 교체.
+            // 교체 대상 인덱스는 **중복 없이** 뽑는다(W7과 같은 이유 — 복원추출로
+            // 뽑으면 실제 교체율이 조항 수치에 못 미친다).
+            Workload::Replace50 | Workload::Replace100 => {
+                let rate = if matches!(self, Workload::Replace50) { 2 } else { 1 };
+                let k = (v.len() / rate).max(1);
+                let mut idx: Vec<usize> = (0..v.len()).collect();
+                for i in 0..k {
+                    let j = i + rng.below(v.len() - i);
+                    idx.swap(i, j);
+                }
+                for &i in idx.iter().take(k) {
+                    v[i] = fresh(rng.next());
+                }
+            }
         }
         v
     }
@@ -284,6 +367,41 @@ struct Candidate<T: Send + Sync + Clone + ToString + 'static> {
     /// 구간"(= Commands apply sync point)이 여기 들어 있다.
     last_stages: loom_runtime::StageTimings,
     _marker: std::marker::PhantomData<T>,
+}
+
+/// **1반복**을 실행하고 그 시간을 돌려준다 — §8의 워크로드별 반복 정의를
+/// 한 곳에서 지킨다.
+///
+/// `Shape::Single`이면 조작 1회. `Shape::Sequence(k)`이면 **직전 결과를 baseline으로
+/// 이어 붙여** k회 연속 적용하고 총 시간을 돌려준다(W5의 append 누적이 정확히
+/// 그것이다 — 매번 `initial`에서 새로 유도하면 "1건 추가"를 k번 반복하는 것이
+/// 되어 누적이 없다).
+fn run_one_rep<T, F>(
+    candidate: &mut Candidate<T>,
+    workload: &Workload,
+    initial: &[T],
+    rng: &mut Pcg64,
+    fresh: &F,
+) -> f64
+where
+    T: Send + Sync + Clone + ToString + 'static,
+    F: Fn(u64) -> T,
+{
+    match workload.shape() {
+        Shape::Single => {
+            let target = workload.apply(initial, rng, fresh);
+            candidate.set_and_tick(target)
+        }
+        Shape::Sequence(k) => {
+            let mut cur = initial.to_vec();
+            let mut total = 0.0;
+            for _ in 0..k {
+                cur = workload.apply(&cur, rng, fresh);
+                total += candidate.set_and_tick(cur.clone());
+            }
+            total
+        }
+    }
 }
 
 fn measure_now() -> f64 {
@@ -465,13 +583,18 @@ fn make_k<T: Send + Sync + Clone + ToString + 'static>(
     parent: &web_sys::Node,
     initial: Vec<T>,
     row_bindings: usize,
+    row_inner: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "K");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
+    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_k_system::<T>);
+    if row_bindings > 1 || row_inner > 0 {
+        app.add_row_depth_systems();
+    }
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "K", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
@@ -482,13 +605,18 @@ fn make_c<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
     parent: &web_sys::Node,
     initial: Vec<T>,
     row_bindings: usize,
+    row_inner: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "C");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
+    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_c_system::<T>);
+    if row_bindings > 1 || row_inner > 0 {
+        app.add_row_depth_systems();
+    }
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "C", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
@@ -499,13 +627,18 @@ fn make_d<T: Send + Sync + Clone + ToString + 'static>(
     parent: &web_sys::Node,
     initial: Vec<T>,
     row_bindings: usize,
+    row_inner: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "D");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
+    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_d_system::<T>);
+    if row_bindings > 1 || row_inner > 0 {
+        app.add_row_depth_systems();
+    }
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "D", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
@@ -516,13 +649,18 @@ fn make_e<T: Send + Sync + Clone + ToString + 'static>(
     parent: &web_sys::Node,
     initial: Vec<T>,
     row_bindings: usize,
+    row_inner: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "E");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
+    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_e_system::<T>);
+    if row_bindings > 1 || row_inner > 0 {
+        app.add_row_depth_systems();
+    }
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
@@ -538,13 +676,18 @@ fn make_d_lis<T: Send + Sync + Clone + ToString + 'static>(
     parent: &web_sys::Node,
     initial: Vec<T>,
     row_bindings: usize,
+    row_inner: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "D-LIS");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
+    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_d_lis_system::<T>);
+    if row_bindings > 1 || row_inner > 0 {
+        app.add_row_depth_systems();
+    }
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "D-LIS", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
@@ -556,20 +699,25 @@ fn make_e_lis<T: Send + Sync + Clone + ToString + 'static>(
     parent: &web_sys::Node,
     initial: Vec<T>,
     row_bindings: usize,
+    row_inner: usize,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "E-LIS");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
     app.set_row_bindings(row_bindings);
+    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_e_lis_system::<T>);
+    if row_bindings > 1 || row_inner > 0 {
+        app.add_row_depth_systems();
+    }
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "E-LIS", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
 }
 
-type Maker<T> = fn(&web_sys::Document, &web_sys::Node, Vec<T>, usize) -> Candidate<T>;
+type Maker<T> = fn(&web_sys::Document, &web_sys::Node, Vec<T>, usize, usize) -> Candidate<T>;
 
 /// All 6 Track L candidates, measured together every time so every result
 /// set shares the same page load / hardware / JIT-warmup conditions.
@@ -600,12 +748,17 @@ async fn run_combination<T, F>(
     initial: Vec<T>,
     fresh: F,
     row_bindings: usize,
+    // W8(§3.1 "중첩 증폭")의 row별 내부 리스트 크기. 0이면 꺼짐.
+    row_inner: usize,
+    // §10 write 변형 축(개정 #9-6).
+    write_variant: loom_runtime::WriteVariant,
     // RQ1 §3.2의 R3 축(이질 브랜치 row). §3.3이 "R3: W2 × R3 × n=1,000 ×
     // {C, D}(E·K는 참고 측정)"으로 셀을 고정했다.
     row_variants: bool,
-    // §8 "셀마다 fresh page load"를 위한 워크로드 선택. `Some(i)`이면
-    // 셔플된 워크로드 순서의 i번째 하나만 돌린다(그 페이지의 몫).
-    only_workload: Option<usize>,
+    // §8 "셀마다 fresh page load"를 위한 워크로드 선택. `Some(w)`이면 그
+    // 워크로드 하나만 돌린다(그 페이지의 몫). 개정 #9로 셀 목록이 §3.3을
+    // 그대로 옮긴 형태가 됐으므로 여기 오는 값은 항상 `Some`이다.
+    only_workload: Option<Workload>,
     out: &mut String,
     first_entry: &mut bool,
 ) where
@@ -619,11 +772,12 @@ async fn run_combination<T, F>(
     let mut candidates: Vec<Candidate<T>> = all_makers()
         .iter()
         .map(|maker| {
-            let mut c = maker(document, &combo_node, initial.clone(), row_bindings);
+            let mut c = maker(document, &combo_node, initial.clone(), row_bindings, row_inner);
             // R3 축(§3.2) 적용. 초기 spawn은 이미 끝난 뒤이므로 첫 재정렬부터
             // 브랜치 전환이 일어난다 — §9 C 기각 (ii)가 재는 것이 바로 그
             // "재정렬마다의 archetype move"이므로 문제되지 않는다.
             c.app.set_row_variant_mode(row_variants);
+            c.app.set_write_variant(write_variant);
             c
         })
         .collect();
@@ -637,15 +791,17 @@ async fn run_combination<T, F>(
     // 방지". 2026-08-03까지 미이행이었다(워크로드도 후보도 고정 순서였고,
     // 후보 간 시간 간격이 수 분이라 드리프트가 후보에 계통적으로 실렸다).
     // 시드는 조합 단위로 유도해 재현 가능하게 둔다.
-    let combo_id = format!("{type_name}|n={n}|R{row_bindings}|variants={row_variants}");
-    let workload_order = shuffled_indices(Workload::ALL.len(), &combo_id, "workload-order");
+    // 개정 #9 이전에는 여기서 워크로드 순서를 셔플했다. 이제 한 호출이
+    // **한 셀**만 돌리므로 셔플의 자리는 셀 목록 쪽으로 옮겨졌다(`cell_list`를
+    // 소비하는 쪽에서 시드 셔플한다 — §8 "셀 실행 순서 무작위화").
+    let run_set: Vec<Workload> = match only_workload {
+        Some(w) => vec![w],
+        None => Workload::ALL.to_vec(),
+    };
 
-    for (wpos, &wi) in workload_order.iter().enumerate() {
-        if only_workload.is_some_and(|w| w != wpos) {
-            continue;
-        }
-        let workload = &Workload::ALL[wi];
-        let cid = cell_id(type_name, n, row_bindings, row_variants, workload.name());
+    for workload in &run_set {
+        let cid =
+            cell_id(type_name, n, row_bindings, row_inner, row_variants, write_variant, workload.name());
         let cand_order = shuffled_indices(candidates.len(), &cid, "candidate-order");
 
         // -------------------------------------------------------------------
@@ -672,12 +828,16 @@ async fn run_combination<T, F>(
                 candidates[ci].set_and_tick(initial.clone());
                 double_raf().await;
                 let mut rng = Pcg64::from_seed(derive_seed("pilot", &cid, w));
-                let target = workload.apply(&initial, &mut rng, &fresh);
-                ps.push(candidates[ci].set_and_tick(target));
+                ps.push(run_one_rep(&mut candidates[ci], workload, &initial, &mut rng, &fresh));
             }
             pilot_min = pilot_min.min(median_of(&ps));
         }
-        let batched = pilot_min < batch_threshold_ms;
+        // **소비형 워크로드(§8 재정의)에는 배치를 걸지 않는다.** 배치 규칙은
+        // "median 추정치가 타이머 해상도 아래일 때 k회 묶어 재는" 양자화 저감
+        // 장치인데, 시퀀스형은 이미 1반복이 k스텝이라 시간이 해상도 위로 올라와
+        // 있고, 게다가 §8이 그 시퀀스 자체를 1반복으로 **정의**했으므로 그 위에
+        // 또 묶으면 조항이 말한 반복이 아니게 된다.
+        let batched = pilot_min < batch_threshold_ms && workload.shape() == Shape::Single;
         // -------------------------------------------------------------------
         // §8 배치 규칙의 묶음 구성 — **전부 baseline↔target 교대**.
         //
@@ -740,8 +900,7 @@ async fn run_combination<T, F>(
                 candidates[ci].set_and_tick(initial.clone());
                 double_raf().await; // §8 복원↔측정 경계
                 let mut rng = Pcg64::from_seed(derive_seed("warmup", &cid, w));
-                let target = workload.apply(&initial, &mut rng, &fresh);
-                candidates[ci].set_and_tick(target);
+                run_one_rep(&mut candidates[ci], workload, &initial, &mut rng, &fresh);
             }
         }
 
@@ -765,7 +924,13 @@ async fn run_combination<T, F>(
                 double_raf().await; // §8 복원↔측정 경계
                 let mut rng = Pcg64::from_seed(derive_seed("measure", &cid, rep));
                 let target = workload.apply(&initial, &mut rng, &fresh);
-                if batch_mode == "alternate" {
+                if let Shape::Sequence(_) = workload.shape() {
+                    let mut rng2 = Pcg64::from_seed(derive_seed("measure", &cid, rep));
+                    samples[ci].push(run_one_rep(candidate, workload, &initial, &mut rng2, &fresh));
+                    fwd_counts[ci] = candidate.last_counts;
+                    fwd_stages[ci] = candidate.last_stages;
+                    first_counts[ci].get_or_insert(candidate.last_counts);
+                } else if batch_mode == "alternate" {
                     // §8 배치 규칙: "k=10회 묶음 총 시간/k = 1측정치".
                     //
                     // **묶음 안의 매 회에도 프레임 경계를 준다**(2026-08-04).
@@ -907,14 +1072,14 @@ async fn run_combination<T, F>(
             // "결정적 보조 지표로 병기"를 명시 요구하는 값 — 시드 고정 하에
             // 결정적이므로(§7 M2) 반복마다 같아야 하고, 따라서 마지막 1회로 충분하다.
             out.push_str(&format!(
-                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"warmup\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}, \"m2_deterministic\": {}, \"row_variants\": {}, \
+                "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"warmup\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}, \"m2_deterministic\": {}, \"row_variants\": {}, \"row_inner\": {}, \"clause\": \"{}\", \"write_variant\": \"{:?}\", \
                  \"timer_resolution_ms\": {:.6}, \"batched\": {}, \"batch_mode\": \"{}\", \"batch_k\": {}, \
                  \"reposition_native_cell_total\": {}, \"reposition_fallback_cell_total\": {}, \
                  \"m1b_frame_ms\": {:.4}, \"m1b_reps\": 1, \"mutation_records\": {}, \
                  \"cell_wall_ms\": {:.1}, \"over_cell_cap\": {}, \"live_node_slots\": {}, \
                  \"user_agent\": \"{}\", \"cross_origin_isolated\": {}, \
                  \"stage_ms\": {{\"systems\": {:.4}, \"sync_point\": {:.4}, \
-                 \"dom_apply\": {:.4}, \"total\": {:.4}}}}}",
+                 \"dom_apply\": {:.4}, \"row_patch\": {:.4}, \"total\": {:.4}}}}}",
                 candidate.name,
                 workload.name(),
                 type_name,
@@ -929,6 +1094,9 @@ async fn run_combination<T, F>(
                     None => "null".to_string(),
                 },
                 row_variants,
+                row_inner,
+                workload.clause_id(),
+                write_variant,
                 resolution_ms,
                 batched,
                 batch_mode,
@@ -945,6 +1113,7 @@ async fn run_combination<T, F>(
                 measured_stages.systems_ms,
                 measured_stages.sync_point_ms,
                 measured_stages.dom_apply_ms,
+                measured_stages.row_patch_ms,
                 measured_stages.total_ms,
             ));
         }
@@ -985,6 +1154,144 @@ pub fn start() -> Result<(), JsValue> {
         }
     });
     Ok(())
+}
+
+/// §3.2의 Item 타입 축.
+#[derive(Clone, Copy, PartialEq)]
+enum ItemAxis {
+    /// 고정 폭 POD(8B) — 조항의 **기본**.
+    Pod,
+    /// heap 소유(String 1개 + 128B). §3.2가 "W7과 트랙 R에서 양쪽"으로 한정.
+    Heap,
+}
+
+/// §3.2의 heap 아이템 — "String 1개 + **128B**". 개정 #9-10.
+/// 접두사에 인덱스를 넣어 아이템끼리 구별되게 하되 전체 길이를 128B로 맞춘다.
+fn heap_item(i: usize) -> String {
+    let head = format!("item-{i}-");
+    let mut s = String::with_capacity(128);
+    s.push_str(&head);
+    while s.len() < 128 {
+        s.push('x');
+    }
+    s.truncate(128);
+    s
+}
+
+/// 측정 셀 하나. §3.3의 각 행이 여기로 그대로 옮겨진다.
+#[derive(Clone, Copy)]
+struct Cell {
+    item: ItemAxis,
+    n: usize,
+    row_bindings: usize,
+    row_inner: usize,
+    row_variants: bool,
+    workload: Workload,
+    /// §10 write 변형 축. §3.3이 이중 측정을 요구한 셀에서만 두 값이 다 나온다.
+    write_variant: loom_runtime::WriteVariant,
+}
+
+/// **§3.3 "측정 셀 집합(아래로 사전 고정)"의 기계 번역.**
+///
+/// 각 블록의 주석이 조항 원문이다. 여기 없는 셀은 재지 않고, 여기 있는 셀은
+/// 빠짐없이 잰다 — 그것이 개정 #9가 고치려는 바로 그 어긋남이다.
+fn cell_list() -> Vec<Cell> {
+    let pod = |n, rb, ri, rv, w| Cell {
+        item: ItemAxis::Pod,
+        n,
+        row_bindings: rb,
+        row_inner: ri,
+        row_variants: rv,
+        workload: w,
+        write_variant: loom_runtime::WriteVariant::Conditional,
+    };
+    let mut v = Vec::new();
+
+    // "핵심 격자: {W1,W2,W3,W4,W5,W7} × {R1,R2} × n=1,000 × 4후보 전부."
+    const CORE: [Workload; 6] = [
+        Workload::Swap,
+        Workload::Shuffle,
+        Workload::Shuffle10,
+        Workload::HeadInsert,
+        Workload::Append,
+        Workload::ValueUpdate,
+    ];
+    for rb in [1usize, 8] {
+        for w in CORE {
+            v.push(pod(1000, rb, 0, false, w));
+        }
+    }
+
+    // "W10: {R1,R2} × n=1,000 × 교체율 {50%,100%} × 4후보 전부."
+    for rb in [1usize, 8] {
+        v.push(pod(1000, rb, 0, false, Workload::Replace50));
+        v.push(pod(1000, rb, 0, false, Workload::Replace100));
+    }
+
+    // "스케일링: {W2,W4} × R2 × n∈{100, 10,000} × 4후보, 그리고
+    //  W2 × R1 × n∈{100, 10,000} × 4후보."
+    // **앞 절반은 2026-08-12까지 통째로 없었다**(개정 #9-9).
+    for n in [100usize, 10_000] {
+        v.push(pod(n, 8, 0, false, Workload::Shuffle));
+        v.push(pod(n, 8, 0, false, Workload::HeadInsert));
+        v.push(pod(n, 1, 0, false, Workload::Shuffle));
+    }
+
+    // "R3: W2 × R3 × n=1,000 × {C, D}(E·K는 참고 측정)."
+    v.push(pod(1000, 1, 0, true, Workload::Shuffle));
+
+    // "W8: R1 × 4후보." — 조항의 W8 정의가 "외부 100 × 내부 100 중첩에서
+    // 외부 head-insert"이므로 크기가 워크로드 정의에 박혀 있다.
+    v.push(pod(100, 1, 100, false, Workload::HeadInsert));
+
+    // "W9: R1 × n=1,000 × 4후보."
+    v.push(pod(1000, 1, 0, false, Workload::Clear));
+
+    // W11(개정 #9-8 등재) — **프로파일 전용**, §9의 어느 조항도 안 읽는다.
+    v.push(pod(1000, 1, 0, false, Workload::RemoveMiddle));
+
+    // §3.2 "Item 타입 축: ... 기본 POD, **W7과 트랙 R에서 양쪽**."
+    v.push(Cell {
+        item: ItemAxis::Heap,
+        n: 1000,
+        row_bindings: 1,
+        row_inner: 0,
+        row_variants: false,
+        workload: Workload::ValueUpdate,
+        write_variant: loom_runtime::WriteVariant::Conditional,
+    });
+
+    // -----------------------------------------------------------------------
+    // §3.3 "**write 변형 이중 측정(v1.1)**: §9 판정에 걸린 {W1,W2,W3,W4} × {R1,R2}
+    // 및 W10에서 C·D 각각 조건부 PartialEq/무조건 write 양 변형 측정(§10 —
+    // 2배 부담은 이 집합 한정)."
+    //
+    // 위에서 만든 셀 중 그 집합에 해당하는 것을 **무조건 변형으로 한 벌 더** 만든다.
+    // K·E는 이 축의 대상이 아니지만(§10이 C·D만 등재) 같은 셀을 6후보로 함께
+    // 돌리므로 데이터가 중복 수집된다 — §2.4의 "동일 조건 유지"에 유리하고,
+    // 분석은 `write_variant` 필드로 C·D만 골라 읽는다.
+    const DOUBLED: [Workload; 6] = [
+        Workload::Swap,
+        Workload::Shuffle,
+        Workload::Shuffle10,
+        Workload::HeadInsert,
+        Workload::Replace50,
+        Workload::Replace100,
+    ];
+    let extra: Vec<Cell> = v
+        .iter()
+        .filter(|c| {
+            c.item == ItemAxis::Pod
+                && c.n == 1000
+                && c.row_inner == 0
+                && !c.row_variants
+                && DOUBLED.contains(&c.workload)
+        })
+        .map(|c| Cell { write_variant: loom_runtime::WriteVariant::Unconditional, ..*c })
+        .collect();
+    v.extend(extra);
+
+    v
 }
 
 async fn run_all() -> Result<(), JsValue> {
@@ -1029,141 +1336,85 @@ async fn run_all() -> Result<(), JsValue> {
     // 규칙 판정과 시드 열 공유가 **한 셀의 6후보를 함께** 보도록 요구하기
     // 때문이다. 후보별로 페이지를 쪼개면 그 전제가 깨진다.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // **셀 목록 = §3.3 문언 그대로**(개정 #9, 2026-08-12).
+    //
+    // 2026-08-12 이전에는 (조합 6개 × 워크로드 전부)의 **곱**을 돌렸다. 그
+    // 구조는 두 방향으로 조항과 어긋난다: 조항이 요구하지 않는 셀을 재고(예:
+    // n=10,000 × W7), 조항이 요구하는 셀은 빠진다(W6·W8·W9·W10, 그리고
+    // 스케일링 행의 {W2,W4} × R2 × n∈{100,10,000} — 미이행 목록 자체가 이걸
+    // 빠뜨렸다). 이제 §3.3의 각 행을 그대로 옮겨 적고 `?group=<i>`가 그
+    // 목록을 인덱싱한다.
+    //
+    // §8 격리 조항("셀마다 fresh page load")은 그대로다 — 셀 하나를 돌리고
+    // 스스로 다음 인덱스로 이동한다.
+    // -----------------------------------------------------------------------
+    // §8 "셀 실행 순서는 (후보 × 셀) 시드 셔플 무작위화 — thermal drift 교락
+    // 방지". 개정 #9 이전에는 `run_combination` 안에서 워크로드 순서를 셔플했고,
+    // 이제 한 호출이 한 셀이므로 셔플의 자리가 여기다. 시드는 고정이라
+    // 재현 가능하고, 순서는 `?group=<i>`가 그 셔플된 목록을 인덱싱한다.
+    let cells = {
+        let base = cell_list();
+        let order = shuffled_indices(base.len(), "track-l-cells", "cell-order");
+        order.into_iter().map(|i| base[i]).collect::<Vec<_>>()
+    };
     let group: Option<usize> = query_param("group").and_then(|v| v.parse().ok());
-    // 조합 개수: String n∈{100,1000,10000} + POD n=1000 + R2 + R3 = 6.
-    const COMBINATIONS: usize = 6;
-    let combos = COMBINATIONS;
-    let (only_n, only_workload, next_group) = match group {
-        Some(g) if g < combos * Workload::ALL.len() => {
-            (Some(g / Workload::ALL.len()), Some(g % Workload::ALL.len()), Some(g + 1))
-        }
-        Some(_) => (Some(usize::MAX), Some(usize::MAX), None), // 범위 밖 = 끝
-        None => (None, None, None),
+    let next_group = match group {
+        Some(g) if g + 1 < cells.len() => Some(g + 1),
+        _ => None,
+    };
+    let selected: Vec<&Cell> = match group {
+        Some(g) => cells.get(g).into_iter().collect(),
+        None => cells.iter().collect(),
     };
 
-    // `?only=<n>` — **진단 전용** 조합 선택(레거시). 판정 데이터는 항상 전
-    // 조합을 돌린 것이어야 한다.
-    let only_n: Option<usize> = match only_n {
-        Some(_) => None, // group 모드에서는 아래 조합 인덱스로 거른다
-        None => query_param("only").and_then(|v| v.parse().ok()),
-    };
-    let combo_index: Option<usize> = group.map(|g| g / Workload::ALL.len());
-    let mut ci_counter: usize = 0;
-    // **§3.2 "Item 타입 축: ... 기본 POD, W7과 트랙 R에서 양쪽."**
-    //
-    // 2026-08-04 이전에는 정반대로 String(heap)을 전 축의 기본으로 돌리고 POD는
-    // n=1,000 × R1 한 조합만 돌렸다. 그래서 §9 판정 셀 전부(§3.3 핵심 격자)가
-    // 조항의 기본값이 아닌 아이템 타입에서 나왔고, R2(= D 기각 (iii)·D 양성·
-    // E 기각 (i)의 셀)에는 POD 레코드가 **하나도 없어** 조항 기본값으로는
-    // 판정 자체가 불가능했다.
-    //
-    // 이제 POD가 기본 축이고(n 스케일링 + R2 + R3), String은 한 조합만 남긴다 —
-    // §3.2가 양쪽을 요구하는 것은 W7과 트랙 R뿐이고, W7은 그 String 조합에
-    // 들어 있다.
-    for &n in &[100usize, 1000, 10000] {
-        let this = ci_counter;
-        ci_counter += 1;
-        if only_n.is_some_and(|o| o != n) || combo_index.is_some_and(|c| c != this) {
-            continue;
+    for cell in selected {
+        match cell.item {
+            ItemAxis::Pod => {
+                let initial: Vec<ItemId> = (0..cell.n as u32).map(ItemId).collect();
+                run_combination(
+                    &document,
+                    &container_node,
+                    "ItemId(POD u32)",
+                    cell.n,
+                    MEASURE_REPS,
+                    initial,
+                    |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
+                    cell.row_bindings,
+                    cell.row_inner,
+                    cell.write_variant,
+                    cell.row_variants,
+                    Some(cell.workload),
+                    &mut report,
+                    &mut first_entry,
+                )
+                .await;
+            }
+            ItemAxis::Heap => {
+                // §3.2: "heap 소유(String 1개 + **128B**)". 개정 #9-10 이전에는
+                // `"item-0"`(~6B)이라 `PartialEq` 비교와 복사가 사실상 공짜였고,
+                // 그래서 write 변형 축(조건부 vs 무조건)의 트레이드오프가
+                // 관측될 수 없었다.
+                let initial: Vec<String> = (0..cell.n).map(heap_item).collect();
+                run_combination(
+                    &document,
+                    &container_node,
+                    "String(heap 128B)",
+                    cell.n,
+                    MEASURE_REPS,
+                    initial,
+                    |seed| heap_item(1_000_000 + (seed as usize % 1_000_000)),
+                    cell.row_bindings,
+                    cell.row_inner,
+                    cell.write_variant,
+                    cell.row_variants,
+                    Some(cell.workload),
+                    &mut report,
+                    &mut first_entry,
+                )
+                .await;
+            }
         }
-        let reps = MEASURE_REPS;
-        let initial: Vec<ItemId> = (0..n as u32).map(ItemId).collect();
-        run_combination(
-            &document,
-            &container_node,
-            "ItemId(POD u32)",
-            n,
-            reps,
-            initial,
-            |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
-            1, // R1
-            false, // R3 축 꺼짐
-            only_workload,
-            &mut report,
-            &mut first_entry,
-        ).await;
-    }
-
-    // `?only=`이 지정되면 아래 세 조합(POD·R2·R3)은 건너뛴다 — 진단 전용.
-    let skip_extra = only_n.is_some();
-    macro_rules! combo_gate {
-        () => {{
-            let this = ci_counter;
-            ci_counter += 1;
-            skip_extra || combo_index.is_some_and(|c| c != this)
-        }};
-    }
-
-    // POD (u32 newtype) axis: one representative size (n=1000), not the
-    // full N-scaling sweep — a partial, not full, cross-check of RQ1's
-    // heap-vs-POD item axis (stated plainly, not silently narrowed).
-    if !combo_gate!() {
-        let n = 1000;
-        // §3.2가 "양쪽"을 요구하는 것은 W7과 트랙 R이다 — 이 조합이 W7의
-        // heap 쪽을 담당하고, 나머지 워크로드는 참고 프로파일이 된다.
-        let initial: Vec<String> = (0..n).map(|i| format!("item-{i}")).collect();
-        run_combination(
-            &document,
-            &container_node,
-            "String(heap)",
-            n,
-            MEASURE_REPS,
-            initial,
-            |seed| format!("new-{seed}"),
-            1, // R1
-            false, // R3 축 꺼짐
-            only_workload,
-            &mut report,
-            &mut first_entry,
-        ).await;
-    }
-
-    // Row-depth axis: R2 ("binding 8개", RQ1-benchmark-protocol.md §3.2) at
-    // n=1,000 String(heap) — needed specifically for RQ1 §9's D-rejection
-    // gate (iii), which requires `{W1,W2,W3,W4}×{R1,R2}`. Not a full
-    // N-scaling sweep at R2 (stated plainly, matching the POD axis's own
-    // partial-coverage precedent) — the D-vs-K decision this axis exists to
-    // inform doesn't need one (see research-questions/
-    // RQ1-dynamic-control-flow-scheduling.md's row-depth write-up).
-    if !combo_gate!() {
-        let n = 1000;
-        let initial: Vec<ItemId> = (0..n as u32).map(ItemId).collect();
-        run_combination(
-            &document,
-            &container_node,
-            "ItemId(POD u32)",
-            n,
-            MEASURE_REPS,
-            initial,
-            |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
-            8, // R2
-            false, // R3 축 꺼짐
-            only_workload,
-            &mut report,
-            &mut first_entry,
-        ).await;
-    }
-
-    // R3 축(§3.3): W2 × R3 × n=1,000. 판정 대상은 {C, D}이고 E·K는 참고
-    // 측정이지만, 하네스는 6후보를 한 조합에서 함께 돌리므로 전부 수집된다
-    // (§2.4 동일 조건 유지에도 유리).
-    if !combo_gate!() {
-        let n = 1000;
-        let initial: Vec<ItemId> = (0..n as u32).map(ItemId).collect();
-        run_combination(
-            &document,
-            &container_node,
-            "ItemId(POD u32)",
-            n,
-            MEASURE_REPS,
-            initial,
-            |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
-            1, // R3는 row 깊이와 독립 축이므로 binding은 R1로 둔다
-            true, // R3 축 켬
-            only_workload,
-            &mut report,
-            &mut first_entry,
-        ).await;
     }
 
     report.push_str("\n]");

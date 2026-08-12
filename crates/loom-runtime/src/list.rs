@@ -42,6 +42,7 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
     row_inner: Res<crate::RowInner>,
+    write_variant: Res<crate::WriteVariant>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
@@ -58,7 +59,12 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
             let entity = rows.0[i];
             let new_text = items.0[i].to_string();
             if let Ok((mut slot_value, target)) = slots.get_mut(entity) {
-                if slot_value.0 != new_text {
+                // §10 write 변형 축(개정 #9-6). 무조건 변형은 `PartialEq` 비교
+                // 자체를 건너뛴다 — §10이 "재정렬 셀에서 C 최선 = 무조건(슬롯 값
+                // 거의 전부 변경 → 비교는 순수 오버헤드)"으로 예고한 쪽이다.
+                if *write_variant == crate::WriteVariant::Unconditional
+                    || slot_value.0 != new_text
+                {
                     let old_text = slot_value.0.clone();
                     slot_value.0 = new_text.clone();
                     pending.0.push(DomWrite::SetText {
@@ -307,6 +313,44 @@ const SELECTION_PRECONDITION_MSG: &str =
 /// 있던 `unreachable!("plan_writes marks spawn only for Fresh slots")`는
 /// 없앴다 — `op.spawn == target_fresh[op.idx]`가 `plan_*`의 **사후조건**이라
 /// 런타임 갈래 자체가 없어졌다.
+/// §10 write 변형 축의 **D 쪽 무조건 변형**(개정 #9-6).
+///
+/// D는 키(= 아이템 텍스트)로 매칭하므로 retained row의 텍스트는 **정의상 같다**.
+/// 그래서 조건부 변형은 아무것도 안 쓴다. 비교를 하지 않는 구현(= 매 대상 행의
+/// 내용을 다시 그리는 소박한 keyed reconciler)은 전 행에 `SetText`를 낸다 —
+/// 이 함수가 그 구현이다. §10이 "재정렬 셀에서 **D 최선 = 조건부**"로 예고한
+/// 쪽의 반대편이고, 두 변형이 다 있어야 §9 서두의 "셀별 우세 변형" 규정이
+/// 기계적으로 작동한다.
+///
+/// 새로 spawn된 행은 제외한다 — `RowSpawner::emit`이 이미 텍스트를 실었으므로
+/// 여기서 또 쓰면 같은 행을 두 번 쓰는 것이지 "비교 생략"이 아니다.
+fn emit_unconditional_text<R: crate::RowSpawner>(
+    variant: crate::WriteVariant,
+    target_ids: &[u64],
+    ops: &[loom_flush_core::PlanOp],
+    texts: &[String],
+    dom_targets: &Query<&DomTarget>,
+    pending: &mut Vec<DomWrite>,
+) {
+    if variant != crate::WriteVariant::Unconditional {
+        return;
+    }
+    let mut spawned = vec![false; target_ids.len()];
+    for op in ops {
+        if op.spawn {
+            spawned[op.idx] = true;
+        }
+    }
+    for (i, bits) in target_ids.iter().enumerate() {
+        if spawned[i] {
+            continue;
+        }
+        if let Ok(target) = dom_targets.get(Entity::from_bits(*bits)) {
+            pending.push(DomWrite::SetText { target: target.0, text: texts[i].clone() });
+        }
+    }
+}
+
 fn emit_plan<R: crate::RowSpawner>(
     site: &R::Ctx,
     parent: NodeHandle,
@@ -409,6 +453,7 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
     row_inner: Res<crate::RowInner>,
+    write_variant: Res<crate::WriteVariant>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
@@ -474,6 +519,14 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
             };
             emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
         }
+        emit_unconditional_text::<R>(
+            *write_variant,
+            &plan.target_ids,
+            &plan.ops,
+            &new_keys,
+            &dom_targets,
+            &mut pending.0,
+        );
 
         rows.0 = plan.target_ids.iter().map(|b| Entity::from_bits(*b)).collect();
     }
@@ -494,6 +547,7 @@ fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
     row_inner: Res<crate::RowInner>,
+    write_variant: Res<crate::WriteVariant>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
@@ -549,6 +603,14 @@ fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
             };
             emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
         }
+        emit_unconditional_text::<R>(
+            *write_variant,
+            &plan.target_ids,
+            &plan.ops,
+            &new_keys,
+            &dom_targets,
+            &mut pending.0,
+        );
 
         rows.0 = plan.target_ids.iter().map(|b| Entity::from_bits(*b)).collect();
     }
@@ -893,8 +955,17 @@ mod lis_tests {
 // 재측정 사유가 되지 않는다. 접미사 `_with` 쪽은 loom-compiler가 복잡한 row
 // 템플릿을 만났을 때만 쓴다.
 
+// **`$wv` — §10의 write 변형 축을 받는가**(개정 #9-6). D 계열은 식별자
+// `write_variant`를 넘기고, E 계열은 아무것도 안 넘긴다. 조항이 그 축을
+// **C·D에만** 등재했으므로 E의 시스템에는 파라미터 자체가 생기지 않는다 —
+// 선언만 하고 안 읽는 파라미터를 남기면 개정 #8을 낳은 바로 그 모양(축이
+// 적용된 것처럼 보이지만 실제로는 아무 데도 안 쓰이는 상태)이 된다.
+//
+// 식별자를 **호출부에서** 받는 이유는 `macro_rules` 위생이다: 규칙 안에서 만든
+// 지역 이름은 그 규칙의 확장 밖에서 해석되지 않으므로, 전달 규칙을 한 단계
+// 두면 파라미터 이름과 인자 이름이 서로 다른 문맥에 놓여 이름 해석이 깨진다.
 macro_rules! keyed_candidate_systems {
-    ($body:ident, $plain:ident, $with:ident, $rows:ty, $keys:ty) => {
+    ($body:ident, $plain:ident, $with:ident, $rows:ty, $keys:ty $(, $wv:ident)?) => {
         pub fn $plain<T>(
             lists: Query<(&Signal<Vec<T>>, &mut $rows, &DomTarget), Changed<Signal<Vec<T>>>>,
             keys: $keys,
@@ -903,6 +974,7 @@ macro_rules! keyed_candidate_systems {
             pending: ResMut<PendingDomWrites>,
             row_bindings: Res<crate::RowBindings>,
             row_inner: Res<crate::RowInner>,
+            $($wv: Res<crate::WriteVariant>,)?
             variant_mode: Res<crate::RowVariantMode>,
         ) where
             T: Send + Sync + Clone + ToString + 'static,
@@ -916,6 +988,7 @@ macro_rules! keyed_candidate_systems {
                 pending,
                 row_bindings,
                 row_inner,
+                $($wv,)?
                 variant_mode,
             );
         }
@@ -931,6 +1004,7 @@ macro_rules! keyed_candidate_systems {
             pending: ResMut<PendingDomWrites>,
             row_bindings: Res<crate::RowBindings>,
             row_inner: Res<crate::RowInner>,
+            $($wv: Res<crate::WriteVariant>,)?
             variant_mode: Res<crate::RowVariantMode>,
             site: Res<R::Ctx>,
         ) where
@@ -945,6 +1019,7 @@ macro_rules! keyed_candidate_systems {
                 pending,
                 row_bindings,
                 row_inner,
+                $($wv,)?
                 variant_mode,
             );
         }
@@ -956,14 +1031,16 @@ keyed_candidate_systems!(
     list_reconcile_d_system,
     list_reconcile_d_system_with,
     crate::ListRows,
-    Query<&RowKey>
+    Query<&RowKey>,
+    write_variant
 );
 keyed_candidate_systems!(
     d_lis_body,
     list_reconcile_d_lis_system,
     list_reconcile_d_lis_system_with,
     crate::ListRows,
-    Query<&RowKey>
+    Query<&RowKey>,
+    write_variant
 );
 keyed_candidate_systems!(
     e_body,
@@ -993,6 +1070,7 @@ pub fn list_reconcile_c_system<T>(
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
     row_inner: Res<crate::RowInner>,
+    write_variant: Res<crate::WriteVariant>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + 'static,
@@ -1008,6 +1086,7 @@ pub fn list_reconcile_c_system<T>(
         pending,
         row_bindings,
         row_inner,
+        write_variant,
         variant_mode,
     );
 }
@@ -1025,6 +1104,7 @@ pub fn list_reconcile_c_system_with<T, R: crate::RowSpawner>(
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
     row_inner: Res<crate::RowInner>,
+    write_variant: Res<crate::WriteVariant>,
     variant_mode: Res<crate::RowVariantMode>,
     site: Res<R::Ctx>,
 ) where
@@ -1041,6 +1121,7 @@ pub fn list_reconcile_c_system_with<T, R: crate::RowSpawner>(
         pending,
         row_bindings,
         row_inner,
+        write_variant,
         variant_mode,
     );
 }
