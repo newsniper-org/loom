@@ -1465,8 +1465,14 @@ async fn run_all() -> Result<(), JsValue> {
         order.into_iter().map(|i| base[i]).collect::<Vec<_>>()
     };
     let group: Option<usize> = query_param("group").and_then(|v| v.parse().ok());
+    // **off-by-one 주의**: 조건은 `g < len`이지 `g + 1 < len`이 아니다.
+    // 마지막 실제 셀(g = len-1)도 자기 조각을 POST해야 하고, 그 POST는 아래
+    // `Some(_)` 분기가 한다. `g + 1 < len`으로 두면 마지막 셀의 레코드가
+    // `None` 분기로 빠져 `.done` 파일로 나가 **수집에서 통째로 유실된다**.
+    // 그래서 범위 밖 인덱스(`g = len`) 페이지를 한 번 더 돌아 끝낸다 — 그
+    // 페이지는 아무 셀도 안 돌므로 빈 결과이고, 그것이 종료 신호가 된다.
     let next_group = match group {
-        Some(g) if g + 1 < cells.len() => Some(g + 1),
+        Some(g) if g < cells.len() => Some(g + 1),
         _ => None,
     };
     let selected: Vec<&Cell> = match group {
