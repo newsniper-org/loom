@@ -18,6 +18,23 @@
 set -euo pipefail
 
 BIN="${1:?브라우저 실행파일 경로}"
+# **래퍼를 우회한다 (2026-08-12, 실제로 당했다)**: `/usr/bin/google-chrome-stable`은
+# `~/.config/chrome-flags.conf`를 읽어 사용자의 개인 플래그를 주입하는 bash 래퍼다.
+# 이 머신에서는 거기 `--ozone-platform-hint=auto`가 있어 Chrome이 Wayland를 잡았고
+# (그래서 xvfb 안인데도 사용자 데스크톱에 창이 떴다), `--enable-features=Vulkan,
+# DefaultANGLEVulkan,VulkanFromANGLE`도 함께 들어와 **headed 측정의 래스터 경로**를
+# 바꿨다. §8이 요구하는 것은 stock **빌드**(개정 #4)이지 사용자의 개인 설정이 아니므로,
+# 래퍼가 있으면 실제 바이너리로 내려간다. `NO_UNWRAP=1`로 끌 수 있다.
+if [ "${NO_UNWRAP:-0}" != "1" ] && head -c 2 "$BIN" 2>/dev/null | grep -q '#!'; then
+  for CAND in /opt/google/chrome/chrome /usr/lib/chromium/chromium /usr/lib/firefox/firefox; do
+    if [ -x "$CAND" ] && [ "$(basename "$BIN")" != "$(basename "$CAND")" ] &&
+       case "$BIN" in *"$(basename "$CAND" | cut -c1-6)"*) true;; *) false;; esac; then
+      echo "[collect-stock] 래퍼 우회: $BIN → $CAND (개인 플래그 주입 회피)"
+      BIN="$CAND"
+      break
+    fi
+  done
+fi
 NAME="${2:?출력 이름 (확장자 없이)}"
 TIMEOUT="${3:-10800}"
 PORT="${PORT:-8931}"
@@ -107,6 +124,27 @@ case "$BIN" in
     ;;
 esac
 PID=$!
+
+# §8 "버전은 실행 시점 기록" + §2.5 "공유 기반 동결" — 무엇으로 어떻게 쟀는지를
+# 데이터 옆에 남긴다. 이게 없으면 다음 사람이 "stock 브라우저"라는 말만 보고
+# 개인 플래그가 섞였는지 알 수 없다(실제로 그 일이 있었다).
+cat > "$ROOT/bench/collected/$NAME.env.json" <<ENVJSON
+{
+  "collected_at_unix": $(date +%s),
+  "browser_binary": "$BIN",
+  "browser_version": "$("$BIN" --version 2>/dev/null | head -1)",
+  "headed": "$HEADED",
+  "throttle_rate": "$THROTTLE",
+  "cells": "$CELLS",
+  "first_group": $FIRST_GROUP,
+  "total_groups": $TOTAL_GROUPS,
+  "xvfb": "$([ "$HEADED" = "1" ] && echo "xvfb-run -a -screen 0 1920x1080x24, WAYLAND_DISPLAY unset" || echo "none")",
+  "git_commit": "$(cd "$ROOT" && git rev-parse HEAD)",
+  "git_dirty": $(cd "$ROOT" && [ -z "$(git status --porcelain)" ] && echo false || echo true),
+  "url": "$URL"
+}
+ENVJSON
+echo "[collect-stock] 환경 기록: bench/collected/$NAME.env.json"
 
 THROTTLE_PID=""
 if [ "$THROTTLE" != "1" ]; then
