@@ -1288,6 +1288,29 @@ impl LoomApp {
                 DomWrite::SetInputValue { node, value } => dom.set_input_value(node, &value),
             }
         }
+        // **Bevy의 removed-component 이중 버퍼를 비운다** (2026-08-13 수리).
+        //
+        // Bevy는 despawn마다 `RemovedComponents` 메시지를 버퍼에 넣는다. 그 버퍼는
+        // 이중 버퍼라 매 프레임 `World::clear_trackers()`가 스왑·비움을 해야 하는데,
+        // 그 호출은 Bevy의 `App`이 한다. `LoomApp`은 `App`을 안 쓰고 맨 `World` +
+        // `Schedule`을 직접 돌리므로 **그 호출이 없었고**, despawn한 만큼 버퍼가
+        // 영원히 자랐다.
+        //
+        // 실제로 터졌다: v21 트랙 L 수집이 `W5 append × R2` 셀에서 90초 만에 wasm
+        // `unreachable` 트랩으로 죽었고, 프로파일링 빌드의 스택이
+        // `despawn → Messages::write_with_caller → RawVec::grow_one →
+        //  handle_alloc_error → rust_oom`을 정확히 가리켰다.
+        //
+        // **개정이 만든 결함이 아니라 임계를 넘긴 것이다**: 개정 #9-1이 W5를 조항대로
+        // 고쳐 한 셀의 despawn을 수십만 건으로 만들었고, #9-11의 R2가 row당 entity를
+        // 9배로 만들어 그 수를 다시 곱했다.
+        //
+        // 측정에 미치는 영향: `clear_trackers`는 removal 큐 스왑과 `last_change_tick`
+        // 증가뿐이고, 시스템별 `Changed`/`Added` 감지는 **시스템 자신의 `last_run`**
+        // 으로 판정되므로 영향이 없다(`tests/despawn_buffer.rs`와 기존 게이팅 검사가
+        // 함께 고정한다). 비용은 tick당 상수다.
+        self.world.clear_trackers();
+
         let t_end = stage::now_ms();
         if let Some(mut timings) = self.world.get_resource_mut::<StageTimings>() {
             timings.dom_apply_ms = t_end - t_schedule_end;
