@@ -13,3 +13,6 @@ __pycache__/
 /bench/e2e/results
 /bench/e2e/playwright-report
 .verus-solver-log/
+
+# Claude Code 하네스가 만드는 세션 표식 — 프로젝트 내용이 아니다.
+.claude-latest-session-id.txt
