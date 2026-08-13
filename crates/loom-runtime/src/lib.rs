@@ -881,6 +881,31 @@ impl RowSpawner for DefaultRow {
     }
 }
 
+/// **R2 중첩 조건부의 최초 물질화를 성립시키는 System**(2026-08-13 수리).
+///
+/// 왜 필요한가: `cond_reconcile_b_system`은 `(&Signal<bool>, &mut CondBlock,
+/// &DomTarget)`을 `Changed<Signal<bool>>`로 게이팅해 읽는다. 그런데 row의 조건부
+/// entity는 **만들어진 tick에 아직 `DomTarget`이 없다** — `SpawnElement`의 핸들은
+/// 스케줄이 끝난 뒤 write 적용 루프에서 붙기 때문이다. 그래서 그 tick에는 쿼리에
+/// 안 걸리고, 다음 tick에는 `Changed`가 이미 소비돼 **영영 물질화되지 않는다**.
+///
+/// 실측으로 확인한 상태: 조건부 entity 4개, `DomTarget` 4개, 실효값 true 2개,
+/// 그런데 자식은 **매 tick 0개**. 즉 §3.2가 요구한 "중첩 조건부 1개"가 구조만
+/// 있고 아무 일도 안 하고 있었다.
+///
+/// 여기서는 `DomTarget`이 **막 붙은** 조건부의 `Signal`을 `DerefMut`으로 건드려
+/// 변경 표시만 다시 세운다. 값은 안 바꾼다 — 한 tick 늦게 물질화될 뿐이고, 그
+/// 지연은 C의 `revalue` → patch 사슬과 같은 성질이다.
+pub fn remark_row_cond_system(
+    mut q: Query<&mut Signal<bool>, (With<RowCond>, Added<DomTarget>)>,
+) {
+    for mut sig in &mut q {
+        // 값을 그대로 다시 써서 `Changed`만 세운다.
+        let v = sig.0;
+        sig.0 = v;
+    }
+}
+
 /// R2 바인딩의 patch System — docs/03 "반응성 파이프라인"의 좁은 System 하나.
 /// `Changed<Signal<String>>`로 게이팅되고 DOM op를 정확히 하나 낸다.
 pub fn patch_row_binding_system(
@@ -1149,6 +1174,7 @@ impl LoomApp {
         self.schedule.add_systems(
             (
                 stage::stage_mark_row_patch_start,
+                remark_row_cond_system,
                 (patch_row_binding_system, cond::cond_reconcile_b_system),
                 stage::stage_mark_row_patch_end,
             )

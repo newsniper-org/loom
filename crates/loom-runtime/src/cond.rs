@@ -61,20 +61,28 @@ impl CondBlock {
 /// Each child is despawned and removed individually — no shared wrapper
 /// shortcut — so this System's DOM-call count scales with `size`.
 pub fn cond_reconcile_b_system(
-    mut q: Query<(&Signal<bool>, &mut CondBlock, &DomTarget), Changed<Signal<bool>>>,
+    mut q: Query<(Entity, &Signal<bool>, &mut CondBlock, &DomTarget), Changed<Signal<bool>>>,
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
 ) {
-    for (cond, mut block, anchor) in &mut q {
+    for (anchor_entity, cond, mut block, anchor) in &mut q {
         if cond.0 && block.children.is_empty() {
             for _ in 0..block.size {
+                // `ChildOf(블록)` — **블록 자체가 despawn되면 자식도 함께 사라진다**
+                // (2026-08-13 수리). 이 자식들은 `CondBlock.children`에만 담겨
+                // 있었고 조건부가 false로 갈 때만 지워졌다. 트랙 T에서는 블록
+                // entity가 장수하므로 그 경로로 충분했지만, 개정 #9-11로 조건부가
+                // **row 안에** 들어가면서 "블록이 true인 채로 row와 함께 despawn"이
+                // 가능해졌고 그때 자식이 영영 남는다. `ChildOf`는 트랙 T 동작을
+                // 바꾸지 않는다(거기선 블록이 안 지워진다) — 프로토콜에 등재함.
                 let child = commands
                     .spawn((
                         Signal(0_i32),
                         Derived1::default(),
                         Derived2::default(),
                         Derived3::default(),
+                        ::bevy_ecs::hierarchy::ChildOf(anchor_entity),
                     ))
                     .id();
                 pending.0.push(DomWrite::SpawnRow {

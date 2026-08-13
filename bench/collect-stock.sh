@@ -91,6 +91,14 @@ if [ "$THROTTLE" != "1" ]; then
   esac
 fi
 
+# **브라우저 출력을 버리지 않는다 (2026-08-12, 실제로 당했다)**: 2026-08-12까지
+# `>/dev/null 2>&1`이었다. 그래서 wasm이 패닉하거나 트랩하면 그 메시지가 어디에도
+# 안 남고, 페이지는 **조용히 0 CPU로 멈춘 것처럼** 보인다 — "느린 셀이 도는 중"과
+# "죽었는데 아무도 모름"이 구별되지 않는다. 실제로 v21 1차 수집이 그 상태로
+# 11분을 서 있었고, 원인을 찾으려 해도 증거가 이미 버려진 뒤였다.
+BROWSER_LOG="$ROOT/bench/collected/$NAME.browser.log"
+rm -f "$BROWSER_LOG"
+
 # headed면 xvfb로 감싼다. `-a`는 빈 디스플레이 번호를 알아서 고른다.
 #
 # **`env -u WAYLAND_DISPLAY`가 필수다 (2026-08-12, 실제로 당했다)**: `xvfb-run`은
@@ -112,7 +120,7 @@ case "$BIN" in
     # Firefox도 같은 이유로 X11을 강제한다.
     [ "$HEADED" = "1" ] && export MOZ_ENABLE_WAYLAND=0
     [ "$HEADED" = "1" ] || FF_FLAGS+=(--headless)
-    "${LAUNCH[@]}" "$BIN" "${FF_FLAGS[@]}" "$URL" >/dev/null 2>&1 &
+    "${LAUNCH[@]}" "$BIN" "${FF_FLAGS[@]}" "$URL" > "$BROWSER_LOG" 2>&1 &
     ;;
   *)
     CR_FLAGS=(--no-first-run --no-default-browser-check
@@ -120,7 +128,7 @@ case "$BIN" in
     [ "$HEADED" = "1" ] && CR_FLAGS+=(--ozone-platform=x11)
     [ "$HEADED" = "1" ] || CR_FLAGS+=(--headless=new)
     [ "$THROTTLE" = "1" ] || CR_FLAGS+=(--remote-debugging-port="$CDP_PORT")
-    "${LAUNCH[@]}" "$BIN" "${CR_FLAGS[@]}" "$URL" >/dev/null 2>&1 &
+    "${LAUNCH[@]}" "$BIN" "${CR_FLAGS[@]}" "$URL" > "$BROWSER_LOG" 2>&1 &
     ;;
 esac
 PID=$!

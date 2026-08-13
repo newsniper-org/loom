@@ -43,6 +43,12 @@ fn app_with(register: impl FnOnce(&mut LoomApp), bindings: usize) -> (LoomApp, M
     let initial: Vec<String> = ITEMS.iter().map(|s| s.to_string()).collect();
     let list = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(root))).id();
     app.tick(&mut dom);
+    // **두 번째 tick이 필요하다**: 조건부 앵커의 `DomTarget`은 첫 tick의 write 적용
+    // 루프에서 붙으므로, `cond_reconcile_b_system`이 그 앵커를 보는 것은 다음
+    // tick이다(`remark_row_cond_system` doc comment 참고). 한 tick만 돌리면
+    // 조건부가 물질화되지 않은 상태를 "마운트 완료"로 착각하게 된다 —
+    // 실제로 그래서 조건부가 **영영 자식을 안 만드는** 결함을 못 보고 있었다.
+    app.tick(&mut dom);
     (app, dom, list)
 }
 
@@ -211,6 +217,12 @@ fn app_with_inner(register: impl FnOnce(&mut LoomApp), inner: usize) -> (LoomApp
     let initial: Vec<String> = ITEMS.iter().map(|s| s.to_string()).collect();
     let list = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(root))).id();
     app.tick(&mut dom);
+    // **두 번째 tick이 필요하다**: 조건부 앵커의 `DomTarget`은 첫 tick의 write 적용
+    // 루프에서 붙으므로, `cond_reconcile_b_system`이 그 앵커를 보는 것은 다음
+    // tick이다(`remark_row_cond_system` doc comment 참고). 한 tick만 돌리면
+    // 조건부가 물질화되지 않은 상태를 "마운트 완료"로 착각하게 된다 —
+    // 실제로 그래서 조건부가 **영영 자식을 안 만드는** 결함을 못 보고 있었다.
+    app.tick(&mut dom);
     (app, dom, list)
 }
 
@@ -259,4 +271,47 @@ fn w8_c_rewrites_the_whole_inner_list_but_d_does_not() {
     );
     let d_patched = step(&mut d_app, &mut d_dom, d_list, shifted);
     assert_eq!(d_patched, 0, "D는 retained row를 안 건드리므로 내부 재기록이 없어야 한다");
+}
+
+// ---------------------------------------------------------------------------
+// **row가 사라질 때 그 row의 중첩 조건부가 만든 자식도 사라지는가** (2026-08-13).
+//
+// 이 누수는 v21 수집을 죽였다: `W5 append × R2` 셀에서 wasm이 `unreachable`
+// 트랩(패닉 메시지 없음 = 메모리 고갈)으로 죽었고, 브라우저 출력이 버려지고
+// 있어서 "0 CPU로 멈춘 것"처럼만 보였다.
+//
+// 원인: `cond_reconcile_b_system`은 자식을 `CondBlock.children`에만 담고
+// **`ChildOf`를 안 붙인다**. 조건부가 false로 갈 때만 지우므로, 조건부가 **true인
+// 채로 블록 entity 자체가 despawn되면**(= 그 row가 사라지면) 자식이 영영 남는다.
+// R2 이전에는 조건부가 row 안에 없어서(트랙 T의 장수 블록 entity뿐) 이 경로가
+// 아예 없었다 — **개정 #9-11의 R2 변경이 누수 경로를 만든 것**이다.
+//
+// 앞서 K의 바인딩 entity에서 고친 것과 **같은 종류**다. 그때 `ChildOf`로 고치고도
+// 조건부 자식은 못 봤다 — "row가 소유한 것"을 셀 때 `RowOwned`만 보고 조건부가
+// 자기 자식을 따로 만든다는 것을 안 셌기 때문이다.
+#[test]
+fn despawning_a_row_also_despawns_its_conditional_children() {
+    use loom_runtime::Derived1;
+
+    let (mut app, mut dom, list) =
+        app_with(|a| { a.add_instrumented_systems(list_reconcile_k_system::<String>); }, R2);
+
+    // 조건부가 실제로 자식을 만들었는지 먼저 확인한다 — 안 만들었으면 아래
+    // "사라졌다" 단언이 공허해진다(메커니즘 부재로 참).
+    let materialized = app.world.iter_entities().filter(|e| e.contains::<Derived1>()).count();
+    assert!(
+        materialized > 0,
+        "중첩 조건부가 자식을 하나도 안 만들었다 — 아래 누수 검사가 공허해진다"
+    );
+
+    // 리스트를 비운다 → K는 전 row를 despawn한다.
+    step(&mut app, &mut dom, list, Vec::new());
+    assert_eq!(rows_of(&app, list).len(), 0, "row가 안 지워졌다");
+
+    let orphans = app.world.iter_entities().filter(|e| e.contains::<Derived1>()).count();
+    assert_eq!(
+        orphans, 0,
+        "row가 사라졌는데 그 조건부의 자식 {orphans}개가 남았다 — 매 재스폰마다 \
+         누적되고, wasm에서는 메모리 고갈 트랩으로 끝난다"
+    );
 }
