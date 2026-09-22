@@ -586,7 +586,7 @@ fn make_container(document: &web_sys::Document, parent: &web_sys::Node, label: &
     ul.into()
 }
 
-fn make_k<T: Send + Sync + Clone + ToString + 'static>(
+fn make_k<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,

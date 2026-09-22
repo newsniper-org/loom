@@ -113,7 +113,41 @@ impl Model {
         }
         self.rows = match self.identity {
             RowIdentity::Slots => unreachable!("위에서 처리했다"),
-            RowIdentity::Recreated => next.iter().map(|it| self.fresh_row(it)).collect(),
+            // **§10 "K: 디스패치 규칙"의 네 분기**(2026-09-22). 그 전에는 여기가
+            // 무조건 전량 재생성이었는데, 그것은 조항의 (4)번 분기 하나일 뿐이다.
+            // §5는 참조 모델을 "**후보 자신의 명세 의미론**"에 두라고 규정하므로,
+            // K의 명세가 네 분기인 이상 모델도 네 분기여야 한다 — 안 그러면 모델이
+            // 구현을 "틀렸다"고 잡는 게 아니라 **조항 준수를 틀렸다고 잡는다**.
+            RowIdentity::Recreated => {
+                let common = self.outer.len().min(next.len());
+                let mut i = 0;
+                while i < common && self.outer[i] == next[i] {
+                    i += 1;
+                }
+                if i < common {
+                    // (4) 그 외 → 전량 재생성. 숨겨진 채 쌓인 상태도 함께 사라진다.
+                    next.iter().map(|it| self.fresh_row(it)).collect()
+                } else if self.outer.len() == next.len() {
+                    // (2) 완전 동등 → 아무 일도 없다(row 상태 그대로).
+                    std::mem::take(&mut self.rows)
+                } else if next.is_empty() {
+                    // (3) 전량 삭제.
+                    Vec::new()
+                } else if next.len() > self.outer.len() {
+                    // (3) 순수 append → 꼬리만 새로 난다.
+                    let mut keep = std::mem::take(&mut self.rows);
+                    let from = self.outer.len();
+                    for item in &next[from..] {
+                        keep.push(self.fresh_row(item));
+                    }
+                    keep
+                } else {
+                    // (3) 순수 truncate → 꼬리만 사라진다.
+                    let mut keep = std::mem::take(&mut self.rows);
+                    keep.truncate(next.len());
+                    keep
+                }
+            }
             RowIdentity::Retained => {
                 // 키(=아이템 텍스트) 매칭. 같은 키가 여러 번 나오면 앞에서부터
                 // 하나씩 소비한다 — `match_keys`가 하는 것과 같은 규칙.

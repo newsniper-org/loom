@@ -975,16 +975,28 @@ pub fn patch_input_system(
 /// them with correct content baked in at spawn time, so there is nothing
 /// left to patch after that.
 pub fn list_reconcile_k_system<T>(
-    q: Query<(&Signal<Vec<T>>, &mut ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
+    q: Query<
+        (
+            Entity,
+            &Signal<Vec<T>>,
+            &mut ListRows,
+            &DomTarget,
+            Option<&mut KPrevItems<T>>,
+        ),
+        Changed<Signal<Vec<T>>>,
+    >,
+    row_targets: Query<&DomTarget>,
     commands: Commands,
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<RowBindings>,
     row_inner: Res<RowInner>,
     row_variants: Res<RowVariantMode>,
 ) where
-    T: Send + Sync + Clone + ToString + 'static,
+    T: Send + Sync + Clone + ToString + PartialEq + 'static,
 {
-    k_body::<T, DefaultRow, _>(&NoRowCtx, q, commands, pending, row_bindings, row_inner, row_variants);
+    k_body::<T, DefaultRow, _>(
+        &NoRowCtx, q, row_targets, commands, pending, row_bindings, row_inner, row_variants,
+    );
 }
 
 /// K를 **사이트별 row 모양**으로 monomorphize한 판본 (2026-08-07 신설).
@@ -993,7 +1005,17 @@ pub fn list_reconcile_k_system<T>(
 /// 않는다. loom-compiler가 `<tag>{item}</tag>`보다 복잡한 row 템플릿을
 /// 만났을 때 이쪽을 등록한다.
 pub fn list_reconcile_k_system_with<T, R: RowSpawner>(
-    q: Query<(&Signal<Vec<T>>, &mut ListRows, &DomTarget), (Changed<Signal<Vec<T>>>, With<R::Marker>)>,
+    q: Query<
+        (
+            Entity,
+            &Signal<Vec<T>>,
+            &mut ListRows,
+            &DomTarget,
+            Option<&mut KPrevItems<T>>,
+        ),
+        (Changed<Signal<Vec<T>>>, With<R::Marker>),
+    >,
+    row_targets: Query<&DomTarget>,
     commands: Commands,
     pending: ResMut<PendingDomWrites>,
     row_bindings: Res<RowBindings>,
@@ -1001,41 +1023,179 @@ pub fn list_reconcile_k_system_with<T, R: RowSpawner>(
     row_variants: Res<RowVariantMode>,
     site: Res<R::Ctx>,
 ) where
-    T: Send + Sync + Clone + ToString + 'static,
+    T: Send + Sync + Clone + ToString + PartialEq + 'static,
 {
-    k_body::<T, R, _>(&site, q, commands, pending, row_bindings, row_inner, row_variants);
+    k_body::<T, R, _>(
+        &site, q, row_targets, commands, pending, row_bindings, row_inner, row_variants,
+    );
 }
+
+/// **§10 "K: 디스패치 규칙"이 사전 선언한 네 분기.**
+///
+/// 조문(v1.1 — K-1): "(1) 신·구 시퀀스의 O(n) **위치 대응 동등 스캔**(Item PartialEq —
+/// 매칭·검색 없음), (2) 완전 동등 → no-op, (3) 순수 append/truncate(한쪽이 다른 쪽의
+/// prefix) → A-보강 count-diff(전량 삭제는 clear_children), (4) **그 외 → 전량
+/// despawn+respawn**(스폰 번들 초기값 포함). **값-변경 retain 분기는 두지 않는다**".
+///
+/// **2026-09-22까지 (4)번밖에 없었다.** 그래서 대조군 K가 append 한 건에도 전 행을
+/// 재생성했고, §3.4가 K의 등록된 유리 구간으로 잡아 둔 W5(append-only)와 W9(clear)에서
+/// K가 **자기 최선형이 아니라 최악형으로** 측정되고 있었다 — 원칙 1("허수아비 대조군
+/// 금지")의 조작화가 바로 이 조문인데 그것이 미이행이었다.
+///
+/// 위치 대응 동등 스캔은 **매칭이 아니다**(같은 인덱스끼리만 비교하고 탐색이 없다).
+/// docs/03 판정례 4의 "대상외 지위"가 그 근거이고, 조문도 "매칭 도입 변형 금지(N5)"를
+/// 별도로 못박고 있다. 값-변경 retain 분기를 두지 않는 이유도 조문에 있다: 위치 스캔만
+/// 으로는 값 변경(W7형)과 순서 변경(W2형)을 **원리적으로 구별 불능**이고, retain 분기를
+/// 가진 K는 C와 같은 메커니즘이 되어 대조군 독립성을 잃는다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KDispatch {
+    /// (2) 완전 동등 → 아무 write도 내지 않는다.
+    NoOp,
+    /// (3) 순수 append — `old`가 `new`의 prefix. 값은 **새로 스폰할 시작 인덱스**(= 옛 길이).
+    Append(usize),
+    /// (3) 순수 truncate — `new`가 `old`의 prefix이고 비어 있지 않다. 값은 **남길 길이**.
+    Truncate(usize),
+    /// (3) 전량 삭제 → `clear_children` 한 번.
+    Clear,
+    /// (4) 그 외 → 전량 despawn + respawn.
+    Full,
+}
+
+/// §10의 위치 대응 동등 스캔. O(min(|old|, |new|))이고 탐색·해시·매칭이 없다.
+pub fn k_dispatch<T: PartialEq>(old: &[T], new: &[T]) -> KDispatch {
+    let common = old.len().min(new.len());
+    let mut i = 0;
+    while i < common && old[i] == new[i] {
+        i += 1;
+    }
+    if i < common {
+        // 같은 위치에서 값이 다르다 → prefix 관계가 아니다.
+        return KDispatch::Full;
+    }
+    if old.len() == new.len() {
+        KDispatch::NoOp
+    } else if new.is_empty() {
+        KDispatch::Clear
+    } else if new.len() > old.len() {
+        KDispatch::Append(old.len())
+    } else {
+        KDispatch::Truncate(new.len())
+    }
+}
+
+/// K가 **직전 시퀀스**를 들고 있는 곳. §10의 위치 대응 동등 스캔에 필요하다.
+///
+/// 이것이 "매칭 도입"이 아닌 이유: 저장하는 것은 순서 그대로의 값 열뿐이고, 조회는
+/// 같은 인덱스끼리의 비교뿐이다(키 → 위치 사상도, 탐색도 없다). D의 `RowKey`나 E의
+/// `OrderKey`처럼 **정체성을 추적하는 구조가 아니다**.
+#[derive(Component, Debug, Clone)]
+pub struct KPrevItems<T: Send + Sync + 'static>(pub Vec<T>);
 
 fn k_body<T, R: RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
-    mut q: Query<(&Signal<Vec<T>>, &mut ListRows, &DomTarget), F>,
+    mut q: Query<
+        (
+            Entity,
+            &Signal<Vec<T>>,
+            &mut ListRows,
+            &DomTarget,
+            Option<&mut KPrevItems<T>>,
+        ),
+        F,
+    >,
+    row_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<RowBindings>,
     row_inner: Res<RowInner>,
     row_variants: Res<RowVariantMode>,
 ) where
-    T: Send + Sync + Clone + ToString + 'static,
+    T: Send + Sync + Clone + ToString + PartialEq + 'static,
 {
-    for (items, mut rows, anchor) in &mut q {
-        for old_row in rows.0.drain(..) {
-            commands.entity(old_row).despawn();
+    for (list, items, mut rows, anchor, prev) in &mut q {
+        // §10 (1) 위치 대응 동등 스캔.
+        //
+        // **직전 시퀀스를 모르면 분기 (4)다** — 빈 열로 보고 Append(0)로 가면 안 된다.
+        // 조문의 (3)은 "한쪽이 다른 쪽의 prefix"라는 **관측된 사실**에 걸린 분기인데,
+        // 옛 열이 없으면 그 사실을 주장할 근거가 없다. 그래서 "그 외"가 정직한 분류다.
+        //
+        // 이게 실제로 중요하다: 컴파일러가 낸 중첩 조건부 사이트는 조건부가 처음
+        // 보일 때 초기 row를 **직접 스폰하고 `ListRows`를 시드**한 뒤 이 System에
+        // 넘긴다(`crates/loom-nested-fixture/tests/nested.rs`가 그 인수 조건). 그때
+        // 빈 열로 보면 이미 DOM에 있는 row를 한 벌 더 스폰해 **중복**이 된다
+        // (수리 전 이 경로에서 `a,b,c,a,b,c,new`가 나왔다).
+        let dispatch = match prev.as_deref() {
+            Some(p) => k_dispatch(&p.0, &items.0),
+            None => KDispatch::Full,
+        };
+
+        let mut spawn_from = |from: usize,
+                              rows: &mut ListRows,
+                              commands: &mut Commands,
+                              pending: &mut Vec<DomWrite>| {
+            for item in items.0.iter().skip(from) {
+                let new_entity = commands.spawn_empty().id();
+                rows.0.push(new_entity);
+                let text = item.to_string();
+                let mut out = RowSpawnCtx {
+                    commands,
+                    pending,
+                    row_bindings: row_bindings.0,
+                    row_inner: row_inner.0,
+                    row_variants: row_variants.0,
+                };
+                R::emit(site, &mut out, new_entity, anchor.0, &text, None);
+            }
+        };
+
+        match dispatch {
+            // (2) 완전 동등 → write를 하나도 내지 않는다.
+            KDispatch::NoOp => {}
+
+            // (3) 순수 append → 꼬리만 스폰한다(A-보강 count-diff).
+            KDispatch::Append(from) => {
+                spawn_from(from, &mut rows, &mut commands, &mut pending.0);
+            }
+
+            // (3) 순수 truncate → 꼬리만 지운다. 핸들은 despawn 전에 읽어야 한다
+            // (`DomWrite::RemoveNode`의 doc comment 참고).
+            KDispatch::Truncate(keep) => {
+                for stale in rows.0.split_off(keep) {
+                    if let Ok(target) = row_targets.get(stale) {
+                        pending.0.push(DomWrite::RemoveNode { node: target.0 });
+                    }
+                    commands.entity(stale).despawn();
+                }
+            }
+
+            // (3) 전량 삭제 → 조문 그대로 `clear_children` **한 번**.
+            KDispatch::Clear => {
+                for stale in rows.0.drain(..) {
+                    commands.entity(stale).despawn();
+                }
+                pending.0.push(DomWrite::ClearChildren { parent: anchor.0 });
+            }
+
+            // (4) 그 외 → 전량 despawn + respawn(스폰 번들 초기값 포함).
+            KDispatch::Full => {
+                for old_row in rows.0.drain(..) {
+                    commands.entity(old_row).despawn();
+                }
+                pending.0.push(DomWrite::ClearChildren { parent: anchor.0 });
+                spawn_from(0, &mut rows, &mut commands, &mut pending.0);
+            }
         }
-        pending.0.push(DomWrite::ClearChildren { parent: anchor.0 });
-        for item in items.0.iter() {
-            let new_entity = commands.spawn_empty().id();
-            rows.0.push(new_entity);
-            let text = item.to_string();
-            let mut out = RowSpawnCtx {
-                commands: &mut commands,
-                pending: &mut pending.0,
-                row_bindings: row_bindings.0,
-                row_inner: row_inner.0,
-                row_variants: row_variants.0,
-            };
-            // `before: None` — `ClearChildren`가 이미 부모를 비웠으므로 순서대로
-            // append하면 된다(리팩터 전과 동일).
-            R::emit(site, &mut out, new_entity, anchor.0, &text, None);
+
+        // 다음 tick의 스캔 기준. 값 열만 들고 있고 정체성 추적은 없다
+        // (`KPrevItems`의 doc comment 참고).
+        match prev {
+            Some(mut p) => {
+                p.0.clear();
+                p.0.extend_from_slice(&items.0);
+            }
+            None => {
+                commands.entity(list).insert(KPrevItems(items.0.clone()));
+            }
         }
     }
 }
