@@ -131,6 +131,44 @@ def _read(path, base_tag):
     return rows
 
 
+def check_labels(rows, browser):
+    """**이 스크립트가 찾는 문자열이 데이터에 실제로 있는가.**
+
+    판정 코드는 `item_type`/`candidate`/`workload`/`write_variant`를 **문자열로**
+    조회한다. 하네스가 그 라벨을 바꾸면 조회가 `None`을 돌려주고, 해당 절은
+    **오류가 아니라 빈 절**이 된다 — 읽는 사람에게는 "잴 게 없었다"로 보인다.
+    2026-09-22에 실제로 그랬다(heap 아이템 라벨이 128B로 바뀐 것을 이 스크립트가
+    못 따라가 W7 heap 프로파일이 통째로 사라져 있었다).
+
+    여기서는 **찾는 라벨 중 데이터에 하나도 없는 것**을 전부 찍는다. 데이터에
+    그 셀이 원래 없을 수도 있으므로 중단하지 않고 경고만 하되, 조용하지는 않게 한다.
+    """
+    present = {
+        "item_type": {r.get("item_type") for r in rows},
+        "candidate": {r.get("candidate") for r in rows},
+        "workload": {r.get("workload") for r in rows},
+        "write_variant": {r.get("write_variant", "Conditional") for r in rows},
+    }
+    expected = {
+        "item_type": {POD, STR},
+        "candidate": {C, D, D_NOLIS, E, K, "E-LIS"},
+        "workload": set(W.values()),
+        "write_variant": {"Conditional", "Unconditional"},
+    }
+    missing = {
+        field: sorted(v for v in want if v not in present[field])
+        for field, want in expected.items()
+    }
+    missing = {f: v for f, v in missing.items() if v}
+    if missing:
+        print(f"  [{browser}] ⚠️ 이 스크립트가 찾는 라벨 중 데이터에 없는 것:")
+        for field, vals in missing.items():
+            found = sorted(x for x in present[field] if x)
+            print(f"      {field}: 찾는데 없음 {vals}  /  데이터에 있는 것 {found}")
+        print("      → 라벨이 바뀌었으면 상수를 고칠 것. 안 고치면 해당 절이 "
+              "오류가 아니라 **빈 절**이 되어 '잴 게 없었다'로 읽힌다.")
+
+
 def load(browser):
     path = f"{DATA}/rq1-phase1-track-l-core-grid-{VERSION}-{browser}.json"
     if not os.path.exists(path):
@@ -146,6 +184,8 @@ def load(browser):
     if stale:
         print(f"  [{browser}] 개정 #9로 무효인 수집분 {len(stale)}건은 읽지 않는다: "
               f"{', '.join(stale[:4])}{' …' if len(stale) > 4 else ''}")
+
+    check_labels(rows, browser)
 
     idx = {}
     for r in rows:
@@ -188,7 +228,12 @@ E = "E"
 K = "K"
 C = "C"
 
-STR, N = "String(heap)", 1000
+# **하네스의 `item_type` 문자열과 글자 단위로 일치해야 한다.** 개정 #9-10으로
+# heap 아이템이 128B가 되면서 하네스 라벨이 "String(heap)" → "String(heap 128B)"로
+# 바뀌었는데 이 상수가 안 따라가, §3.2가 요구한 **W7의 heap 쪽 절반이 조용히 빈
+# 절**이 되고 있었다(2026-09-22 감사에서 발견). 아래 `check_labels`가 그 종류의
+# 어긋남을 다시는 조용히 지나가지 못하게 한다.
+STR, N = "String(heap 128B)", 1000
 # §3.2 "Item 타입 축: ... **기본 POD**, W7과 트랙 R에서 양쪽."
 # 즉 §3.3 핵심 격자(= §9 판정 셀 전부)의 기본 아이템 타입은 POD다.
 POD = "ItemId(POD u32)"
