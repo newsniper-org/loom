@@ -112,6 +112,31 @@ def verdict(lo, hi):
     return "비결정"
 
 
+def resolve_all(verdicts, pred):
+    """**전 셀** 조건. 측정된 셀 하나라도 실패하면 거짓(결정적 — 없는 데이터가
+    되살릴 수 없다). 실패가 없는데 결론 불가 셀이 있으면 `None`(판정 불가)."""
+    if any(v not in UNRESOLVED and not pred(v) for v in verdicts):
+        return False
+    if any(v in UNRESOLVED for v in verdicts):
+        return None
+    return True
+
+
+def resolve_any(verdicts, pred):
+    """**최소 1셀** 조건. 측정된 셀 하나라도 맞으면 참(결정적). 맞는 셀이 없는데
+    결론 불가 셀이 있으면 `None`(판정 불가)."""
+    if any(v not in UNRESOLVED and pred(v) for v in verdicts):
+        return True
+    if any(v in UNRESOLVED for v in verdicts):
+        return None
+    return False
+
+
+def say(flag, yes, no):
+    """`None`(판정 불가)을 충족/불충족 어느 쪽으로도 접지 않고 그대로 보여 준다."""
+    return "**판정 불가(데이터 없음)**" if flag is None else (yes if flag else no)
+
+
 def at_least_equal(v):
     """§9의 "동등 이상" = 우세 또는 등가. 비결정은 **불계상**이므로 불충족."""
     return v in ("우세", "등가")
@@ -294,11 +319,25 @@ def cell(idx, workload, bindings, cand, variants=False, n=N, item=POD, inner=0):
     return _VARIANT_CACHE[ck]
 
 
+# 조건 판정에서 **결론으로 쓸 수 없는** 판정값들. §9는 기각/충족 조건의 해당
+# 범위를 "등가·열세·비결정"처럼 **열거**하는데 그 목록에 미계측은 없다 — 데이터가
+# 없다는 것은 조건이 충족됐다는 뜻도, 안 됐다는 뜻도 아니다.
+UNRESOLVED = ("미계측", "상한초과")
+
+
 def compare(idx, workload, bindings, cand, base, **kw):
-    """(판정, lo, hi, 설명) — 데이터가 없으면 판정이 '미계측'."""
+    """(판정, lo, hi, 설명) — 데이터가 없거나 표본이 0이면 결론 불가."""
     a, b = cell(idx, workload, bindings, cand, **kw), cell(idx, workload, bindings, base, **kw)
     if not a or not b:
         return ("미계측", float("nan"), float("nan"), f"{cand} 또는 {base} 셀 없음")
+    # §8 셀 상한 초과 레코드는 표본이 0개일 수 있다(워밍업에서 끊긴 경우).
+    # 2026-09-22까지 여기서 `statistics.median([])`이 터져 **스크립트 전체가
+    # 종료코드 1로 죽었다** — 상한 초과는 §8이 "유효한 결과 데이터"라고 명시한
+    # 것이므로 판정을 못 내릴 뿐 실행을 막아서는 안 된다.
+    empty = [n for r, n in ((a, cand), (b, base)) if not r["samples_ms"]]
+    if empty:
+        return ("상한초과", float("nan"), float("nan"),
+                f"{'/'.join(empty)} 표본 0개(§8 셀 상한 초과) — 이 셀로는 판정 불가")
     lo, hi = paired_ratio_ci(a["samples_ms"], b["samples_ms"])
     return (verdict(lo, hi), lo, hi,
             f"{cand}={statistics.median(a['samples_ms']):.4f}ms "
@@ -318,22 +357,22 @@ def gate_c(idx, browser):
     print(f"\n{'=' * 78}\n§9 C (고정 슬롯) — {browser}\n{'=' * 78}")
 
     print("  채택 (a): {W1,W2,W3,W4} × R1 전 셀에서 D 대비 동등 이상")
-    ok_a = True
+    vs_a = []
     for w in JUDGE_WORKLOADS:
         v, lo, hi, note = compare(idx, w, 1, C, D)
         line(f"{w} × R1  C/D", v, lo, hi, note)
-        if not at_least_equal(v):
-            ok_a = False
-    print(f"    ⇒ (a) {'충족' if ok_a else '**불충족**'}")
+        vs_a.append(v)
+    ok_a = resolve_all(vs_a, at_least_equal)
+    print(f"    ⇒ (a) {say(ok_a, '충족', '**불충족**')}")
 
     print("  채택 (b): {W1,W2,W3,W4} × R1 중 최소 1셀에서 K 대비 우세")
-    ok_b = False
+    vs_b = []
     for w in JUDGE_WORKLOADS:
         v, lo, hi, note = compare(idx, w, 1, C, K)
         line(f"{w} × R1  C/K", v, lo, hi, note)
-        if v == "우세":
-            ok_b = True
-    print(f"    ⇒ (b) {'충족' if ok_b else '**불충족**'}")
+        vs_b.append(v)
+    ok_b = resolve_any(vs_b, lambda v: v == "우세")
+    print(f"    ⇒ (b) {say(ok_b, '충족', '**불충족**')}")
 
     print("  채택 (c): opt-in 문법 수용 — **설계 판단, 실측 아님**(§9 문언)")
 
@@ -373,27 +412,27 @@ def gate_d(idx, browser):
     print(f"\n{'=' * 78}\n§9 D (keyed 시퀀스 동기화) — {browser}\n{'=' * 78}")
 
     print("  기각 (iii) 앞항: {W1,W2,W3,W4} × {R1,R2} **전 셀**에서 K가 D 대비 동등 이상")
-    k_all = True
+    vs_front = []
     for bindings in (1, 8):
         for w in JUDGE_WORKLOADS:
             v, lo, hi, note = compare(idx, w, bindings, K, D)
             line(f"{w} × R{1 if bindings == 1 else 2}  K/D", v, lo, hi, note)
-            if not at_least_equal(v):
-                k_all = False
-    print(f"    ⇒ 앞항 {'성립' if k_all else '**불성립**'}")
+            vs_front.append(v)
+    k_all = resolve_all(vs_front, at_least_equal)
+    print(f"    ⇒ 앞항 {say(k_all, '성립', '**불성립**')}")
 
     print("  기각 (iii) 뒷항: 부속 비용 프로파일(M4/M7/M3 중 1개 이상)에서 D가 K 대비 순증")
     print("    미계측 — M4(이중 저장)·M7(resume walk)·M3는 이 하네스가 수집하지 않는다")
     print("    (§9 문언상 **두 항 모두** 성립해야 기각이므로, 뒷항 미계측이면 기각 불성립)")
 
     print("  채택 양성 조건: {W1,W2,W3} × R2 중 최소 1셀에서 K 대비 우세")
-    ok_pos = False
+    vs_pos = []
     for w in ["W1", "W2", "W3"]:
         v, lo, hi, note = compare(idx, w, 8, D, K)
+        vs_pos.append(v)
         line(f"{w} × R2  D/K", v, lo, hi, note)
-        if v == "우세":
-            ok_pos = True
-    print(f"    ⇒ 양성 조건 {'충족' if ok_pos else '**불충족** → 후퇴 경로 판정'}")
+    ok_pos = resolve_any(vs_pos, lambda v: v == "우세")
+    print(f"    ⇒ 양성 조건 {say(ok_pos, '충족', '**불충족** → 후퇴 경로 판정')}")
 
     # §9 D "채택 추가 선결": "§5 FV 계류(D·E 공통), **W5에서 K/C 대비 열세
     # 확인 시 unkeyed 정적 opt-out 경로 명세를 채택 조건에 부속**".
@@ -410,7 +449,7 @@ def gate_d(idx, browser):
     print("    ※ §5 FV 계류(D·E 공통)는 이 스크립트 범위 밖 — 채택은 그것까지 통과해야 한다.")
 
     print(f"\n  ▶ D 판정: 기각 (iii) {'불성립(뒷항 미계측)' if k_all else '불성립(앞항 불성립)'}"
-          f" / 양성 조건 {'충족' if ok_pos else '불충족'}"
+          f" / 양성 조건 {say(ok_pos, '충족', '불충족')}"
           f" / W5 부속 {'발동' if w5_worse else '미발동'}")
     return {"reject_iii_front": k_all, "adopt_positive": ok_pos, "w5_rider": bool(w5_worse)}
 
@@ -429,14 +468,17 @@ def gate_e(idx, browser):
               f" → {'네이티브 경로 확인' if fb == 0 else '**폴백 혼입 — 판정 데이터 부적격**'}")
 
     print("  기각 (i): 판정 셀 W1·W3 × R2 중 **어느 셀에서도** K 대비 우세를 못 보이면 기각")
-    any_win = False
+    vs_i = []
     for w in ["W1", "W3"]:
         v, lo, hi, note = compare(idx, w, 8, E, K)
         line(f"{w} × R2  E/K", v, lo, hi, note)
-        if v == "우세":
-            any_win = True
-    fired_i = not any_win
-    print(f"    ⇒ 기각 (i) {'**발동**' if fired_i else '미발동'}")
+        vs_i.append(v)
+    # **데이터 부재로 기각시키지 않는다**: §9 E 기각 (i)은 해당 범위를
+    # "등가·열세·비결정"으로 **열거**했고 그 목록에 미계측은 없다. 2026-09-22까지
+    # `fired_i = not any_win`이라 셀이 비면 그대로 E가 기각됐다.
+    any_win = resolve_any(vs_i, lambda v: v == "우세")
+    fired_i = None if any_win is None else not any_win
+    print(f"    ⇒ 기각 (i) {say(fired_i, '**발동**', '미발동')}")
 
     print("  기각 (i) 병기(결정적): E의 셀당 총 DOM op 수 ≥ K의 50%이면 'DOM 연산 절감 없음'")
     for w in ["W1", "W3"]:
@@ -815,12 +857,15 @@ def main():
     if not c:
         print("  Chromium 데이터 없음 — 판정 불가")
         return
-    print(f"  C: 채택(a)={'O' if c['C']['adopt_a'] else 'X'} "
-          f"채택(b)={'O' if c['C']['adopt_b'] else 'X'} 기각={'발동' if c['C']['reject'] else '미발동'}")
-    print(f"  D: 기각(iii) 앞항={'성립' if c['D']['reject_iii_front'] else '불성립'} "
-          f"(뒷항 미계측 → 기각 불성립) / 양성조건={'O' if c['D']['adopt_positive'] else 'X'}")
-    print(f"  E: 기각(i)={'발동' if c['E']['reject_i'] else '미발동'} "
-          f"기각(ii)={'발동' if c['E']['reject_ii'] else '미발동'}")
+    # `say()`를 쓰는 이유: 판정 불가(`None`)를 여기서 "X"나 "미발동"으로 접으면
+    # 앞의 게이트 출력이 애써 구분한 "데이터가 없다"와 "조건이 안 맞는다"가
+    # 종합 한 줄에서 다시 뭉개진다.
+    print(f"  C: 채택(a)={say(c['C']['adopt_a'], 'O', 'X')} "
+          f"채택(b)={say(c['C']['adopt_b'], 'O', 'X')} 기각={say(c['C']['reject'], '발동', '미발동')}")
+    print(f"  D: 기각(iii) 앞항={say(c['D']['reject_iii_front'], '성립', '불성립')} "
+          f"(뒷항 미계측 → 기각 불성립) / 양성조건={say(c['D']['adopt_positive'], 'O', 'X')}")
+    print(f"  E: 기각(i)={say(c['E']['reject_i'], '발동', '미발동')} "
+          f"기각(ii)={say(c['E']['reject_ii'], '발동', '미발동')}")
     f = results.get("firefox")
     if f:
         for cand in ("C", "D", "E"):
