@@ -590,19 +590,14 @@ fn make_k<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
-    row_bindings: usize,
-    row_inner: usize,
+    shape: RowShape,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "K");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
-    app.set_row_bindings(row_bindings);
-    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_k_system::<T>);
-    if row_bindings > 1 || row_inner > 0 {
-        app.add_row_depth_systems();
-    }
+    shape.apply(&mut app);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "K", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
@@ -612,19 +607,14 @@ fn make_c<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
-    row_bindings: usize,
-    row_inner: usize,
+    shape: RowShape,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "C");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
-    app.set_row_bindings(row_bindings);
-    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_c_system::<T>);
-    if row_bindings > 1 || row_inner > 0 {
-        app.add_row_depth_systems();
-    }
+    shape.apply(&mut app);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "C", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
@@ -634,19 +624,14 @@ fn make_d<T: Send + Sync + Clone + ToString + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
-    row_bindings: usize,
-    row_inner: usize,
+    shape: RowShape,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "D");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
-    app.set_row_bindings(row_bindings);
-    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_d_system::<T>);
-    if row_bindings > 1 || row_inner > 0 {
-        app.add_row_depth_systems();
-    }
+    shape.apply(&mut app);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "D", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
@@ -656,19 +641,14 @@ fn make_e<T: Send + Sync + Clone + ToString + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
-    row_bindings: usize,
-    row_inner: usize,
+    shape: RowShape,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "E");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
-    app.set_row_bindings(row_bindings);
-    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_e_system::<T>);
-    if row_bindings > 1 || row_inner > 0 {
-        app.add_row_depth_systems();
-    }
+    shape.apply(&mut app);
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
@@ -683,19 +663,14 @@ fn make_d_lis<T: Send + Sync + Clone + ToString + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
-    row_bindings: usize,
-    row_inner: usize,
+    shape: RowShape,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "D-LIS");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
-    app.set_row_bindings(row_bindings);
-    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_d_lis_system::<T>);
-    if row_bindings > 1 || row_inner > 0 {
-        app.add_row_depth_systems();
-    }
+    shape.apply(&mut app);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "D-LIS", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
@@ -706,26 +681,49 @@ fn make_e_lis<T: Send + Sync + Clone + ToString + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
-    row_bindings: usize,
-    row_inner: usize,
+    shape: RowShape,
 ) -> Candidate<T> {
     let root = make_container(document, parent, "E-LIS");
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
-    app.set_row_bindings(row_bindings);
-    app.set_row_inner(row_inner);
     app.add_instrumented_systems(list_reconcile_e_lis_system::<T>);
-    if row_bindings > 1 || row_inner > 0 {
-        app.add_row_depth_systems();
-    }
+    shape.apply(&mut app);
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "E-LIS", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
 }
 
-type Maker<T> = fn(&web_sys::Document, &web_sys::Node, Vec<T>, usize, usize) -> Candidate<T>;
+/// **row 모양 축 전부를 한 덩어리로.** 마운트 **전에** 전부 걸려야 하는 것들이다.
+///
+/// 개별 인자로 늘어놓던 것을 2026-09-23에 묶었다. 그 전에는 `row_bindings`/`row_inner`만
+/// maker가 마운트 전에 걸고 `row_variants`·`write_variant`는 `run_combination`이 마운트
+/// **뒤에** 걸었는데, R3(`row_variants`)는 spawn 시점에 marker를 배정하므로 그 순서에서
+/// **D·E가 marker를 영영 못 받았다**(개정 #8이 무효 처리한 상태의 재발).
+///
+/// 축이 하나의 값이면 "뒤에 거는 자리"가 없어 같은 결함이 다시 생길 수 없다.
+#[derive(Clone, Copy)]
+struct RowShape {
+    bindings: usize,
+    inner: usize,
+    variants: bool,
+    write_variant: loom_runtime::WriteVariant,
+}
+
+impl RowShape {
+    fn apply(&self, app: &mut LoomApp) {
+        app.set_row_bindings(self.bindings);
+        app.set_row_inner(self.inner);
+        app.set_row_variant_mode(self.variants);
+        app.set_write_variant(self.write_variant);
+        if self.bindings > 1 || self.inner > 0 {
+            app.add_row_depth_systems();
+        }
+    }
+}
+
+type Maker<T> = fn(&web_sys::Document, &web_sys::Node, Vec<T>, RowShape) -> Candidate<T>;
 
 /// All 6 Track L candidates, measured together every time so every result
 /// set shares the same page load / hardware / JIT-warmup conditions.
@@ -777,18 +775,45 @@ async fn run_combination<T, F>(
     scratch_parent.append_child(&combo_container).unwrap();
     let combo_node: web_sys::Node = combo_container.clone().into();
 
+    let shape = RowShape { bindings: row_bindings, inner: row_inner, variants: row_variants, write_variant };
     let mut candidates: Vec<Candidate<T>> = all_makers()
         .iter()
         .map(|maker| {
-            let mut c = maker(document, &combo_node, initial.clone(), row_bindings, row_inner);
-            // R3 축(§3.2) 적용. 초기 spawn은 이미 끝난 뒤이므로 첫 재정렬부터
-            // 브랜치 전환이 일어난다 — §9 C 기각 (ii)가 재는 것이 바로 그
-            // "재정렬마다의 archetype move"이므로 문제되지 않는다.
-            c.app.set_row_variant_mode(row_variants);
-            c.app.set_write_variant(write_variant);
-            c
+            // row 모양 축은 **전부** `RowShape`가 마운트 전에 건다. 여기서 뒤늦게
+            // 거는 호출을 두지 않는 것이 요점이다 — 그 자리가 있는 한 같은 순서
+            // 결함이 다시 생길 수 있고, 실제로 개정 #8 수리 뒤에도 다시 생겼다.
+            maker(document, &combo_node, initial.clone(), shape)
         })
         .collect();
+
+    // -----------------------------------------------------------------------
+    // **축이 실제로 걸렸는지 수집 전에 확인한다** (개정 #9의 "수집 전 이행 확인
+    // 의무"). 단위 테스트(`tests/r3_axis.rs`)는 전부 마운트 **전에** 축을 켜므로
+    // 하네스의 순서 결함을 원리적으로 못 잡는다 — 검증된 경로와 측정되는 경로가
+    // 다르면 검증이 그 결함에 대해 아무 말도 하지 않는다.
+    //
+    // 여기서 터지면 페이지가 죽고 그 메시지가 `<이름>.browser.log`에 남는다.
+    // 조용히 R1 셀에 R3 라벨을 붙여 내보내는 것보다 낫다(개정 #8이 v11~v18에
+    // 대해 무효 처리해야 했던 것이 정확히 그 상태다).
+    if row_variants {
+        for c in &candidates {
+            let marked = c
+                .app
+                .world
+                .iter_entities()
+                .filter(|e| {
+                    e.contains::<loom_runtime::RowVariantA>()
+                        || e.contains::<loom_runtime::RowVariantB>()
+                })
+                .count();
+            assert!(
+                marked > 0,
+                "R3 축이 켜졌는데 후보 {}의 row에 브랜치 marker가 하나도 없다 — \
+                 축이 마운트 뒤에 걸렸거나 이 후보가 축을 안 읽는다",
+                c.name
+            );
+        }
+    }
 
     // §8: "셀별 유효 해상도를 실행 시점 기록". 배치 규칙의 임계값이 여기서
     // 나오므로 조합마다 새로 잰다(스로틀·격리 상태가 바뀌면 값이 달라진다).
@@ -1404,7 +1429,12 @@ async fn run_w6_cell(
     let node: web_sys::Node = container.clone().into();
 
     let maker = all_makers::<ItemId>()[candidate_index];
-    let mut candidate = maker(document, &node, Vec::new(), 1, 0);
+    let mut candidate = maker(
+        document,
+        &node,
+        Vec::new(),
+        RowShape { bindings: 1, inner: 0, variants: false, write_variant: loom_runtime::WriteVariant::Conditional },
+    );
     let cid = format!("w6|cand={candidate_index}|trial={trial}");
 
     let started = measure_now();
