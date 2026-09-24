@@ -133,6 +133,11 @@ def main():
     print("무결성 점검")
     print("=" * 78)
     problems = []
+    # **사전 등록 파라미터를 실제로 검사한다** (2026-09-24, 감사 발견 #11). 그 전에는
+    # 레코드 총수(540)와 격리 여부만 봤다 — 540은 시행이 셀 간에 잘못 분배돼도
+    # 맞을 수 있고, 창 길이는 아예 안 봤다. §8 표본 규정: "트랙 T: 셀당 독립 10시행
+    # (시행마다 fresh page load) × 60초". §4.1: "각 셀 60초 구동".
+    TRIALS, WINDOW_MS, WINDOW_TOL_MS = 10, 60000.0, 1000.0
     for rate, recs in by_rate.items():
         n = len(recs)
         iso = sum(1 for r in recs if not r["cross_origin_isolated"])
@@ -140,6 +145,31 @@ def main():
             problems.append(f"rate={rate}: 레코드 {n} ≠ 540")
         if iso:
             problems.append(f"rate={rate}: 격리 미적용 {iso}건")
+        per_cell = {}
+        for r in recs:
+            per_cell.setdefault((r["arm"], r["f_hz"], r["size"]), []).append(r)
+        bad_trials = {k: len(v) for k, v in per_cell.items() if len(v) != TRIALS}
+        if bad_trials:
+            problems.append(f"rate={rate}: 셀당 시행 수 ≠ {TRIALS}인 셀 {len(bad_trials)}개 "
+                            f"(예: {next(iter(bad_trials.items()))})")
+        dup_trials = sum(1 for v in per_cell.values()
+                         if len({r.get("trial") for r in v}) != len(v))
+        if dup_trials:
+            problems.append(f"rate={rate}: 같은 trial 번호가 중복된 셀 {dup_trials}개 — "
+                            "'독립 시행'이 아닐 수 있다")
+        wrong_win = sum(1 for r in recs if r.get("window_ms") != WINDOW_MS)
+        if wrong_win:
+            problems.append(f"rate={rate}: window_ms ≠ {WINDOW_MS:.0f}인 레코드 {wrong_win}건")
+        short = [r for r in recs
+                 if not (WINDOW_MS <= r.get("actual_window_ms", 0) <= WINDOW_MS + WINDOW_TOL_MS)]
+        if short:
+            lo = min(r.get("actual_window_ms", 0) for r in short)
+            problems.append(f"rate={rate}: 실제 구동 창이 [{WINDOW_MS:.0f}, "
+                            f"{WINDOW_MS + WINDOW_TOL_MS:.0f}]ms 밖인 레코드 {len(short)}건 (최소 {lo:.0f}ms)")
+        no_on = sum(1 for r in recs if not r.get("toggle_on_ms"))
+        if no_on:
+            problems.append(f"rate={rate}: 정상 상태 on-토글 표본이 0개인 레코드 {no_on}건 — "
+                            "J-a를 낼 수 없다")
     arms_seen = {r["arm"] for recs in by_rate.values() for r in recs}
     if arms_seen != set(ALL_ARMS):
         problems.append(f"arm 집합 불일치: {sorted(arms_seen)}")

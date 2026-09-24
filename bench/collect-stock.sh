@@ -176,9 +176,18 @@ trap cleanup EXIT
 echo "[collect-stock] $NAME 시작 (pid=$PID, 상한 ${TIMEOUT}초)"
 START=$(date +%s)
 count_parts() { grep -c '"group":' "$PARTS" 2>/dev/null || echo 0; }
-# 부분 재수집이면 기대 조각 수는 구간 길이다 — 전체 수와 비교하면 영원히 안 끝난다.
-EXPECTED=$((TOTAL_GROUPS - FIRST_GROUP))
-while [ "$(count_parts)" -lt "$EXPECTED" ]; do
+# **기대 조각 수는 하네스가 말해 준다** (2026-09-24). 첫 조각의 `total_cells`를
+# 읽는다 — 셀 목록(`cell_list()`, `?cells=core` 필터)을 아는 것은 하네스뿐이고,
+# 여기 하드코딩(69)은 `CELLS=core`(20셀)에서 정상 종료를 타임아웃 실패로 만들었다.
+# 조각이 아직 없으면 `TOTAL_GROUPS`로 시작하고 첫 조각이 오면 갱신한다.
+expected_parts() {
+  local t
+  t=$(grep -o '"total_cells": [0-9]*' "$PARTS" 2>/dev/null | head -1 | grep -o '[0-9]*$')
+  if [ -n "$t" ]; then echo $((t - FIRST_GROUP)); else echo $((TOTAL_GROUPS - FIRST_GROUP)); fi
+}
+EXPECTED=$(expected_parts)
+while [ "$(count_parts)" -lt "$(expected_parts)" ]; do
+  EXPECTED=$(expected_parts)
   if ! kill -0 $PID 2>/dev/null; then
     echo "[collect-stock] **브라우저가 죽었다** — 결과 없음" >&2
     exit 1

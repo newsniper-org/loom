@@ -1689,8 +1689,15 @@ async fn run_all() -> Result<(), JsValue> {
             // **스스로 이동**한다. 페이지가 매번 새로 뜨므로 §8의 "셀마다
             // fresh page load"에 맞고 누적 열화도 끊긴다.
             Some(g) => {
-                let payload =
-                    format!("{{\"group\": {}, \"track_l\": {report}, \"track_t\": {cond}}}", g - 1);
+                // `total_cells`를 함께 싣는다(2026-09-24). 드라이버가 기대 조각 수를
+                // 하드코딩(69)하고 있어서 `?cells=core`(20셀)로 돌리면 **정상 종료를
+                // 타임아웃 실패로 처리**했다(감사 발견 #4/#20). 셀 목록을 아는 것은
+                // 하네스뿐이므로 하네스가 말해 주는 것이 맞다.
+                let payload = format!(
+                    "{{\"group\": {}, \"total_cells\": {}, \"track_l\": {report}, \"track_t\": {cond}}}",
+                    g - 1,
+                    cells.len()
+                );
                 let opts = web_sys::RequestInit::new();
                 opts.set_method("POST");
                 opts.set_body(&JsValue::from_str(&payload));

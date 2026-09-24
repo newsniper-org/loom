@@ -88,6 +88,10 @@ def paired_ratio_ci(a, b, ci=CI):
 EQ_LO, EQ_HI = 1 / 1.1, 1.1
 
 
+# 우세/열세로 판정됐지만 등가 대역 안에도 든 (판정, lo, hi) 전부.
+VOCAB_OVERLAP = []
+
+
 def verdict(lo, hi):
     """§8 "판정 어휘(로그 척도 비율 통일)"를 문언 그대로.
 
@@ -103,10 +107,18 @@ def verdict(lo, hi):
     후보별로 갈렸고, 사전 등록 수치를 우회한 사후 재해석이라 §11-1(d)에도
     걸린다.
     """
-    if hi < 1:
-        return "우세"
-    if lo > 1:
-        return "열세"
+    # **§8 어휘가 겹치는 구간**(2026-09-24 등재): CI 전체가 1의 한쪽에 있으면서 동시에
+    # [1/1.1, 1.1] 안에 들 수 있다(예: [0.95, 0.99]). §8은 셋을 나열만 하고 우선순위를
+    # 안 적었다. 여기서는 **우세/열세 우선**으로 읽는다 — "CI 전체 < 1"은 방향이
+    # 확정됐다는 진술이고 등가는 크기가 작다는 진술이라, 둘 다 참이면 방향 쪽이 더
+    # 강한 정보다(프로토콜 §11 "개정 #9 후속 — 어휘 우선순위" 참고, 수집 전 등재).
+    # 겹친 경우는 **전부 기록**해 보고서 말미에 찍는다 — E 기각 (i)처럼 "우세가
+    # 아니면 기각"인 조항에서는 이 선택이 판정을 가른다.
+    if hi < 1 or lo > 1:
+        v = "우세" if hi < 1 else "열세"
+        if lo >= EQ_LO and hi <= EQ_HI:
+            VOCAB_OVERLAP.append((v, lo, hi))
+        return v
     if lo >= EQ_LO and hi <= EQ_HI:
         return "등가"
     return "비결정"
@@ -295,7 +307,12 @@ def cell(idx, workload, bindings, cand, variants=False, n=N, item=POD, inner=0):
     사실이 보고서에 남아야 한다.
     """
     cond = _raw(idx, workload, bindings, cand, variants, n, item, inner, "Conditional")
-    if workload not in DOUBLED_WORKLOADS or cand not in DOUBLED_CANDIDATES:
+    # §3.3 "판정에 걸린 {W1,W2,W3,W4} × {R1,R2} 및 W10" — POD, n=1,000, 중첩 없음,
+    # R3 아님. 이 밖의 셀(예: R3 셀의 W2, 스케일링 셀)은 이중 측정 대상이 아니므로
+    # 무조건 변형이 없는 것이 **정상**이고 "미이행"으로 찍으면 거짓 감사 줄이 된다
+    # (2026-09-22 감사 발견 #19).
+    in_doubled_set = (item == POD and n == N and inner == 0 and not variants)
+    if not in_doubled_set or workload not in DOUBLED_WORKLOADS or cand not in DOUBLED_CANDIDATES:
         return cond
     ck = (id(idx), workload, bindings, cand, variants, n, item, inner)
     if ck in _VARIANT_CACHE:
@@ -595,6 +612,18 @@ def profile_new_cells(rows, idx, browser):
             line(f"{cand} vs K", v, lo, hi, note)
 
 
+def report_vocab_overlap():
+    """§8 어휘 겹침(우세/열세이면서 등가 대역 안)이 실제로 몇 번 있었는가."""
+    print(f"\n{'-' * 78}\n§8 판정 어휘 겹침 (우세/열세 ∩ 등가 — 우세/열세 우선으로 읽음)\n{'-' * 78}")
+    if not VOCAB_OVERLAP:
+        print("  없음 — 이번 데이터에서는 우선순위 선택이 어떤 판정에도 영향을 주지 않았다.")
+        return
+    print(f"  {len(VOCAB_OVERLAP)}건. 이 셀들은 등가로 읽었다면 판정이 달라질 수 있었다"
+          f"(특히 '우세가 아니면 기각'인 E 기각 (i)).")
+    for v, lo, hi in VOCAB_OVERLAP[:20]:
+        print(f"    {v}  CI=[{lo:.3f}, {hi:.3f}]  (등가 대역 [{EQ_LO:.3f}, {EQ_HI:.3f}] 안)")
+
+
 def report_variant_choices():
     """§9 서두가 요구한 "셀별 우세 write 변형"의 선택 내역 전수."""
     if not VARIANT_LOG:
@@ -653,11 +682,28 @@ def integrity_checks(rows, browser):
         if len(w6_rows) != expected:
             problems.append(f"W6 셀이 {len(w6_rows)}개 — 6후보 × 5시행 = {expected}이어야 한다")
 
-    # (1) 노드 슬롯 누수 — 상주가 n에 비례해야 하고 tick 수에 비례하면 안 된다.
-    worst = max(rows, key=lambda r: r["live_node_slots"] / max(r["n"], 1))
-    ratio = worst["live_node_slots"] / worst["n"]
+    # row 하나가 만드는 기대 노드 수 — R2 바인딩 span, 조건부 앵커(+자식 최대 1),
+    # W8 내부 `<ul>` + 항목, R3 B-브랜치 `<em>`(절반). 2026-09-22까지 (1)은 `n`만,
+    # (8)은 `1 + binding`만 세어서 W8(inner=100)이 두 검사 모두에서 **위양성**
+    # 경보를 냈다(감사 발견 #7).
+    def expected_nodes_per_row(r):
+        b, inner, var = r["row_bindings"], r.get("row_inner", 0), r.get("row_variants", False)
+        n_ = 1 + max(b - 1, 0)
+        if b > 1:
+            n_ += 2  # 조건부 앵커 + 자식(실효값 true 40%, 상한으로 1)
+        if inner > 0:
+            n_ += 1 + inner
+        if var:
+            n_ += 1  # `<em>` (실제로는 절반, 상한으로 1)
+        return n_
+
+    # (1) 노드 슬롯 누수 — 상주가 (n × 기대 노드/row)에 비례해야 하고 tick 수에
+    # 비례하면 안 된다.
+    worst = max(rows, key=lambda r: r["live_node_slots"] / max(r["n"] * expected_nodes_per_row(r), 1))
+    ratio = worst["live_node_slots"] / max(worst["n"] * expected_nodes_per_row(worst), 1)
     ok = ratio < 20
-    print(f"  노드 슬롯 상주 최대 비율: {ratio:.2f}× (n={worst['n']}, {worst['candidate']}/{worst['workload']})")
+    print(f"  노드 슬롯 상주 최대 비율: {ratio:.2f}× (n={worst['n']}, inner={worst.get('row_inner', 0)}, "
+          f"{worst['candidate']}/{worst['workload']})")
     print(f"    ⇒ {'정상' if ok else '**누수 의심**'} (수리 전이면 tick 수 × n으로 자란다)")
     if not ok:
         problems.append("노드 슬롯 누수 의심")
@@ -746,10 +792,11 @@ def integrity_checks(rows, browser):
     print("  §7 M2 결정성(브라우저 간 op 수 일치)은 종합 절에서 대조한다.")
 
     # (8) 노드 슬롯 임계 — 셀의 기대 노드 수는 row_bindings에 비례한다.
-    worst2 = max(rows, key=lambda r: r["live_node_slots"] / max(r["n"] * (1 + r["row_bindings"]), 1))
-    ratio2 = worst2["live_node_slots"] / (worst2["n"] * (1 + worst2["row_bindings"]))
-    print(f"  노드 슬롯 / (n × (1+binding)): 최대 {ratio2:.2f}× "
-          f"(R{worst2['row_bindings']}, {worst2['candidate']}/{worst2['workload']})")
+    worst2 = max(rows, key=lambda r: r["live_node_slots"] / max(r["n"] * expected_nodes_per_row(r), 1))
+    ratio2 = worst2["live_node_slots"] / (worst2["n"] * expected_nodes_per_row(worst2))
+    print(f"  노드 슬롯 / (n × 기대 노드/row): 최대 {ratio2:.2f}× "
+          f"(R{worst2['row_bindings']}, inner={worst2.get('row_inner', 0)}, "
+          f"{worst2['candidate']}/{worst2['workload']})")
     if ratio2 > 2.0:
         problems.append("노드 슬롯 누수 의심(binding 보정)")
 
@@ -852,6 +899,7 @@ def main():
         crosscheck_m2(idx, label)
 
     report_variant_choices()
+    report_vocab_overlap()
     print(f"\n\n{'=' * 78}\n종합 (Chromium 1차 판정 기준)\n{'=' * 78}")
     c = results.get("chromium")
     if not c:
@@ -894,8 +942,11 @@ def cross_browser_consistency(results):
     print(f"  배치 모드가 브라우저 간에 다른 셀: {len(mode_diff)}/{len(common)}")
     if mode_diff:
         print("    ⇒ 그 셀들의 방향 대조는 **같은 조건의 비교가 아니다**")
+        # 키 모양: (item_type, n, row_bindings, row_inner, row_variants, workload,
+        # candidate, write_variant) — 개정 #9의 8-튜플. 2026-09-22까지 옛 6-튜플
+        # 인덱스로 찍어 후보 자리에 workload가 나왔다.
         for k in sorted(mode_diff)[:6]:
-            print(f"      {k[1]}/R{k[2]}/{k[4]}/{k[5]}: "
+            print(f"      n={k[1]}/R{k[2]}/{k[5]}/{k[6]}/{k[7]}: "
                   f"{ci[k].get('batch_mode')} vs {fi[k].get('batch_mode')}")
     print(f"  같은 배치 모드인데 M2가 다른 셀: {len(m2_diff)} "
           f"— {'정상(§7 M2 결정성 유지)' if not m2_diff else '**시드/워크로드 어긋남**'}")
@@ -906,14 +957,20 @@ def cross_browser_direction_check(results, incomparable=frozenset()):
     """§8: "Firefox 교차 확인이 우세 방향을 뒤집으면 자동 판정 변경이 아니라
     §11-1(b) 검토 대상 등재."
 
+    `incomparable`은 더 이상 읽지 않는다(레코드의 `batch_mode`를 직접 대조) —
+    호출부 호환을 위해 남겼다.
+
     **게이트 결론이 같아도 셀 단위 방향은 뒤집힐 수 있다.** 게이트 dict만
     비교하면 그걸 놓친다 — v15에서 실제로 게이트 셋은 전부 일치하는데 비교쌍
     40건 중 9건이 정반대로 뒤집혔다(2026-08-03). 그래서 셀 단위로 따로 센다.
     """
     print(f"\n{'-' * 78}\n브라우저 간 우세 방향 대조 (§8 — 뒤집히면 §11-1(b) 등재 사유)\n{'-' * 78}")
     ci, fi = results["chromium"]["_idx"], results["firefox"]["_idx"]
-    pairs = [("C", "D", "C 채택(a)"), ("C", "K", "C 채택(b)"),
-             ("K", "D", "D 기각(iii)앞항"), ("D", "K", "D 양성"), ("E", "K", "E 기각(i)")]
+    # **후보 상수를 쓴다** — `D`는 §10 D-4로 LIS 고정이라 데이터의 "D-LIS"다.
+    # 2026-09-22까지 리터럴 "D"(무LIS)로 계산하면서 라벨은 D-LIS 게이트를 가리켰다
+    # (감사 발견 #15).
+    pairs = [(C, D, "C 채택(a)"), (C, K, "C 채택(b)"),
+             (K, D, "D 기각(iii)앞항"), (D, K, "D 양성"), (E, K, "E 기각(i)")]
     total = mismatch = opposite = 0
     for w in JUDGE_WORKLOADS:
         for bindings in (1, 8):
@@ -922,10 +979,16 @@ def cross_browser_direction_check(results, incomparable=frozenset()):
                 fa, fb = cell(fi, w, bindings, a), cell(fi, w, bindings, b)
                 if not (ka and kb and fa and fb):
                     continue
-                keys = [(POD, N, bindings, False, W[w], a), (POD, N, bindings, False, W[w], b)]
-                if any(k in incomparable for k in keys):
-                    print(f"  (비교 불가)  {w}×R{1 if bindings == 1 else 2} {a}/{b:2s}  "
-                          f"— 브라우저 간 배치 모드 불일치")
+                # **이미 조회한 레코드로 직접 대조한다.** 2026-09-22까지 옛 6-튜플 키로
+                # `incomparable`을 조회해 **한 번도 매치되지 않았다**(키가 8-튜플로
+                # 바뀐 뒤 잔존 코드) — 아래 "비교 불가" 분기는 죽은 코드였고 배치
+                # 모드가 갈린 셀도 그대로 §11-1(b) "정반대" 집계에 들어갔다. 게다가
+                # `cell()`이 셀별 우세 write 변형을 고르므로 키를 고정해 두면
+                # Unconditional이 뽑힌 셀을 놓친다(감사 발견 #3/#16).
+                if ka.get("batch_mode") != fa.get("batch_mode") or kb.get("batch_mode") != fb.get("batch_mode"):
+                    print(f"  (비교 불가)  {w}×R{1 if bindings == 1 else 2} {a}/{b:5s}  "
+                          f"— 브라우저 간 배치 모드 불일치 "
+                          f"({ka.get('batch_mode')}/{fa.get('batch_mode')}, {kb.get('batch_mode')}/{fb.get('batch_mode')})")
                     continue
                 total += 1
                 vc = verdict(*paired_ratio_ci(ka["samples_ms"], kb["samples_ms"]))
