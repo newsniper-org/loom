@@ -42,12 +42,11 @@ fn app_with(register: impl FnOnce(&mut LoomApp), bindings: usize) -> (LoomApp, M
     }
     let initial: Vec<String> = ITEMS.iter().map(|s| s.to_string()).collect();
     let list = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(root))).id();
-    app.tick(&mut dom);
-    // **두 번째 tick이 필요하다**: 조건부 앵커의 `DomTarget`은 첫 tick의 write 적용
-    // 루프에서 붙으므로, `cond_reconcile_b_system`이 그 앵커를 보는 것은 다음
-    // tick이다(`remark_row_cond_system` doc comment 참고). 한 tick만 돌리면
-    // 조건부가 물질화되지 않은 상태를 "마운트 완료"로 착각하게 된다 —
-    // 실제로 그래서 조건부가 **영영 자식을 안 만드는** 결함을 못 보고 있었다.
+    // **한 tick으로 마운트가 끝나야 한다** (2026-09-24). 2026-08-13~09-23에는 조건부
+    // 물질화가 다음 tick(`remark_row_cond_system`)이라 여기서 두 번 tick했는데, 그
+    // 설계로는 하네스에서 매 tick 전량 재스폰되는 K의 조건부가 **영영** 물질화되지
+    // 않았다(감사 발견 #1/#12). 이제 spawn 시점에 함께 나오므로 한 tick이면 되고,
+    // 이 헬퍼가 한 tick만 돌리는 것 자체가 그 성질의 회귀 검사다.
     app.tick(&mut dom);
     (app, dom, list)
 }
@@ -216,12 +215,11 @@ fn app_with_inner(register: impl FnOnce(&mut LoomApp), inner: usize) -> (LoomApp
     app.add_row_depth_systems();
     let initial: Vec<String> = ITEMS.iter().map(|s| s.to_string()).collect();
     let list = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(root))).id();
-    app.tick(&mut dom);
-    // **두 번째 tick이 필요하다**: 조건부 앵커의 `DomTarget`은 첫 tick의 write 적용
-    // 루프에서 붙으므로, `cond_reconcile_b_system`이 그 앵커를 보는 것은 다음
-    // tick이다(`remark_row_cond_system` doc comment 참고). 한 tick만 돌리면
-    // 조건부가 물질화되지 않은 상태를 "마운트 완료"로 착각하게 된다 —
-    // 실제로 그래서 조건부가 **영영 자식을 안 만드는** 결함을 못 보고 있었다.
+    // **한 tick으로 마운트가 끝나야 한다** (2026-09-24). 2026-08-13~09-23에는 조건부
+    // 물질화가 다음 tick(`remark_row_cond_system`)이라 여기서 두 번 tick했는데, 그
+    // 설계로는 하네스에서 매 tick 전량 재스폰되는 K의 조건부가 **영영** 물질화되지
+    // 않았다(감사 발견 #1/#12). 이제 spawn 시점에 함께 나오므로 한 tick이면 되고,
+    // 이 헬퍼가 한 tick만 돌리는 것 자체가 그 성질의 회귀 검사다.
     app.tick(&mut dom);
     (app, dom, list)
 }
@@ -314,4 +312,47 @@ fn despawning_a_row_also_despawns_its_conditional_children() {
         "row가 사라졌는데 그 조건부의 자식 {orphans}개가 남았다 — 매 재스폰마다 \
          누적되고, wasm에서는 메모리 고갈 트랩으로 끝난다"
     );
+}
+
+
+// ---------------------------------------------------------------------------
+// **하네스가 재는 경로 그대로** — 매 tick 재정렬로 Signal을 재대입한다 (2026-09-24).
+//
+// 감사 발견 #1/#12: 기존 검사들은 Signal을 한 번만 대입했다. 그 경로에서는 K의
+// `Changed` 게이트가 닫혀 row가 살아남고 조건부가 물질화된다 — 그런데 하네스의 측정
+// 반복은 **매 tick** `set_and_tick(target)`/`set_and_tick(initial)`을 번갈아 대입하므로
+// K의 row는 정확히 1 tick만 산다. 그 경로에서 K의 조건부는 한 번도 물질화되지 않았고,
+// "검증된 경로 ≠ 측정되는 경로"였다. 대조군만 조건부 몫의 비용을 0으로 내면 §9의
+// D 기각(iii)·D 양성·E 기각(i)이 전부 keyed 후보에 불리하게 편향된다.
+// ---------------------------------------------------------------------------
+#[test]
+fn k_materializes_the_conditional_in_the_same_tick_it_respawns() {
+    use loom_runtime::Derived1;
+    let (mut app, mut dom, list) =
+        app_with(|a| { a.add_instrumented_systems(list_reconcile_k_system::<String>); }, R2);
+    let shown_rows = |app: &LoomApp| -> usize {
+        rows_of(app, list).iter()
+            .filter_map(|r| app.world.get::<RowOwned>(*r))
+            .filter_map(|o| o.0.last().copied())
+            .filter(|c| app.world.get::<Signal<bool>>(*c).is_some_and(|s| s.0))
+            .count()
+    };
+    let forward: Vec<String> = ITEMS.iter().map(|s| s.to_string()).collect();
+    let reversed: Vec<String> = ITEMS.iter().rev().map(|s| s.to_string()).collect();
+    for round in 0..6 {
+        let before = rows_of(&app, list);
+        let next = if round % 2 == 0 { reversed.clone() } else { forward.clone() };
+        step(&mut app, &mut dom, list, next);
+        let after = rows_of(&app, list);
+        // 공허성 방지: K가 실제로 전량 재스폰했는가(§10 (4) — 재정렬은 Full).
+        assert!(after.iter().all(|e| !before.contains(e)), "round {round}: K가 row를 재스폰하지 않았다");
+        let expected = shown_rows(&app);
+        let kids = app.world.iter_entities().filter(|e| e.contains::<Derived1>()).count();
+        assert!(expected > 0 && expected < ITEMS.len(), "실효값이 갈리지 않는다 (shown={expected})");
+        assert_eq!(
+            kids, expected,
+            "round {round}: 1 tick만 사는 K row의 조건부 자식이 {kids}개 — 실효값 true인 row {expected}개와 \
+             같아야 한다. 다음 tick에 물질화하는 설계면 K에서는 영영 0이다"
+        );
+    }
 }

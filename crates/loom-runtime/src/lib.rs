@@ -779,24 +779,52 @@ impl RowSpawner for DefaultRow {
             // F 계열 기각"이므로 기준선 arm을 쓰는 것이 맞고, 조건부 후보 판정은
             // 트랙 T의 일이지 트랙 L의 row 깊이 축이 정할 일이 아니다.
             if out.row_bindings > 1 {
-            let cond = out
-                .commands
-                .spawn((
-                    Signal(row_cond_is_shown(text)),
-                    cond::CondBlock::default(),
+                let shown = row_cond_is_shown(text);
+                let cond = out.commands.spawn_empty().id();
+                out.pending.push(DomWrite::SpawnElement {
+                    entity: cond,
+                    parent: WriteParent::Entity(row),
+                    tag: "span",
+                    class: None,
+                    loom_id: None,
+                    text: None,
+                });
+                // **실효값이 true면 자식을 spawn 시점에 함께 낸다** (2026-09-24, 감사
+                // 발견 #1/#12). 그 전에는 `cond_reconcile_b_system`이 다음 tick에
+                // 물질화하는 구조였는데, 하네스의 측정 반복에서 **K의 row는 정확히
+                // 1 tick만 산다**(매 tick 재정렬로 전량 재스폰) — 그래서 K의 조건부는
+                // 한 번도 물질화되지 않았고 대조군만 조건부 몫의 create/set_text/
+                // spawn/despawn 비용을 0으로 냈다. §9의 D 기각(iii)·D 양성·E 기각(i)이
+                // 전부 R2 셀의 K 기준선에 걸려 있으므로 그 넷이 keyed 후보에 불리한
+                // 방향으로 계통 편향돼 있었다. `Added<DomTarget>` 기반 수정으로는
+                // 원리적으로 못 고친다(1 tick 뒤엔 row가 없다) — 같은 tick에 내야 한다.
+                //
+                // 자식은 `cond_reconcile_b_system`과 **같은 번들**(`block_child_bundle`)
+                // 이고, 부모는 `WriteParent::Entity(cond)`라 같은 배치 안에서 앵커의
+                // `DomTarget`이 붙은 직후 해석된다(R2 바인딩과 같은 기제).
+                let block = cond::CondBlock::default();
+                let mut children = Vec::new();
+                if shown {
+                    for _ in 0..block.size {
+                        let child = out.commands.spawn(cond::block_child_bundle(cond)).id();
+                        out.pending.push(DomWrite::SpawnElement {
+                            entity: child,
+                            parent: WriteParent::Entity(cond),
+                            tag: "span",
+                            class: None,
+                            loom_id: None,
+                            text: Some("0".to_string()),
+                        });
+                        children.push(child);
+                    }
+                }
+                out.commands.entity(cond).insert((
+                    Signal(shown),
+                    cond::CondBlock { size: block.size, children },
                     RowCond,
                     ::bevy_ecs::hierarchy::ChildOf(row),
-                ))
-                .id();
-            out.pending.push(DomWrite::SpawnElement {
-                entity: cond,
-                parent: WriteParent::Entity(row),
-                tag: "span",
-                class: None,
-                loom_id: None,
-                text: None,
-            });
-            owned.push(cond);
+                ));
+                owned.push(cond);
             }
             // `ChildOf`가 정리를 맡고 `RowOwned`는 **순서 있는 접근**을 맡는다 —
             // `revalue`가 "R2가 켜져 있으면 마지막이 조건부, 나머지는 전부 값 파생
@@ -878,31 +906,6 @@ impl RowSpawner for DefaultRow {
         if let Some(cond) = cond {
             out.commands.entity(cond).insert(Signal(row_cond_is_shown(text)));
         }
-    }
-}
-
-/// **R2 중첩 조건부의 최초 물질화를 성립시키는 System**(2026-08-13 수리).
-///
-/// 왜 필요한가: `cond_reconcile_b_system`은 `(&Signal<bool>, &mut CondBlock,
-/// &DomTarget)`을 `Changed<Signal<bool>>`로 게이팅해 읽는다. 그런데 row의 조건부
-/// entity는 **만들어진 tick에 아직 `DomTarget`이 없다** — `SpawnElement`의 핸들은
-/// 스케줄이 끝난 뒤 write 적용 루프에서 붙기 때문이다. 그래서 그 tick에는 쿼리에
-/// 안 걸리고, 다음 tick에는 `Changed`가 이미 소비돼 **영영 물질화되지 않는다**.
-///
-/// 실측으로 확인한 상태: 조건부 entity 4개, `DomTarget` 4개, 실효값 true 2개,
-/// 그런데 자식은 **매 tick 0개**. 즉 §3.2가 요구한 "중첩 조건부 1개"가 구조만
-/// 있고 아무 일도 안 하고 있었다.
-///
-/// 여기서는 `DomTarget`이 **막 붙은** 조건부의 `Signal`을 `DerefMut`으로 건드려
-/// 변경 표시만 다시 세운다. 값은 안 바꾼다 — 한 tick 늦게 물질화될 뿐이고, 그
-/// 지연은 C의 `revalue` → patch 사슬과 같은 성질이다.
-pub fn remark_row_cond_system(
-    mut q: Query<&mut Signal<bool>, (With<RowCond>, Added<DomTarget>)>,
-) {
-    for mut sig in &mut q {
-        // 값을 그대로 다시 써서 `Changed`만 세운다.
-        let v = sig.0;
-        sig.0 = v;
     }
 }
 
@@ -1334,7 +1337,6 @@ impl LoomApp {
         self.schedule.add_systems(
             (
                 stage::stage_mark_row_patch_start,
-                remark_row_cond_system,
                 (patch_row_binding_system, cond::cond_reconcile_b_system),
                 stage::stage_mark_row_patch_end,
             )

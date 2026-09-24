@@ -696,11 +696,8 @@ mod r2_value_derived_bindings {
             .spawn((Signal(initial.clone()), ListRows::default(), DomTarget(root)))
             .id();
         app.tick(&mut dom);
-        // **두 번째 tick**: 중첩 조건부의 앵커는 첫 tick의 write 적용 루프에서
-        // `DomTarget`을 받으므로 물질화는 다음 tick이다(`remark_row_cond_system`).
-        // 한 tick만 돌리면 그 최초 물질화가 아래 "재정렬" 측정 구간으로 새어
-        // 들어와, D가 retained row를 다시 쓴 것처럼 보인다(실제로 그렇게 보였다).
-        app.tick(&mut dom);
+        // 2026-09-24: 조건부가 spawn 시점에 물질화되므로 한 tick이면 마운트가 끝난다
+        // (2026-08-13~09-23에는 다음 tick 물질화라 여기서 두 번 tick했다).
 
         // 재정렬(역순) — 슬롯 기준으로 보면 **모든 슬롯의 아이템이 바뀐다**.
         let reversed: Vec<String> = initial.iter().rev().cloned().collect();
