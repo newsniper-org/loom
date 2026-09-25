@@ -1148,6 +1148,24 @@ async fn run_combination<T, F>(
             // §7 M2: 마지막 반복의 op 종류별 카운트를 병기한다. §9 E 기각 (i)이
             // "결정적 보조 지표로 병기"를 명시 요구하는 값 — 시드 고정 하에
             // 결정적이므로(§7 M2) 반복마다 같아야 하고, 따라서 마지막 1회로 충분하다.
+
+            // -----------------------------------------------------------------
+            // **레코드가 자기 시간 스케일을 스스로 말하게 한다** (2026-09-25).
+            //
+            // `samples_ms`의 한 표본과 `m2_dom_ops`·`stage_ms`가 **같은 구간이 아닌
+            // 셀이 있다**. 시퀀스형(W5 = 100건 연속 append가 1반복)에서 표본은
+            // 100스텝의 **합**이고 단계·op 수는 그 중 **마지막 1스텝**의 값이다.
+            // 배치 셀도 표본이 k회 평균인데 단계·op 수는 마지막 정방향 1회다.
+            // 스케일 차가 100배까지 나는데 레코드만 봐서는 알 수 없었다 —
+            // 판정 조항들은 stage_ms **안에서의 비율**만 쓰므로 판정은 오염되지
+            // 않지만(§9 C 기각 뒷 분기·E 기각 (ii) 둘 다 내부 비율), 프로파일을
+            // 읽는 사람이 두 수치를 나누면 조용히 100배 틀린다. 그래서 세지 않고
+            // **적는다** — 이 두 필드가 있으면 섞어 쓰는 것이 눈에 보인다.
+            let (seq_steps, stage_scope) = match (workload.shape(), batch_mode) {
+                (Shape::Sequence(k), _) => (k, "last_step_of_sequence"),
+                (_, "alternate") => (1, "last_forward_step_of_batch"),
+                _ => (1, "the_measured_step"),
+            };
             out.push_str(&format!(
                 "  {{\"candidate\": \"{}\", \"workload\": \"{}\", \"item_type\": \"{}\", \"n\": {}, \"row_bindings\": {}, \"reps\": {}, \"warmup\": {}, \"samples_ms\": [{}], \"m2_dom_ops\": {}, \"m2_deterministic\": {}, \"row_variants\": {}, \"row_inner\": {}, \"clause\": \"{}\", \"write_variant\": \"{:?}\", \
                  \"timer_resolution_ms\": {:.6}, \"batched\": {}, \"batch_mode\": \"{}\", \"batch_k\": {}, \
@@ -1155,6 +1173,7 @@ async fn run_combination<T, F>(
                  \"m1b_frame_ms\": {:.4}, \"m1b_reps\": 1, \"mutation_records\": {}, \
                  \"cell_wall_ms\": {:.1}, \"over_cell_cap\": {}, \"live_node_slots\": {}, \
                  \"user_agent\": \"{}\", \"cross_origin_isolated\": {}, \
+                 \"seq_steps\": {}, \"stage_scope\": \"{}\", \
                  \"stage_ms\": {{\"systems\": {:.4}, \"sync_point\": {:.4}, \
                  \"dom_apply\": {:.4}, \"row_patch\": {:.4}, \"total\": {:.4}}}}}",
                 candidate.name,
@@ -1187,6 +1206,8 @@ async fn run_combination<T, F>(
                 live_nodes,
                 user_agent(),
                 cross_origin_isolated(),
+                seq_steps,
+                stage_scope,
                 measured_stages.systems_ms,
                 measured_stages.sync_point_ms,
                 measured_stages.dom_apply_ms,

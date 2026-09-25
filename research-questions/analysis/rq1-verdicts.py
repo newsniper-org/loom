@@ -812,7 +812,10 @@ def integrity_checks(rows, browser):
         b, inner, var = r["row_bindings"], r.get("row_inner", 0), r.get("row_variants", False)
         n_ = 1 + max(b - 1, 0)
         if b > 1:
-            n_ += 2  # 조건부 앵커 + 자식(실효값 true 40%, 상한으로 1)
+            # 조건부 앵커 1 + 자식(실효값 true인 row만 1개; 하네스 라벨에서
+            # 60% — `row_cond_is_shown`이 {0,1,4,5,8,9}에서 true다. 2026-09-25
+            # 정정 전에는 40%로 적혀 있었다). 상한 휴리스틱이므로 row당 1로 잡는다.
+            n_ += 2
         if inner > 0:
             n_ += 1 + inner
         if var:
@@ -876,6 +879,23 @@ def integrity_checks(rows, browser):
           f"{'격리 정상(엔진별 하한: Chromium 0.005 / Firefox 0.020)' if not clamped else '**클램프됨(COOP/COEP 미적용?)**'}")
     if clamped:
         problems.append("타이머 클램프")
+
+    # (4-b) **`samples_ms`와 `stage_ms`/`m2_dom_ops`의 시간 스케일이 다른 셀.**
+    # 시퀀스형(W5)은 한 표본이 100스텝 합인데 단계·op 수는 마지막 1스텝이고,
+    # 배치 셀은 표본이 k회 평균인데 단계·op 수는 마지막 정방향 1회다. 판정
+    # 조항들은 stage_ms **안에서의 비율**만 쓰므로 판정은 오염되지 않지만,
+    # 프로파일을 읽는 사람이 두 수치를 나누면 조용히 100배 틀린다. 하네스가
+    # `seq_steps`/`stage_scope`를 싣게 했으므로 여기서 그대로 보고한다.
+    scoped = defaultdict(list)
+    for r in rows:
+        scoped[(r.get("stage_scope", "(미기재)"), r.get("seq_steps", "?"))].append(r["workload"])
+    print("  단계·M2 귀속 구간(`stage_scope`) 분포:")
+    for (scope, steps), wls in sorted(scoped.items(), key=lambda kv: str(kv[0])):
+        mixed = " ← samples_ms와 스케일 다름(나누지 말 것)" if steps not in (1, "?") \
+            else (" ← 표본은 k회 평균" if scope == "last_forward_step_of_batch" else "")
+        print(f"    {scope} (스텝 {steps}): {len(wls)}건 {sorted(set(wls))}{mixed}")
+    if "(미기재)" in {k[0] for k in scoped}:
+        problems.append("stage_scope 미기재 — 하네스가 구간을 안 싣는 수집분이다")
 
     # (5) §8 표본 수 — **실제 개수**를 센다(2026-09-24). 그 전에는 선언 필드
     # `reps`(항상 200)를 읽어서, 상한 초과로 잘린 셀에서도 "§8 준수"를 찍었다.

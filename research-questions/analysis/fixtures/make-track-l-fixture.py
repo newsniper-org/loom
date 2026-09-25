@@ -62,6 +62,9 @@ def rec(cand, wl, item, n, rb, ri, rv, wv, reps=200, over=False, mult=None, nois
         "reposition_native_cell_total": 10, "reposition_fallback_cell_total": 0,
         "m1b_frame_ms": 3.0, "m1b_reps": 1,
         "mutation_records": {"character_data": 100, "child_list": 0, "attributes": 0},
+        # 하네스가 싣는 시간 스케일 표식 — W5(append)만 시퀀스형 100스텝이다.
+        "seq_steps": 100 if wl == "append" else 1,
+        "stage_scope": "last_step_of_sequence" if wl == "append" else "the_measured_step",
         "cell_wall_ms": 1000.0, "over_cell_cap": over, "live_node_slots": int(n * nodes_per_row * 0.95) + 1,
         "user_agent": "Mozilla/5.0 synthetic", "cross_origin_isolated": True,
         "stage_ms": {"systems": 0.1, "sync_point": 0.1, "dom_apply": 0.5, "row_patch": 0.1, "total": 1.0},
