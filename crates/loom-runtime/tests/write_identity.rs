@@ -73,11 +73,23 @@ fn control_group_k_matches_the_clause_10_dispatch_baseline() {
 /// 위 골든 대조만으로는 "K가 조항의 네 분기를 갖췄다"가 아니라 "지금과 같다"만 말한다.
 /// 레코더의 마지막 두 시퀀스가 같은 값(`["p","q","r"]` 두 번)이므로, 그 전이는 write를
 /// **하나도** 내지 않아야 한다. 수리 전에는 `ClearChildren` + `SpawnRow` 3회였다.
+///
+/// **R1·R2를 따로 본다** (2026-09-25). 전에는 두 절을 이어 붙인 문자열에
+/// `contains`를 걸었는데, 그러면 **한쪽만 no-op이어도 통과한다** — R2에서만 write가
+/// 새는 회귀(조건부·바인딩 자식은 R2에만 있으므로 정확히 그 축에서 생길 결함)를
+/// 못 잡는다. §9의 D 기각(iii)·D 채택 양성·E 기각(i)이 전부 R2 셀에 걸려 있다.
 #[test]
 fn identical_sequence_emits_no_writes_at_all() {
-    let k = sections(&recorder_common::full_log(), is_k);
-    assert!(
-        k.contains("--- tick 7 (0 writes) ---"),
-        "동일 시퀀스 전이가 write를 냈다 — §10 (2) no-op 분기가 없다:\n{k}"
-    );
+    let log = recorder_common::full_log();
+    for arm in ["R1", "R2"] {
+        let k = sections(&log, |h| is_k(h) && h.contains(&format!(" {arm} ")));
+        assert!(
+            !k.is_empty(),
+            "골든에서 K {arm} 절을 못 찾았다 — 아래 단언이 공허해진다"
+        );
+        assert!(
+            k.contains("--- tick 7 (0 writes) ---"),
+            "K {arm}: 동일 시퀀스 전이가 write를 냈다 — §10 (2) no-op 분기가 없다:\n{k}"
+        );
+    }
 }

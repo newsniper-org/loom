@@ -356,3 +356,67 @@ fn k_materializes_the_conditional_in_the_same_tick_it_respawns() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// **entity가 아니라 DOM에 도달하는가** (2026-09-25)
+//
+// 위 `k_materializes_...`는 `Derived1` 컴포넌트를 가진 **entity 수**를 센다. 그것만
+// 으로는 조건부 자식이 World에 있다는 것까지만 말한다 — 브라우저가 값을 치르는 것은
+// DOM 노드이고, §7 M2가 세는 것도 DOM op이다. write가 방출되지 않았거나
+// (`WriteParent` 해석 실패로) 버려졌으면 entity 수는 맞는데 노드는 없을 수 있고,
+// 그러면 R2 셀의 대조군 비용이 다시 조건부 몫만큼 0으로 내려간다 — v21을 죽인
+// 결함과 **같은 방향의 같은 크기**다.
+//
+// 그래서 여기서는 MockDom의 실제 트리를 본다: row 노드의 자식 수와, 조건부 앵커
+// 노드 아래 자식 수(`CondBlock::default().size` = 1).
+// ---------------------------------------------------------------------------
+#[test]
+fn r2_conditional_children_reach_the_dom_not_just_the_world() {
+    let (mut app, mut dom, list) = app_with(
+        |a| { a.add_instrumented_systems(list_reconcile_k_system::<String>); }, R2);
+
+    let forward: Vec<String> = ITEMS.iter().map(|s| s.to_string()).collect();
+    let reversed: Vec<String> = ITEMS.iter().rev().map(|s| s.to_string()).collect();
+
+    // round 0은 마운트 상태 그대로, 이후는 매 tick 재정렬(= K 전량 재스폰).
+    for round in 0..4 {
+        if round > 0 {
+            let next = if round % 2 == 1 { reversed.clone() } else { forward.clone() };
+            step(&mut app, &mut dom, list, next);
+        }
+        let rows = rows_of(&app, list);
+        assert_eq!(rows.len(), ITEMS.len(), "round {round}: row 수가 안 맞는다");
+
+        let (mut shown, mut hidden) = (0usize, 0usize);
+        for row in rows {
+            let row_node = app.world.get::<DomTarget>(row)
+                .unwrap_or_else(|| panic!("round {round}: row에 DomTarget이 없다 — \
+                                           SpawnRow가 적용되지 않았다")).0;
+            // row 노드의 자식 = 바인딩 7개 + 조건부 앵커 1개.
+            assert_eq!(
+                dom.child_handles(row_node).len(), R2,
+                "round {round}: row 노드의 자식이 {}개 — 바인딩 {}개 + 조건부 앵커 1개여야 한다",
+                dom.child_handles(row_node).len(), R2 - 1
+            );
+            // 조건부 앵커는 `RowOwned`의 마지막 항목이다(emit 순서: 바인딩 → (W8) → 조건부).
+            let cond = *app.world.get::<RowOwned>(row).expect("RowOwned").0.last().unwrap();
+            assert!(app.world.get::<RowCond>(cond).is_some(), "마지막 owned가 조건부가 아니다");
+            let cond_node = app.world.get::<DomTarget>(cond)
+                .unwrap_or_else(|| panic!("round {round}: 조건부 앵커에 DomTarget이 없다"))
+                .0;
+            let is_shown = app.world.get::<Signal<bool>>(cond).expect("조건부 Signal").0;
+            let kids = dom.child_handles(cond_node).len();
+            assert_eq!(
+                kids, if is_shown { 1 } else { 0 },
+                "round {round}: 실효값 {is_shown}인 조건부의 **DOM 자식**이 {kids}개다. \
+                 entity 수만 세는 검사는 이 상태를 통과한다 — 노드가 없으면 대조군이 \
+                 조건부 몫의 DOM 비용을 0으로 낸다"
+            );
+            if is_shown { shown += 1 } else { hidden += 1 }
+        }
+        // 공허성 방지: 한쪽으로 몰리면 위 단언의 절반이 안 돌아간다.
+        assert!(shown > 0 && hidden > 0,
+                "round {round}: 실효값이 갈리지 않는다 (켜짐 {shown} / 꺼짐 {hidden})");
+        dom.assert_tree_wellformed();
+    }
+}
