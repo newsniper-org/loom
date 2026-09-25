@@ -183,7 +183,13 @@ count_parts() { grep -c '"group":' "$PARTS" 2>/dev/null || echo 0; }
 expected_parts() {
   local t
   t=$(grep -o '"total_cells": [0-9]*' "$PARTS" 2>/dev/null | head -1 | grep -o '[0-9]*$')
-  if [ -n "$t" ]; then echo $((t - FIRST_GROUP)); else echo $((TOTAL_GROUPS - FIRST_GROUP)); fi
+  # `TOTAL_GROUPS`는 **상한**으로 계속 존중한다 — 부분 재수집(FIRST_GROUP/TOTAL_GROUPS로
+  # 구간 지정)에서 하네스의 전체 셀 수를 그대로 쓰면 구간을 넘겨 끝까지 돈다.
+  if [ -n "$t" ] && [ "$t" -lt "$TOTAL_GROUPS" ]; then
+    echo $((t - FIRST_GROUP))
+  else
+    echo $((TOTAL_GROUPS - FIRST_GROUP))
+  fi
 }
 EXPECTED=$(expected_parts)
 while [ "$(count_parts)" -lt "$(expected_parts)" ]; do

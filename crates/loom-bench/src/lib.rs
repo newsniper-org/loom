@@ -122,7 +122,15 @@ fn cell_id(
     write_variant: loom_runtime::WriteVariant,
     workload: &str,
 ) -> String {
-    format!("{type_name}|n={n}|R{row_bindings}|inner={row_inner}|variants={row_variants}|wv={write_variant:?}|{workload}")
+    // **`write_variant`를 시드 식별자에 넣지 않는다** (2026-09-24). §8은 "시드 열 전
+    // 후보 공유(paired 분석의 전제)"를 규정하는데, 넣으면 조건부/무조건 두 변형 셀이
+    // **서로 다른 target 열**을 보게 된다. 그러면 (a) 두 변형의 uncond/cond 비교가
+    // 다른 작업끼리의 비교가 되고, (b) §9 서두대로 C가 무조건 변형을 고른 뒤 K
+    // (언제나 조건부)와 rep 인덱스로 짝지으면 **서로 다른 target의 표본을 짝짓는다**.
+    // 두 변형은 같은 워크로드를 다른 write 정책으로 재는 것이므로 같은 열을 봐야 한다.
+    // 레코드는 `write_variant` 필드로 구별되므로 식별에는 지장이 없다.
+    let _ = write_variant;
+    format!("{type_name}|n={n}|R{row_bindings}|inner={row_inner}|variants={row_variants}|{workload}")
 }
 
 /// A minimal POD item type (fixed-width `u32`) alongside `String` (heap),
@@ -806,10 +814,12 @@ async fn run_combination<T, F>(
                         || e.contains::<loom_runtime::RowVariantB>()
                 })
                 .count();
-            assert!(
-                marked > 0,
-                "R3 축이 켜졌는데 후보 {}의 row에 브랜치 marker가 하나도 없다 — \
-                 축이 마운트 뒤에 걸렸거나 이 후보가 축을 안 읽는다",
+            // **`> 0`이 아니라 `== n`이다** (2026-09-24). 존재 확인만 하면 row 일부만
+            // marker를 받은 상태(예: 축이 중간에 켜져 새 row에만 붙은 경우)를 통과시킨다.
+            assert_eq!(
+                marked, n,
+                "R3 축이 켜졌는데 후보 {}의 row {n}개 중 {marked}개만 브랜치 marker를 \
+                 가졌다 — 축이 마운트 뒤에 걸렸거나 이 후보가 축을 안 읽는다",
                 c.name
             );
         }
@@ -870,7 +880,15 @@ async fn run_combination<T, F>(
         // 장치인데, 시퀀스형은 이미 1반복이 k스텝이라 시간이 해상도 위로 올라와
         // 있고, 게다가 §8이 그 시퀀스 자체를 1반복으로 **정의**했으므로 그 위에
         // 또 묶으면 조항이 말한 반복이 아니게 된다.
-        let batched = pilot_min < batch_threshold_ms && workload.shape() == Shape::Single;
+        // **W9(clear)는 배치에서 제외한다** (2026-09-24). §8 배치 규칙의 교대 묶음은
+        // "되돌림은 정방향의 정확한 역이라 크기가 같은 연산"이라는 전제 위에 있는데,
+        // clear의 되돌림은 **1,000행 전량 재구축**이라 크기가 전혀 다르다. 그러면
+        // 표본의 절반이 재구축 시간이 되어 §3.4가 K의 등록된 유일한 유리 구간으로
+        // 잡은 clear_children fast path가 표본에서 거의 지워진다(§8 정의 "W9 =
+        // 재구축 → clear 1회 = 1반복"과도 어긋난다 — §11-1(b)).
+        let invertible = !matches!(workload, Workload::Clear);
+        let batched =
+            pilot_min < batch_threshold_ms && workload.shape() == Shape::Single && invertible;
         // -------------------------------------------------------------------
         // §8 배치 규칙의 묶음 구성 — **전부 baseline↔target 교대**.
         //
