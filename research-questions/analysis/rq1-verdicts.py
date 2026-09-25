@@ -99,6 +99,8 @@ VOCAB_OVERLAP = []
 # 것을 안 재는 것과 같은 형태다. `set_ctx()`를 통해서만 만지고, 아래
 # `report_vocab_overlap()`이 미설정 상태를 발견하면 경고한다.
 VOCAB_CTX = {"where": "(미지정)", "browser": None, "clause": None}
+# 판정 비교에서 배치 모드가 갈린 짝 — §9 서두의 변형 선택이 데려올 수 있다.
+BATCH_MIX = []
 
 
 def set_ctx(**kw):
@@ -380,9 +382,18 @@ def cell(idx, workload, bindings, cand, variants=False, n=N, item=POD, inner=0):
     lo, hi = paired_ratio_ci(unc["samples_ms"], cond["samples_ms"])
     set_ctx(clause=keep)
     pick = "Unconditional" if mu < mc else "Conditional"
+    # **배치 모드를 함께 남긴다** (2026-09-25). §8 배치 규칙은 셀마다 파일럿으로
+    # 정하는데(`pilot_min < 해상도×50`), 무조건 변형은 가장 싼 후보를 임계값 위로
+    # 밀어 올리므로 **같은 논리 셀의 두 변형이 서로 다른 모드로 측정될 수 있다**
+    # (실측: W1×R1에서 조건부 alternate / 무조건 none). 표본의 차원은 같지만
+    # (§8 "k회 묶음 총 시간/k = 1측정치") 정밀도가 10배 다르므로, 선택이 어느
+    # 정밀도에서 일어났는지가 기록에 남아야 한다.
+    bm = f" [배치 cond={cond.get('batch_mode', '?')} / uncond={unc.get('batch_mode', '?')}]"
+    if cond.get("batch_mode") != unc.get("batch_mode"):
+        bm += " ← **두 변형의 배치 모드가 다르다**"
     VARIANT_LOG.append((workload, bindings, cand, pick,
                         f"cond={mc:.4f} uncond={mu:.4f}  "
-                        f"uncond/cond CI=[{lo:.3f}, {hi:.3f}] {verdict(lo, hi)}"))
+                        f"uncond/cond CI=[{lo:.3f}, {hi:.3f}] {verdict(lo, hi)}{bm}"))
     _VARIANT_CACHE[ck] = unc if pick == "Unconditional" else cond
     return _VARIANT_CACHE[ck]
 
@@ -421,9 +432,24 @@ def compare(idx, workload, bindings, cand, base, **kw):
     if bad:
         return ("상한초과", float("nan"), float("nan"),
                 f"{' / '.join(bad)} — §8상 측정 불가 셀이라 판정에 못 쓴다")
+    # **짝짓는 두 레코드의 배치 모드가 갈렸는가** (2026-09-25). 이게 일어나는
+    # 경로는 하나다: §9 서두가 이중 측정 셀에서 후보별로 우세 변형을 고르는데,
+    # 고른 변형의 셀이 기준선 후보(K는 이중 측정 대상이 아니라 언제나 조건부)의
+    # 셀과 다른 배치 모드일 때. §8 정의상 표본의 차원은 같고 rep 인덱스가 같으면
+    # target도 같으므로(시드가 변형을 안 포함한다 — 2026-09-24 수리) **짝짓기 자체는
+    # 유효하다**. 갈리는 것은 정밀도(배치 쪽 분산이 1/k)이고, 그것은 CI 폭에
+    # 들어간다. 그래도 판정문에 병기한다 — 읽는 사람이 두 median을 같은 정밀도로
+    # 읽으면 안 되기 때문이다.
+    mix = ""
+    if a.get("batch_mode") != b.get("batch_mode"):
+        mix = (f"  ⚠️배치 모드 혼용({cand}={a.get('batch_mode')} / "
+               f"{base}={b.get('batch_mode')})  ")
+        BATCH_MIX.append((VOCAB_CTX["where"], cand, a.get("batch_mode"),
+                          base, b.get("batch_mode"),
+                          a.get("write_variant"), b.get("write_variant")))
     lo, hi = paired_ratio_ci(a["samples_ms"], b["samples_ms"])
     return (verdict(lo, hi), lo, hi,
-            f"{cand}={statistics.median(a['samples_ms']):.4f}ms "
+            f"{mix}{cand}={statistics.median(a['samples_ms']):.4f}ms "
             f"{base}={statistics.median(b['samples_ms']):.4f}ms")
 
 
@@ -745,6 +771,34 @@ def report_vocab_overlap():
               f"어느 조항이 갈렸는지 알 수 없으므로 그 경로를 찾아 태그를 달 것.")
 
 
+def report_batch_mix():
+    """판정 비교에서 배치 모드가 갈린 짝을 모아 보고한다.
+
+    §8 배치 규칙은 셀마다 파일럿(`pilot_min < 해상도×50`)으로 정한다. 그런데
+    무조건 write 변형은 **가장 싼 후보를 임계값 위로 밀어 올리므로** 같은 논리
+    셀의 두 변형이 서로 다른 모드로 측정될 수 있다(실측 2026-09-25: W1×R1에서
+    조건부 alternate / 무조건 none, C의 파일럿 median 0.138 vs 0.485 — 임계값
+    0.25ms의 양쪽). §9 서두가 후보별로 우세 변형을 고르므로, 고른 변형과 기준선
+    후보(K는 이중 측정 대상이 아니라 언제나 조건부)가 다른 모드에서 올 수 있다.
+
+    **짝짓기 자체는 유효하다**: §8이 배치 표본을 "k회 묶음 총 시간/k = 1측정치"로
+    정의했으므로 차원이 같고, 시드가 write 변형을 포함하지 않으므로(2026-09-24
+    수리) 같은 rep 인덱스는 같은 target을 본다. 갈리는 것은 **정밀도**(배치 쪽
+    분산이 1/k)이고 그것은 CI 폭에 반영된다. 그래도 보고하는 이유: 두 median을
+    같은 정밀도의 값으로 읽으면 안 되고, 혼용이 실제로 일어났는지는 데이터마다
+    다르기 때문이다(전부 조건부를 고르면 혼용이 아예 없다).
+    """
+    print(f"\n{'-' * 78}\n§8 배치 모드 혼용 (판정 짝의 두 레코드가 다른 모드)\n{'-' * 78}")
+    if not BATCH_MIX:
+        print("  없음 — 모든 판정 짝이 같은 배치 모드에서 왔다.")
+        return
+    print(f"  {len(BATCH_MIX)}건. 짝짓기는 유효하지만(§8상 차원 동일, 같은 rep = 같은 target) "
+          f"정밀도가 다르다 — 두 median을 같은 정밀도로 읽지 말 것.")
+    for where, cand, am, base, bm, av, bv in BATCH_MIX:
+        print(f"    {where}")
+        print(f"      {cand}({av})={am}  vs  {base}({bv})={bm}")
+
+
 def report_variant_choices():
     """§9 서두가 요구한 "셀별 우세 write 변형"의 선택 내역 전수."""
     if not VARIANT_LOG:
@@ -1058,6 +1112,7 @@ def main():
         crosscheck_m2(idx, label)
 
     report_variant_choices()
+    report_batch_mix()
     report_vocab_overlap()
     print(f"\n\n{'=' * 78}\n종합 (Chromium 1차 판정 기준)\n{'=' * 78}")
     c = results.get("chromium")

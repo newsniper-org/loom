@@ -17,6 +17,8 @@
 `selfcheck.py`가 세 모드를 다 돌려 기대 문구를 단언한다.
 
 모드:
+  batch_mix    — 같은 논리 셀의 두 write 변형이 다른 배치 모드로 측정된 상태.
+                 §9 서두의 변형 선택이 기준선과 다른 모드의 레코드를 데려온다.
   vocab_overlap — C/K 비율이 우세 ∩ 등가 겹침 구간에 드는 상태. 겹침 기록에
                  브라우저·조항 맥락이 실제로 붙는지 본다.
   base         — 전 셀 정상. 스크립트가 종료코드 0으로 완주해야 한다.
@@ -105,6 +107,21 @@ if mode == "partial_cap":
             r["over_cell_cap"] = True
             r["samples_ms"] = r["samples_ms"][:3]
             r["cell_wall_ms"] = 1_800_500.0
+if mode == "batch_mix":
+    # §8 배치 규칙이 같은 논리 셀의 두 변형을 다른 모드로 재는 상태(실측 2026-09-25:
+    # W1×R1에서 조건부 alternate / 무조건 none). 게다가 C가 W1에서 **무조건 변형을
+    # 고르도록** 만들어(무조건을 더 빠르게) 기준선 K(언제나 조건부, 배치)와 짝이
+    # 갈리게 한다 — 그것이 §9 서두가 실제로 데려올 수 있는 형태다.
+    for r in rows:
+        if r["workload"] in ("swap", "shuffle", "shuffle10", "head_insert",
+                             "replace50", "replace100"):
+            if r["write_variant"] == "Conditional":
+                r["batched"], r["batch_mode"], r["batch_k"] = True, "alternate", 10
+            else:
+                r["batched"], r["batch_mode"], r["batch_k"] = False, "none", 1
+        if (r["candidate"] == "C" and r["workload"] == "swap"
+                and r["write_variant"] == "Unconditional" and r["n"] == 1000):
+            r["samples_ms"] = [v * 0.5 for v in r["samples_ms"]]
 if mode == "vocab_overlap":
     # C/K 비율이 등가 대역 [1/1.1, 1.1] **안**이면서 CI 전체가 1 미만이 되도록
     # 맞춘다 — §8이 열거한 우세와 등가가 **둘 다** 참인 구간. 판정기가 어느 쪽을
