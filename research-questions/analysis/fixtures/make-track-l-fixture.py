@@ -17,6 +17,8 @@
 `selfcheck.py`가 세 모드를 다 돌려 기대 문구를 단언한다.
 
 모드:
+  scaling_nonmono — C/K 비율이 n에 따라 비단조(0.30 → 0.25 → 0.28). 외삽 문장이
+                 끝점만 보고 방향을 말하지 않는지 본다.
   batch_mix    — 같은 논리 셀의 두 write 변형이 다른 배치 모드로 측정된 상태.
                  §9 서두의 변형 선택이 기준선과 다른 모드의 레코드를 데려온다.
   vocab_overlap — C/K 비율이 우세 ∩ 등가 겹침 구간에 드는 상태. 겹침 기록에
@@ -107,6 +109,23 @@ if mode == "partial_cap":
             r["over_cell_cap"] = True
             r["samples_ms"] = r["samples_ms"][:3]
             r["cell_wall_ms"] = 1_800_500.0
+if mode == "scaling_nonmono":
+    # C/K 비율이 n에 따라 **비단조**가 되게 만든다(0.30 → 0.25 → 0.28). 끝점만
+    # 비교하면 "감소 = C가 유리해진다"로 읽히지만 가운데가 더 낮으므로 추세가
+    # 아니다. 외삽 문장이 단조성을 확인한 뒤에만 방향을 말하는지 본다.
+    TARGET = {100: 0.30, 1000: 0.25, 10000: 0.28}
+    kmed = {}
+    for r in rows:
+        if (r["candidate"] == "K" and r["workload"] == "shuffle"
+                and r["row_bindings"] == 8 and not r["row_variants"]):
+            kmed[r["n"]] = sorted(r["samples_ms"])[len(r["samples_ms"]) // 2]
+    for r in rows:
+        if (r["candidate"] == "C" and r["workload"] == "shuffle"
+                and r["row_bindings"] == 8 and not r["row_variants"]
+                and r["n"] in TARGET and r["n"] in kmed):
+            want = kmed[r["n"]] * TARGET[r["n"]]
+            cur = sorted(r["samples_ms"])[len(r["samples_ms"]) // 2]
+            r["samples_ms"] = [v * want / cur for v in r["samples_ms"]]
 if mode == "batch_mix":
     # §8 배치 규칙이 같은 논리 셀의 두 변형을 다른 모드로 재는 상태(실측 2026-09-25:
     # W1×R1에서 조건부 alternate / 무조건 none). 게다가 C가 W1에서 **무조건 변형을

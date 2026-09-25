@@ -671,6 +671,96 @@ def gate_e(idx, browser):
 # W7 — 판정 셀은 아니지만 §3.4가 예고한 프로파일
 # ---------------------------------------------------------------------------
 
+def profile_scaling(idx, browser):
+    """§3.3 **스케일링 셀** — 사전등재된 목적은 "C 채택 표적 구성의 스케일 외삽".
+
+    **왜 이 절이 새로 필요했나 (2026-09-26)**: §3.3이 이 셀들을 등재하고
+    (`{W2,W4} × R2 × n∈{100, 10,000}`, `W2 × R1 × n∈{100, 10,000}`) 하네스가
+    수집하는데, **읽는 보고서가 없었다.** `rq1-paired-bootstrap.py`가 n=10,000을
+    보긴 하지만 무효화된 v16에 경로가 고정돼 있고 n=100도, `row_bindings`도,
+    `over_cell_cap`도 모른다. 즉 §3.3의 한 행이 통째로 "잴 게 없었다"로 읽히는
+    상태였다 — heap 프로파일이 라벨 불일치로 빈 절이 됐던 것(2026-09-22)과 같은
+    부류다.
+
+    §9의 어느 조항도 이 셀을 읽지 않는다(전부 n=1,000). 그래서 **판정이 아니라
+    프로파일**이고, 여기서 보고하는 것은 조항이 말한 "외삽" 그 자체 — 후보/K 비율이
+    n에 따라 어떻게 움직이는가다.
+
+    §8 상한 초과 셀도 **표시해서 함께 보고한다**(빼지 않는다). §8이 상한 초과를
+    "그 자체가 유효한 결과 데이터"로 규정했고, 판정에서 빼는 것과 프로파일에서
+    지우는 것은 다르다.
+    """
+    print(f"\n{'=' * 78}\n§3.3 스케일링 프로파일 — {browser}\n{'=' * 78}")
+    print("  사전등재 목적: \"C 채택 표적 구성의 스케일 외삽\"(§3.3·§3.4). §9 판정 셀 아님.")
+    set_ctx(browser=browser, clause="§3.3 스케일링 프로파일(판정 아님)")
+    # (워크로드, row_bindings 라벨, bindings) — §3.3 문언 그대로.
+    families = [("W2", "R1", 1), ("W2", "R2", 8), ("W4", "R2", 8)]
+    for w, rlabel, rb in families:
+        print(f"\n  {w} × {rlabel}  (n = 100 → 1,000 → 10,000)")
+        # n=1,000은 핵심 격자 셀을 그대로 쓴다 — 외삽의 가운데 점이다.
+        got = {}
+        for n_ in (100, N, 10000):
+            k = _raw(idx, w, rb, K, False, n_, POD, 0, "Conditional")
+            if k is None:
+                continue
+            got[n_] = (k, {})
+            for c in (C, D, D_NOLIS, E, "E-LIS"):
+                r = _raw(idx, w, rb, c, False, n_, POD, 0, "Conditional")
+                if r is not None:
+                    got[n_][1][c] = r
+        if not got:
+            print("    미계측 — 이 계열의 셀이 데이터에 없다")
+            continue
+        for n_ in sorted(got):
+            k, others = got[n_]
+            cap = "  **상한 초과(프로파일 전용)**" if k.get("over_cell_cap") else ""
+            print(f"    n={n_:<6d} K median={statistics.median(k['samples_ms']):9.3f}ms "
+                  f"표본={len(k['samples_ms'])}{cap}")
+            for c in (C, D, D_NOLIS, E, "E-LIS"):
+                r = others.get(c)
+                if r is None:
+                    continue
+                why = unusable(r) or unusable(k)
+                m = statistics.median(r["samples_ms"])
+                if why:
+                    # 상한 초과라도 median은 남는다 — 비율만 '판정 아님'으로 적는다.
+                    lo, hi = paired_ratio_ci(r["samples_ms"], k["samples_ms"])
+                    print(f"      {c:6s} {m:9.3f}ms  {c}/K CI=[{lo:.3f}, {hi:.3f}] "
+                          f"({verdict(lo, hi)})  ※{why}")
+                else:
+                    lo, hi = paired_ratio_ci(r["samples_ms"], k["samples_ms"])
+                    print(f"      {c:6s} {m:9.3f}ms  {c}/K CI=[{lo:.3f}, {hi:.3f}] "
+                          f"({verdict(lo, hi)})")
+        # 외삽: C/K 비율이 n에 따라 어떻게 움직이나 — 조항이 말한 그것.
+        trend = []
+        for n_ in sorted(got):
+            k, others = got[n_]
+            if C in others:
+                trend.append((n_, statistics.median(others[C]["samples_ms"])
+                              / statistics.median(k["samples_ms"])))
+        if len(trend) >= 2:
+            txt = " → ".join(f"n={n_}: {v:.3f}" for n_, v in trend)
+            # **양 끝점만 보고 방향을 말하지 않는다** (2026-09-26). W2×R2가 실제로
+            # 0.370 → 0.336 → 0.353으로 비단조인데, 끝점 비교는 그것을 "유리해진다"
+            # 한 마디로 덮는다. 외삽이라고 적어 놓고 추세가 아닌 것을 추세로
+            # 읽히게 하면 §3.3이 이 셀에 부여한 목적이 오히려 왜곡된다.
+            vs = [v for _, v in trend]
+            up = all(b > a for a, b in zip(vs, vs[1:]))
+            down = all(b < a for a, b in zip(vs, vs[1:]))
+            if up:
+                direction = "단조 증가 — n이 커질수록 C가 K 대비 **불리**해진다"
+            elif down:
+                direction = "단조 감소 — n이 커질수록 C가 K 대비 **유리**해진다"
+            else:
+                direction = (f"**비단조** — 방향을 말할 수 없다(폭 "
+                             f"{min(vs):.3f}~{max(vs):.3f}, 끝점만 보면 "
+                             f"{'증가' if vs[-1] > vs[0] else '감소'}로 오독된다)")
+            print(f"    ⇒ C/K median 비율 외삽: {txt}")
+            print(f"       {direction}")
+        else:
+            print("    ⇒ 외삽 불가 — n 점이 2개 미만")
+
+
 def profile_new_cells(rows, idx, browser):
     """개정 #9로 신설된 셀들 — **전부 프로파일 전용이다**.
 
@@ -1109,6 +1199,7 @@ def main():
         }
         profile_w7(idx, label)
         profile_new_cells(rows, idx, label)
+        profile_scaling(idx, label)
         crosscheck_m2(idx, label)
 
     report_variant_choices()

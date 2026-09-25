@@ -45,6 +45,14 @@ CASES = [
         # 시퀀스형 셀의 시간 스케일 표식이 실제로 보고되는가(2026-09-25).
         "last_step_of_sequence (스텝 100)",
         "samples_ms와 스케일 다름(나누지 말 것)",
+        # §3.3 스케일링 행이 보고되는가 — 2026-09-26까지 읽는 보고서가 없었다.
+        "§3.3 스케일링 프로파일",
+        "C/K median 비율 외삽",
+        # **"단조"로 단언하지 않는다**: 비단조 분기 문구가 `**비단조**`라서
+        # `단조`를 부분문자열로 포함한다 — 어느 분기든 통과하는 공허한 단언이었고
+        # 음성 대조(끝점 비교로 되돌리기)가 실패하지 않아서 드러났다. 단조성은
+        # `scaling_nonmono` 모드에서 분기 고유 문구로 본다.
+        "n=100:",
     ], [
         "stage_scope 미기재",
         "판정 불가(데이터 없음)",
@@ -72,6 +80,16 @@ CASES = [
         "브라우저?",
         "조항?",
         "맥락이 안 붙은 기록",
+    ]),
+    ("scaling_nonmono", [
+        # 비단조 분기 고유 문구 — 끝점 비교로 되돌리면 사라진다.
+        "방향을 말할 수 없다",
+        "끝점만 보면",
+    ], [
+        # **"단조 …" 문구를 금지하지 않는다**: 이 모드는 W2×R2만 비단조로 만들고
+        # 나머지 두 계열(W2×R1, W4×R2)은 단조일 수 있다 — 전역 금지는 그 정상
+        # 출력에 걸려 거짓 실패를 낸다(실제로 그랬다). 분기 고유 문구 두 개로
+        # 충분하다: 끝점 비교로 되돌리면 둘 다 사라진다(음성 대조로 확인).
     ]),
     ("batch_mix", [
         # 변형 선택 줄이 두 변형의 배치 모드를 말하는가.
@@ -107,9 +125,18 @@ def run(mode, tmp):
 
 
 def main():
+    # `--only <모드>`로 한 모드만 돌린다. 음성 대조는 보통 한 모드만 보는데
+    # 전 모드를 돌리면 5배 걸리고, 느리면 대조를 건너뛰게 된다.
+    only = None
+    if "--only" in sys.argv:
+        only = sys.argv[sys.argv.index("--only") + 1]
+    cases = [c for c in CASES if only is None or c[0] == only]
+    if not cases:
+        print(f"모드 {only!r} 없음. 가능: {[c[0] for c in CASES]}")
+        sys.exit(2)
     fails = []
     with tempfile.TemporaryDirectory() as tmp:
-        for mode, must, must_not in CASES:
+        for mode, must, must_not in cases:
             rc, out = run(mode, tmp)
             if rc != 0:
                 fails.append(f"{mode}: 종료코드 {rc}\n{out[-2000:]}")
