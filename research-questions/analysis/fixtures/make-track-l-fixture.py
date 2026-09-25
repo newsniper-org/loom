@@ -1,0 +1,111 @@
+"""`rq1-verdicts.py` 자신을 검증하는 **합성** 트랙 L 픽스처 생성기.
+
+**이건 측정 데이터가 아니다.** `research-questions/data/`에 절대 쓰지 말 것 —
+숫자는 `random.gauss`로 만든 것이고, 여기 있는 유일한 목적은 판정 스크립트가
+조항이 시키는 대로 접히는지 보는 것이다.
+
+**왜 저장소에 있나 (2026-09-24)**: 판정 스크립트의 결함은 전부 **데이터가
+정상인 경로에서는 안 보이는 것들**이었다 — 셀이 없을 때, §8 상한에 걸렸을 때,
+라벨이 바뀌었을 때만 드러난다. 그런 상태의 실측 데이터는 재현하려면 수십 분
+수집을 다시 해야 하므로(그리고 §2.5상 마음대로 만들 수도 없다) 합성 픽스처가
+유일한 재현 수단이다. 이걸 스크래치패드에 두었던 동안 같은 부류의 결함
+("판정 불가"를 "불충족"으로 접는 것)이 **세 번** 재발했다.
+
+    python3 make-track-l-fixture.py <출력디렉터리> [base|partial_cap|missing_cell]
+    RQ1_DATA_DIR=<출력디렉터리> python3 ../rq1-verdicts.py
+
+`selfcheck.py`가 세 모드를 다 돌려 기대 문구를 단언한다.
+
+모드:
+  base         — 전 셀 정상. 스크립트가 종료코드 0으로 완주해야 한다.
+  partial_cap  — W2 × R2 판정 셀이 표본 3개에서 §8 셀 상한에 걸린 상태.
+                 **표본이 0개가 아니다** — 상한은 측정 루프 안에서도 발동하므로
+                 (loom-bench의 `break \'measure`) 1~199개짜리 상한 초과 레코드가
+                 실제로 나온다. 그런 셀이 정상 판정 셀로 들어가면 표본 3개짜리
+                 CI가 §9 조항에 그대로 먹힌다.
+  missing_cell — D-LIS의 W1 × R1 셀이 아예 없는 상태(수집 중단·부분 재수집).
+                 채택 (a)가 "판정 불가"여야 하고, 그것이 `▶` 줄에서 다시
+                 "불충족"으로 접히면 안 된다.
+"""
+import json, random, sys, os
+
+out_dir = sys.argv[1]
+mode = sys.argv[2] if len(sys.argv) > 2 else "base"
+random.seed(1)
+
+POD, STR = "ItemId(POD u32)", "String(heap 128B)"
+CANDS = ["K", "C", "D", "D-LIS", "E", "E-LIS"]
+CORE = ["swap", "shuffle", "shuffle10", "head_insert", "append", "value_update"]
+CLAUSE = {"swap": "W1", "shuffle": "W2", "shuffle10": "W3", "head_insert": "W4",
+          "append": "W5", "value_update": "W7", "replace50": "W10a", "replace100": "W10b",
+          "clear": "W9", "remove_middle": "W11"}
+
+# per-candidate base cost multiplier
+MULT = {"K": 1.0, "C": 0.7, "D": 0.9, "D-LIS": 0.85, "E": 0.95, "E-LIS": 0.97}
+
+
+def rec(cand, wl, item, n, rb, ri, rv, wv, reps=200, over=False, mult=None, noise=0.05):
+    m = MULT[cand] if mult is None else mult
+    base = 1.0 * (n / 1000) * (1 + 0.5 * (rb - 1)) * m
+    samples = [round(base * (1 + random.gauss(0, noise)), 4) for _ in range(reps)]
+    nodes_per_row = 1 + max(rb - 1, 0) + (2 if rb > 1 else 0) + ((1 + ri) if ri > 0 else 0) + (1 if rv else 0)
+    return {
+        "candidate": cand, "workload": wl, "item_type": item, "n": n, "row_bindings": rb,
+        "reps": 200, "warmup": 50, "samples_ms": samples,
+        "m2_dom_ops": {"total_mutations": 100, "reposition": 0, "create_element": 0,
+                       "remove_node": 0, "set_text_content": 100},
+        "m2_deterministic": True if wl in ("swap", "remove_middle") else None,
+        "row_variants": rv, "row_inner": ri, "clause": CLAUSE.get(wl, "?"), "write_variant": wv,
+        "timer_resolution_ms": 0.005, "batched": False, "batch_mode": "none", "batch_k": 1,
+        "reposition_native_cell_total": 10, "reposition_fallback_cell_total": 0,
+        "m1b_frame_ms": 3.0, "m1b_reps": 1,
+        "mutation_records": {"character_data": 100, "child_list": 0, "attributes": 0},
+        "cell_wall_ms": 1000.0, "over_cell_cap": over, "live_node_slots": int(n * nodes_per_row * 0.95) + 1,
+        "user_agent": "Mozilla/5.0 synthetic", "cross_origin_isolated": True,
+        "stage_ms": {"systems": 0.1, "sync_point": 0.1, "dom_apply": 0.5, "row_patch": 0.1, "total": 1.0},
+    }
+
+
+rows = []
+for rb in (1, 8):
+    for wl in CORE:
+        for c in CANDS:
+            rows.append(rec(c, wl, POD, 1000, rb, 0, False, "Conditional"))
+    for wl in ("replace50", "replace100"):
+        for c in CANDS:
+            rows.append(rec(c, wl, POD, 1000, rb, 0, False, "Conditional"))
+# doubled Unconditional
+for r in list(rows):
+    if r["workload"] in ("swap", "shuffle", "shuffle10", "head_insert", "replace50", "replace100"):
+        rr = json.loads(json.dumps(r))
+        rr["write_variant"] = "Unconditional"
+        rows.append(rr)
+# scaling, R3, W8, W9, W11, heap
+for n in (100, 10000):
+    for c in CANDS:
+        rows.append(rec(c, "shuffle", POD, n, 8, 0, False, "Conditional"))
+        rows.append(rec(c, "head_insert", POD, n, 8, 0, False, "Conditional"))
+        rows.append(rec(c, "shuffle", POD, n, 1, 0, False, "Conditional"))
+for c in CANDS:
+    rows.append(rec(c, "shuffle", POD, 1000, 1, 0, True, "Conditional"))
+    rows.append(rec(c, "head_insert", POD, 100, 1, 100, False, "Conditional"))
+    rows.append(rec(c, "clear", POD, 1000, 1, 0, False, "Conditional"))
+    rows.append(rec(c, "remove_middle", POD, 1000, 1, 0, False, "Conditional"))
+    rows.append(rec(c, "value_update", STR, 1000, 1, 0, False, "Conditional"))
+
+if mode == "partial_cap":
+    # W2 x R2 judgment cell hit the §8 cap after 3 reps for every candidate (round-robin).
+    for r in rows:
+        if r["workload"] == "shuffle" and r["row_bindings"] == 8 and r["n"] == 1000 and not r["row_variants"]:
+            r["over_cell_cap"] = True
+            r["samples_ms"] = r["samples_ms"][:3]
+            r["cell_wall_ms"] = 1_800_500.0
+if mode == "missing_cell":
+    # remove D-LIS W1 x R1 (both variants) -> C 채택(a) has an unmeasured cell
+    rows = [r for r in rows if not (r["candidate"] == "D-LIS" and r["workload"] == "swap"
+                                    and r["row_bindings"] == 1 and r["n"] == 1000)]
+
+os.makedirs(out_dir, exist_ok=True)
+with open(os.path.join(out_dir, "rq1-phase1-track-l-core-grid-v21-chromium.json"), "w") as f:
+    json.dump({"track_l": rows, "track_t": []}, f)
+print(len(rows), "rows ->", out_dir)

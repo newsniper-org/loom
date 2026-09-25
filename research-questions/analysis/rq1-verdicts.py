@@ -90,6 +90,9 @@ EQ_LO, EQ_HI = 1 / 1.1, 1.1
 
 # 우세/열세로 판정됐지만 등가 대역 안에도 든 (판정, lo, hi) 전부.
 VOCAB_OVERLAP = []
+# `verdict()`를 부르는 쪽이 자기 맥락을 넣어 둔다(셀·브라우저·조항). 안 넣으면
+# 겹침 기록이 'CI 숫자'만 남아 어느 판정이 갈렸는지 알 수 없다.
+VOCAB_CTX = {"where": "(미지정)"}
 
 
 def verdict(lo, hi):
@@ -117,19 +120,34 @@ def verdict(lo, hi):
     if hi < 1 or lo > 1:
         v = "우세" if hi < 1 else "열세"
         if lo >= EQ_LO and hi <= EQ_HI:
-            VOCAB_OVERLAP.append((v, lo, hi))
+            VOCAB_OVERLAP.append((v, lo, hi, VOCAB_CTX["where"]))
         return v
     if lo >= EQ_LO and hi <= EQ_HI:
         return "등가"
     return "비결정"
 
 
+def unresolved(v):
+    """결론 불가 표식인가 — 판정 문자열의 §8 미계측/상한초과, 그리고 `None`.
+
+    **`None`을 여기 포함하는 이유 (2026-09-24)**: 이 두 함수는 원래 `compare()`가
+    돌려주는 **판정 문자열**만 받았는데, 게이트의 `▶` 줄에서 앞서 접힌
+    tri-state 불리언(`True`/`False`/`None`)을 다시 접는 데도 쓰기 시작했다.
+    `None in UNRESOLVED`는 거짓이므로 그대로 두면 **판정 불가가 결정적
+    "미발동"·"불충족"으로 접힌다** — 즉 `say()`로 애써 구분해 둔 것을 한 단계
+    위에서 스스로 지운다. 합성 픽스처 `fx-missing_cell`에서 채택 (a)가
+    "판정 불가(데이터 없음)"인데 `▶ C 판정`은 "채택 조건 불충족 → 채택 불가"로
+    찍힌 것이 그 증거였다(수리 전 실측).
+    """
+    return v is None or v in UNRESOLVED
+
+
 def resolve_all(verdicts, pred):
     """**전 셀** 조건. 측정된 셀 하나라도 실패하면 거짓(결정적 — 없는 데이터가
     되살릴 수 없다). 실패가 없는데 결론 불가 셀이 있으면 `None`(판정 불가)."""
-    if any(v not in UNRESOLVED and not pred(v) for v in verdicts):
+    if any(not unresolved(v) and not pred(v) for v in verdicts):
         return False
-    if any(v in UNRESOLVED for v in verdicts):
+    if any(unresolved(v) for v in verdicts):
         return None
     return True
 
@@ -137,9 +155,9 @@ def resolve_all(verdicts, pred):
 def resolve_any(verdicts, pred):
     """**최소 1셀** 조건. 측정된 셀 하나라도 맞으면 참(결정적). 맞는 셀이 없는데
     결론 불가 셀이 있으면 `None`(판정 불가)."""
-    if any(v not in UNRESOLVED and pred(v) for v in verdicts):
+    if any(not unresolved(v) and pred(v) for v in verdicts):
         return True
-    if any(v in UNRESOLVED for v in verdicts):
+    if any(unresolved(v) for v in verdicts):
         return None
     return False
 
@@ -326,7 +344,19 @@ def cell(idx, workload, bindings, cand, variants=False, n=N, item=POD, inner=0):
                                 "무조건 변형 셀 없음 — 이중 측정 미이행"))
         _VARIANT_CACHE[ck] = cond if cond is not None else unc
         return _VARIANT_CACHE[ck]
+    # **변형 선택 전에 쓸 수 있는 레코드인지 본다.** 2026-09-22 수리는 `compare()`
+    # 에만 가드를 뒀는데, 이중 측정 셀은 여기서 먼저 median/부트스트랩을 돌리므로
+    # 둘 중 하나가 표본 0개면 그대로 `StatisticsError`로 죽었다(#13 수리의 잔존 경로).
+    bad_cond, bad_unc = unusable(cond), unusable(unc)
+    if bad_cond or bad_unc:
+        usable = None if (bad_cond and bad_unc) else (unc if bad_cond else cond)
+        VARIANT_LOG.append((workload, bindings, cand, "선택 불가",
+                            f"cond={bad_cond or 'ok'} / uncond={bad_unc or 'ok'} — "
+                            f"{'양쪽 다 판정 불가' if usable is None else '쓸 수 있는 쪽으로 폴백'}"))
+        _VARIANT_CACHE[ck] = usable if usable is not None else cond
+        return _VARIANT_CACHE[ck]
     mc, mu = statistics.median(cond["samples_ms"]), statistics.median(unc["samples_ms"])
+    VOCAB_CTX["where"] = f"[{VOCAB_CTX.get('browser', '?')}] {workload}×R{1 if bindings == 1 else 2} {cand} 변형선택(판정 아님)"
     lo, hi = paired_ratio_ci(unc["samples_ms"], cond["samples_ms"])
     pick = "Unconditional" if mu < mc else "Conditional"
     VARIANT_LOG.append((workload, bindings, cand, pick,
@@ -342,19 +372,33 @@ def cell(idx, workload, bindings, cand, variants=False, n=N, item=POD, inner=0):
 UNRESOLVED = ("미계측", "상한초과")
 
 
+def unusable(r):
+    """이 레코드로 판정을 낼 수 없는가 — 그 사유(없으면 None).
+
+    **표본이 0개인지가 아니라 `over_cell_cap`인지로 판정한다**(2026-09-24). §8은
+    상한 초과를 "'측정 불가(상한 초과)' 프로파일 등재 — 그 자체가 유효한 결과
+    데이터"로 규정했다. 즉 그 셀은 **판정 셀이 아니다**. 상한은 측정 루프 안에서도
+    발동하므로(loom-bench의 `break 'measure`) 표본이 1~199개인 상한 초과 레코드가
+    나올 수 있는데, 2026-09-22 수리는 `samples_ms`가 빈 경우만 걸러서 그런 셀이
+    **정상 판정 셀로 들어갔다** — 표본 3개짜리 CI가 §9 조항에 그대로 먹혔다.
+    """
+    if not r["samples_ms"]:
+        return "표본 0개"
+    if r.get("over_cell_cap"):
+        return f"상한 초과(표본 {len(r['samples_ms'])}/{r.get('reps', '?')})"
+    return None
+
+
 def compare(idx, workload, bindings, cand, base, **kw):
-    """(판정, lo, hi, 설명) — 데이터가 없거나 표본이 0이면 결론 불가."""
+    """(판정, lo, hi, 설명) — 데이터가 없거나 상한 초과 셀이면 결론 불가."""
     a, b = cell(idx, workload, bindings, cand, **kw), cell(idx, workload, bindings, base, **kw)
     if not a or not b:
         return ("미계측", float("nan"), float("nan"), f"{cand} 또는 {base} 셀 없음")
-    # §8 셀 상한 초과 레코드는 표본이 0개일 수 있다(워밍업에서 끊긴 경우).
-    # 2026-09-22까지 여기서 `statistics.median([])`이 터져 **스크립트 전체가
-    # 종료코드 1로 죽었다** — 상한 초과는 §8이 "유효한 결과 데이터"라고 명시한
-    # 것이므로 판정을 못 내릴 뿐 실행을 막아서는 안 된다.
-    empty = [n for r, n in ((a, cand), (b, base)) if not r["samples_ms"]]
-    if empty:
+    VOCAB_CTX["where"] = f"[{VOCAB_CTX.get('browser', '?')}] {workload}×R{1 if bindings == 1 else 2} {cand}/{base}"
+    bad = [f"{n}: {why}" for r, n in ((a, cand), (b, base)) if (why := unusable(r))]
+    if bad:
         return ("상한초과", float("nan"), float("nan"),
-                f"{'/'.join(empty)} 표본 0개(§8 셀 상한 초과) — 이 셀로는 판정 불가")
+                f"{' / '.join(bad)} — §8상 측정 불가 셀이라 판정에 못 쓴다")
     lo, hi = paired_ratio_ci(a["samples_ms"], b["samples_ms"])
     return (verdict(lo, hi), lo, hi,
             f"{cand}={statistics.median(a['samples_ms']):.4f}ms "
@@ -395,10 +439,12 @@ def gate_c(idx, browser):
 
     print("  기각 앞 분기: W2 × R2에서 C/D 비율 CI 하한 ≥ 3")
     v, lo, hi, note = compare(idx, "W2", 8, C, D)
-    fired_front = lo >= 3.0 if lo == lo else False
     line("W2 × R2  C/D", v, lo, hi, note)
-    print(f"    ⇒ 앞 분기 {'**발동**' if fired_front else '미발동'}"
-          f" (하한 {lo:.3f} {'≥' if fired_front else '<'} 3)")
+    # 데이터가 없으면(NaN) **미발동이 아니라 판정 불가**다 — 2026-09-24까지
+    # `lo >= 3.0 if lo == lo else False`라 부재가 그대로 "기각 미발동"이 됐다.
+    fired_front = None if v in UNRESOLVED else lo >= 3.0
+    print(f"    ⇒ 앞 분기 {say(fired_front, '**발동**', '미발동')}"
+          + ("" if fired_front is None else f" (하한 {lo:.3f} {'≥' if fired_front else '<'} 3)"))
 
     print("  기각 뒷 분기: W2 × R3에서 archetype move 구간 ≥ 스크립트 시간의 50%")
     print("    (주의: R3 셀은 C만 유효. D/D-LIS/E/E-LIS/K는 2026-08-07까지 축이")
@@ -407,7 +453,7 @@ def gate_c(idx, browser):
     r = cell(idx, "W2", 1, C, variants=True)
     if not r or "stage_ms" not in r:
         print("    미계측 — R3 셀 또는 §7.1 단계 귀속 없음")
-        fired_back = False
+        fired_back = None
     else:
         st = r["stage_ms"]
         share = st["sync_point"] / st["total"] if st["total"] > 0 else 0.0
@@ -416,8 +462,23 @@ def gate_c(idx, browser):
               f"= {share * 100:.1f}%")
         print(f"    ⇒ 뒷 분기 {'**발동**' if fired_back else '미발동'}")
 
-    rejected = fired_front or fired_back
-    print(f"\n  ▶ C 판정: {'**기각**' if rejected else ('채택 조건 (a)(b) 충족 — (c)는 설계 판단' if (ok_a and ok_b) else '기각 미발동, 채택 조건 불충족 → 채택 불가')}")
+    # 어느 한 분기라도 발동이면 기각(결정적, "또는"), 둘 다 미발동이면 미발동,
+    # 그 외(한쪽이 판정 불가)는 판정 불가. `or`로 접으면 `None`이 미발동이 된다.
+    rejected = resolve_any([fired_front, fired_back], lambda x: x is True)
+    # `None`(판정 불가)을 "불충족"으로 접지 않는다.
+    adopt_ab = resolve_all([ok_a, ok_b], lambda x: x is True)
+    if rejected is True:
+        c_line = "**기각**"
+    elif rejected is None:
+        c_line = "기각 **판정 불가(데이터 없음)**"
+    elif adopt_ab is None:
+        # 기각은 결정적으로 미발동인데 채택 조건만 데이터가 없는 경우 — 두 사실을
+        # 함께 찍는다. `say()` 하나로 접으면 "기각 미발동"이 사라진다.
+        c_line = "기각 미발동 — 채택 조건 **판정 불가(데이터 없음)**"
+    else:
+        c_line = ("채택 조건 (a)(b) 충족 — (c)는 설계 판단" if adopt_ab
+                  else "기각 미발동, 채택 조건 불충족 → 채택 불가")
+    print(f"\n  ▶ C 판정: {c_line}")
     return {"adopt_a": ok_a, "adopt_b": ok_b, "reject": rejected}
 
 
@@ -456,19 +517,24 @@ def gate_d(idx, browser):
     # 데이터가 있는데 계산되지 않고 있었다(2026-08-04 감사) — 이걸 빼면 D가
     # 조건 없이 채택 경로에 있는 것처럼 읽힌다.
     print("  채택 추가 선결: W5(append)에서 K/C 대비 열세면 unkeyed opt-out 명세 부속")
-    w5_worse = []
+    w5_worse, w5_vs = [], []
     for base in (K, C):
         v, lo, hi, note = compare(idx, "W5", 1, D, base)
         line(f"W5 × R1  D/{base}", v, lo, hi, note)
+        w5_vs.append(v)
         if v == "열세":
             w5_worse.append(base)
-    print(f"    ⇒ {'**부속 조건 발동** (' + ', '.join(w5_worse) + ' 대비 열세)' if w5_worse else '미발동'}")
+    # "K/C 대비 열세 확인 시" — 열세가 하나라도 확인되면 결정적(발동), 열세가 없고
+    # 결론 불가 셀이 있으면 판정 불가.
+    w5_rider = resolve_any(w5_vs, lambda v: v == "열세")
+    print(f"    ⇒ {say(w5_rider, '**부속 조건 발동**' + (' (' + ', '.join(w5_worse) + ' 대비 열세)' if w5_worse else ''), '미발동')}")
     print("    ※ §5 FV 계류(D·E 공통)는 이 스크립트 범위 밖 — 채택은 그것까지 통과해야 한다.")
 
-    print(f"\n  ▶ D 판정: 기각 (iii) {'불성립(뒷항 미계측)' if k_all else '불성립(앞항 불성립)'}"
+    front_txt = say(k_all, "앞항 성립 — 그러나 뒷항 미계측이라 기각 불성립", "불성립(앞항 불성립)")
+    print(f"\n  ▶ D 판정: 기각 (iii) {front_txt}"
           f" / 양성 조건 {say(ok_pos, '충족', '불충족')}"
-          f" / W5 부속 {'발동' if w5_worse else '미발동'}")
-    return {"reject_iii_front": k_all, "adopt_positive": ok_pos, "w5_rider": bool(w5_worse)}
+          f" / W5 부속 {say(w5_rider, '발동', '미발동')}")
+    return {"reject_iii_front": k_all, "adopt_positive": ok_pos, "w5_rider": w5_rider}
 
 
 # ---------------------------------------------------------------------------
@@ -516,21 +582,30 @@ def gate_e(idx, browser):
     # 셀이다) — 결과 확인 후 셀을 고르는 자유도가 남아 있었고, §11-3이 막으려는
     # 형태다.
     print("  기각 (ii): reconcile System 시간 ≥ (K의 DOM 적용 − E의 DOM 적용)  [판정 셀 W1·W3 × R2]")
-    fired_ii = False
+    ii_hits = []
     for w in ["W1", "W3"]:
         e, k = cell(idx, w, 8, E), cell(idx, w, 8, K)
         if not e or not k or "stage_ms" not in e:
             print(f"    {w} × R2: 미계측")
+            ii_hits.append("미계측")
+            continue
+        if unusable(e) or unusable(k):
+            print(f"    {w} × R2: 상한 초과 셀 — 판정 불가")
+            ii_hits.append("상한초과")
             continue
         recon = e["stage_ms"]["systems"]
         saving = k["stage_ms"]["dom_apply"] - e["stage_ms"]["dom_apply"]
         hit = recon >= saving
-        fired_ii = fired_ii or hit
+        ii_hits.append("발동" if hit else "미발동")
         print(f"    {w} × R2  E systems={recon:.4f}ms  절감분=K({k['stage_ms']['dom_apply']:.4f}) "
               f"− E({e['stage_ms']['dom_apply']:.4f}) = {saving:.4f}ms → {'**발동**' if hit else '미발동'}")
-    print(f"    ⇒ 기각 (ii) {'**발동**' if fired_ii else '미발동'}")
+    fired_ii = resolve_any(ii_hits, lambda v: v == "발동")
+    print(f"    ⇒ 기각 (ii) {say(fired_ii, '**발동**', '미발동')}")
 
-    print(f"\n  ▶ E 판정: {'**기각**' if (fired_i or fired_ii) else '기각 미발동'}")
+    # ▶ 줄도 `None`을 접지 않는다 — 어느 한쪽이 발동이면 기각(결정적), 둘 다
+    # 미발동이면 미발동, 그 외(한쪽이 판정 불가)는 판정 불가.
+    e_reject = resolve_any([fired_i, fired_ii], lambda x: x is True)
+    print(f"\n  ▶ E 판정: {say(e_reject, '**기각**', '기각 미발동')}")
     return {"reject_i": fired_i, "reject_ii": fired_ii}
 
 
@@ -620,8 +695,8 @@ def report_vocab_overlap():
         return
     print(f"  {len(VOCAB_OVERLAP)}건. 이 셀들은 등가로 읽었다면 판정이 달라질 수 있었다"
           f"(특히 '우세가 아니면 기각'인 E 기각 (i)).")
-    for v, lo, hi in VOCAB_OVERLAP[:20]:
-        print(f"    {v}  CI=[{lo:.3f}, {hi:.3f}]  (등가 대역 [{EQ_LO:.3f}, {EQ_HI:.3f}] 안)")
+    for v, lo, hi, where in VOCAB_OVERLAP:
+        print(f"    {v}  CI=[{lo:.3f}, {hi:.3f}]  (등가 대역 [{EQ_LO:.3f}, {EQ_HI:.3f}] 안)  {where}")
 
 
 def report_variant_choices():
@@ -712,7 +787,12 @@ def integrity_checks(rows, browser):
     from collections import defaultdict
     modes = defaultdict(set)
     for r in rows:
-        modes[(r["item_type"], r["n"], r["row_bindings"], r["row_variants"], r["workload"])].add(
+        # 키에 `row_inner`·`write_variant`가 **들어가야 한다**(2026-09-24). 빠지면
+        # 두 write 변형(서로 다른 셀이고 배치 판정도 각자 한다)이 한 키로 합쳐져
+        # 거짓 "§8 시드 열 공유 전제 붕괴" 경보가 난다. 이 검사가 잡으려는 것은
+        # **한 셀 안에서 후보 간** 배치 모드가 갈리는 것이다.
+        modes[(r["item_type"], r["n"], r["row_bindings"], r.get("row_inner", 0),
+               r["row_variants"], r.get("write_variant", "Conditional"), r["workload"])].add(
             r.get("batch_mode", "?"))
     split = [k for k, v in modes.items() if len(v) > 1]
     print(f"  배치 모드가 후보 간에 갈린 셀: {len(split)}/{len(modes)}")
@@ -750,13 +830,24 @@ def integrity_checks(rows, browser):
     if clamped:
         problems.append("타이머 클램프")
 
-    # (5) §8 표본 수.
+    # (5) §8 표본 수 — **실제 개수**를 센다(2026-09-24). 그 전에는 선언 필드
+    # `reps`(항상 200)를 읽어서, 상한 초과로 잘린 셀에서도 "§8 준수"를 찍었다.
+    # 계측이 자기가 재려던 것을 안 재는 전형이다.
     reps = {r["reps"] for r in rows}
     warm = {r.get("warmup") for r in rows}
-    print(f"  표본: 워밍업 {sorted(warm)} + 측정 {sorted(reps)} "
-          f"— {'§8 준수' if reps == {200} and warm == {50} else '**§8 미달**'}")
+    actual = {len(r["samples_ms"]) for r in rows}
+    short = [r for r in rows if len(r["samples_ms"]) != r["reps"]]
+    capped = [r for r in short if r.get("over_cell_cap")]
+    print(f"  표본: 워밍업 선언 {sorted(warm)} / 측정 선언 {sorted(reps)} / **실제** {sorted(actual)}")
     if reps != {200} or warm != {50}:
-        problems.append("표본 수 §8 미달")
+        problems.append("표본 수 선언값 §8 미달")
+    if short:
+        print(f"    선언보다 적은 셀 {len(short)}개 (그중 상한 초과 {len(capped)}개 — §8상 유효한 결과)")
+        unexplained = len(short) - len(capped)
+        if unexplained:
+            problems.append(f"표본이 선언보다 적은데 상한 초과도 아닌 셀 {unexplained}개")
+    else:
+        print("    ⇒ 전 셀이 선언 표본 수를 채웠다")
 
     # (6) 배치 묶음 구성 — §11 개정 #5 이전의 `chain` 셀은 무효다.
     chain = [r for r in rows if r.get("batch_mode") == "chain"]

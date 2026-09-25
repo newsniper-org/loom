@@ -16,3 +16,7 @@ __pycache__/
 
 # Claude Code 하네스가 만드는 세션 표식 — 프로젝트 내용이 아니다.
 .claude-latest-session-id.txt
+
+# Claude Code 워크플로 격리용 임시 워크트리 + 로컬 권한 설정 — 프로젝트 내용이 아니다.
+/.claude/worktrees/
+/.claude/settings.local.json
