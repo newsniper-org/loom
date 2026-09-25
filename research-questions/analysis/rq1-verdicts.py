@@ -92,7 +92,24 @@ EQ_LO, EQ_HI = 1 / 1.1, 1.1
 VOCAB_OVERLAP = []
 # `verdict()`를 부르는 쪽이 자기 맥락을 넣어 둔다(셀·브라우저·조항). 안 넣으면
 # 겹침 기록이 'CI 숫자'만 남아 어느 판정이 갈렸는지 알 수 없다.
-VOCAB_CTX = {"where": "(미지정)"}
+#
+# **`browser`와 `clause`는 반드시 바깥에서 설정돼야 한다** — 2026-09-24 첫 수리는
+# `where`에 `[{browser}]`를 찍으면서 그 키를 **아무도 넣지 않았다**. 그래서 전
+# 기록이 `[?]`였다. 맥락을 적는다고 선언만 하고 안 적는 것은 계측이 자기가 재려던
+# 것을 안 재는 것과 같은 형태다. `set_ctx()`를 통해서만 만지고, 아래
+# `report_vocab_overlap()`이 미설정 상태를 발견하면 경고한다.
+VOCAB_CTX = {"where": "(미지정)", "browser": None, "clause": None}
+
+
+def set_ctx(**kw):
+    VOCAB_CTX.update(kw)
+
+
+def ctx_where(cell_desc):
+    """`verdict()`가 겹침을 기록할 때 붙일 한 줄 — 브라우저 · 조항 · 셀."""
+    b = VOCAB_CTX["browser"] or "브라우저?"
+    c = VOCAB_CTX["clause"] or "조항?"
+    return f"[{b}] {c} — {cell_desc}"
 
 
 def verdict(lo, hi):
@@ -356,8 +373,12 @@ def cell(idx, workload, bindings, cand, variants=False, n=N, item=POD, inner=0):
         _VARIANT_CACHE[ck] = usable if usable is not None else cond
         return _VARIANT_CACHE[ck]
     mc, mu = statistics.median(cond["samples_ms"]), statistics.median(unc["samples_ms"])
-    VOCAB_CTX["where"] = f"[{VOCAB_CTX.get('browser', '?')}] {workload}×R{1 if bindings == 1 else 2} {cand} 변형선택(판정 아님)"
+    keep = VOCAB_CTX["clause"]
+    set_ctx(clause="§9 서두 '셀별 우세 write 변형'")
+    VOCAB_CTX["where"] = ctx_where(
+        f"{workload}×R{1 if bindings == 1 else 2} {cand} 변형선택(판정 아님)")
     lo, hi = paired_ratio_ci(unc["samples_ms"], cond["samples_ms"])
+    set_ctx(clause=keep)
     pick = "Unconditional" if mu < mc else "Conditional"
     VARIANT_LOG.append((workload, bindings, cand, pick,
                         f"cond={mc:.4f} uncond={mu:.4f}  "
@@ -394,7 +415,8 @@ def compare(idx, workload, bindings, cand, base, **kw):
     a, b = cell(idx, workload, bindings, cand, **kw), cell(idx, workload, bindings, base, **kw)
     if not a or not b:
         return ("미계측", float("nan"), float("nan"), f"{cand} 또는 {base} 셀 없음")
-    VOCAB_CTX["where"] = f"[{VOCAB_CTX.get('browser', '?')}] {workload}×R{1 if bindings == 1 else 2} {cand}/{base}"
+    VOCAB_CTX["where"] = ctx_where(
+        f"{workload}×R{1 if bindings == 1 else 2} {cand}/{base}")
     bad = [f"{n}: {why}" for r, n in ((a, cand), (b, base)) if (why := unusable(r))]
     if bad:
         return ("상한초과", float("nan"), float("nan"),
@@ -415,8 +437,10 @@ def line(label, v, lo, hi, note=""):
 # ---------------------------------------------------------------------------
 
 def gate_c(idx, browser):
+    set_ctx(browser=browser, clause="§9 C (절 미지정)")
     print(f"\n{'=' * 78}\n§9 C (고정 슬롯) — {browser}\n{'=' * 78}")
 
+    set_ctx(clause="C 채택 (a)")
     print("  채택 (a): {W1,W2,W3,W4} × R1 전 셀에서 D 대비 동등 이상")
     vs_a = []
     for w in JUDGE_WORKLOADS:
@@ -426,6 +450,7 @@ def gate_c(idx, browser):
     ok_a = resolve_all(vs_a, at_least_equal)
     print(f"    ⇒ (a) {say(ok_a, '충족', '**불충족**')}")
 
+    set_ctx(clause="C 채택 (b)")
     print("  채택 (b): {W1,W2,W3,W4} × R1 중 최소 1셀에서 K 대비 우세")
     vs_b = []
     for w in JUDGE_WORKLOADS:
@@ -437,6 +462,7 @@ def gate_c(idx, browser):
 
     print("  채택 (c): opt-in 문법 수용 — **설계 판단, 실측 아님**(§9 문언)")
 
+    set_ctx(clause="C 기각 앞 분기")
     print("  기각 앞 분기: W2 × R2에서 C/D 비율 CI 하한 ≥ 3")
     v, lo, hi, note = compare(idx, "W2", 8, C, D)
     line("W2 × R2  C/D", v, lo, hi, note)
@@ -487,8 +513,10 @@ def gate_c(idx, browser):
 # ---------------------------------------------------------------------------
 
 def gate_d(idx, browser):
+    set_ctx(browser=browser, clause="§9 D (절 미지정)")
     print(f"\n{'=' * 78}\n§9 D (keyed 시퀀스 동기화) — {browser}\n{'=' * 78}")
 
+    set_ctx(clause="D 기각 (iii) 앞항")
     print("  기각 (iii) 앞항: {W1,W2,W3,W4} × {R1,R2} **전 셀**에서 K가 D 대비 동등 이상")
     vs_front = []
     for bindings in (1, 8):
@@ -503,6 +531,7 @@ def gate_d(idx, browser):
     print("    미계측 — M4(이중 저장)·M7(resume walk)·M3는 이 하네스가 수집하지 않는다")
     print("    (§9 문언상 **두 항 모두** 성립해야 기각이므로, 뒷항 미계측이면 기각 불성립)")
 
+    set_ctx(clause="D 채택 양성 조건")
     print("  채택 양성 조건: {W1,W2,W3} × R2 중 최소 1셀에서 K 대비 우세")
     vs_pos = []
     for w in ["W1", "W2", "W3"]:
@@ -516,6 +545,7 @@ def gate_d(idx, browser):
     # 확인 시 unkeyed 정적 opt-out 경로 명세를 채택 조건에 부속**".
     # 데이터가 있는데 계산되지 않고 있었다(2026-08-04 감사) — 이걸 빼면 D가
     # 조건 없이 채택 경로에 있는 것처럼 읽힌다.
+    set_ctx(clause="D W5 부속")
     print("  채택 추가 선결: W5(append)에서 K/C 대비 열세면 unkeyed opt-out 명세 부속")
     w5_worse, w5_vs = [], []
     for base in (K, C):
@@ -542,6 +572,7 @@ def gate_d(idx, browser):
 # ---------------------------------------------------------------------------
 
 def gate_e(idx, browser):
+    set_ctx(browser=browser, clause="§9 E (절 미지정)")
     print(f"\n{'=' * 78}\n§9 E (OrderKey) — {browser}\n{'=' * 78}")
     print("  ※ 기각 (i)/(ii)는 **네이티브 경로**에서만 판정(§9 E-1).")
     r = cell(idx, "W1", 8, E)  # §9 E-1 확인은 판정 셀에서
@@ -550,6 +581,7 @@ def gate_e(idx, browser):
         print(f"    reposition 경로: 네이티브 {nat} / 폴백 {fb}"
               f" → {'네이티브 경로 확인' if fb == 0 else '**폴백 혼입 — 판정 데이터 부적격**'}")
 
+    set_ctx(clause="E 기각 (i)")
     print("  기각 (i): 판정 셀 W1·W3 × R2 중 **어느 셀에서도** K 대비 우세를 못 보이면 기각")
     vs_i = []
     for w in ["W1", "W3"]:
@@ -620,6 +652,7 @@ def profile_new_cells(rows, idx, browser):
     §3.4가 이 셀들을 "각 후보의 등록된 최선/최악 구간"으로 지목했기 때문이다 —
     원칙 2(어느 후보든 기록된 최선/최악 구간이 행렬에 있어야 한다)의 이행 증거다.
     """
+    set_ctx(browser=browser, clause="개정 #9 신설 셀 프로파일(판정 아님)")
     print(f"\n{'-' * 78}\n개정 #9 신설 셀 프로파일 (판정 비참여)\n{'-' * 78}")
 
     # W6 — §7 M1의 보고 규칙: amortized와 worst-case를 **같은 표에** 병기.
@@ -693,10 +726,23 @@ def report_vocab_overlap():
     if not VOCAB_OVERLAP:
         print("  없음 — 이번 데이터에서는 우선순위 선택이 어떤 판정에도 영향을 주지 않았다.")
         return
-    print(f"  {len(VOCAB_OVERLAP)}건. 이 셀들은 등가로 읽었다면 판정이 달라질 수 있었다"
-          f"(특히 '우세가 아니면 기각'인 E 기각 (i)).")
+    # 개정 #9 후속 등재의 정정(2026-09-25): 우선순위가 가르는 조항은 E 기각 (i)
+    # 하나가 아니라 넷이다 — C 채택 (b), D 채택 양성 조건, D W5 부속, E 기각 (i).
+    # "동등 이상"을 요구하는 C 채택 (a)·D 기각 (iii) 앞항은 어느 우선순위로 읽어도
+    # 충족이므로 영향이 없다.
+    print(f"  {len(VOCAB_OVERLAP)}건. 이 셀들은 등가로 읽었다면 판정이 달라질 수 있었다.")
+    print("  어휘 배타를 요구해 실제로 갈리는 조항: C 채택 (b) · D 채택 양성 조건 · "
+          "D W5 부속 · E 기각 (i).")
+    print("  (C 채택 (a)·D 기각 (iii) 앞항은 '동등 이상' = 우세 ∪ 등가라 무영향, "
+          "C 기각 앞 분기·E 기각 (ii)는 어휘가 아니라 임계값 비교라 무관.)")
+    blind = 0
     for v, lo, hi, where in VOCAB_OVERLAP:
+        if "브라우저?" in where or "조항?" in where:
+            blind += 1
         print(f"    {v}  CI=[{lo:.3f}, {hi:.3f}]  (등가 대역 [{EQ_LO:.3f}, {EQ_HI:.3f}] 안)  {where}")
+    if blind:
+        print(f"  ⚠️ 맥락이 안 붙은 기록 {blind}건 — `set_ctx()`를 안 거친 판정 경로가 있다. "
+              f"어느 조항이 갈렸는지 알 수 없으므로 그 경로를 찾아 태그를 달 것.")
 
 
 def report_variant_choices():
@@ -711,6 +757,7 @@ def report_variant_choices():
 
 
 def profile_w7(idx, browser):
+    set_ctx(browser=browser, clause="W7 프로파일(판정 아님)")
     print(f"\n{'=' * 78}\nW7 (값 갱신) 프로파일 — {browser}   ※ §9 어느 조항에도 걸리지 않음\n{'=' * 78}")
     print("  §3.4 기대: 'C, D, E (retain 경로)' / 'K (전량 재스폰)'")
     for cand in ["K", "C", "D", "E", "D-LIS", "E-LIS"]:
@@ -927,6 +974,7 @@ def integrity_checks(rows, browser):
 
 
 def crosscheck_m2(idx, browser):
+    set_ctx(browser=browser, clause="§7 M2 브라우저 간 대조(판정 아님)")
     print(f"\n{'=' * 78}\n§7 M2 MutationObserver 교차 검증 — {browser}\n{'=' * 78}")
     print("  대응표: setText → characterData, insert/remove/move 폴백/detach/attach → childList")
     print("  ※ 네이티브 moveBefore는 관측상 remove+insert 쌍으로 보인다(§7 M2 주석).")

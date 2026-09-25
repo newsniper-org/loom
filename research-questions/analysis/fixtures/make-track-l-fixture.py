@@ -17,6 +17,8 @@
 `selfcheck.py`가 세 모드를 다 돌려 기대 문구를 단언한다.
 
 모드:
+  vocab_overlap — C/K 비율이 우세 ∩ 등가 겹침 구간에 드는 상태. 겹침 기록에
+                 브라우저·조항 맥락이 실제로 붙는지 본다.
   base         — 전 셀 정상. 스크립트가 종료코드 0으로 완주해야 한다.
   partial_cap  — W2 × R2 판정 셀이 표본 3개에서 §8 셀 상한에 걸린 상태.
                  **표본이 0개가 아니다** — 상한은 측정 루프 안에서도 발동하므로
@@ -100,6 +102,16 @@ if mode == "partial_cap":
             r["over_cell_cap"] = True
             r["samples_ms"] = r["samples_ms"][:3]
             r["cell_wall_ms"] = 1_800_500.0
+if mode == "vocab_overlap":
+    # C/K 비율이 등가 대역 [1/1.1, 1.1] **안**이면서 CI 전체가 1 미만이 되도록
+    # 맞춘다 — §8이 열거한 우세와 등가가 **둘 다** 참인 구간. 판정기가 어느 쪽을
+    # 먼저 읽는지가 C 채택 (b)를 가른다.
+    for r in rows:
+        if r["candidate"] == "C":
+            base = 0.96 * (r["n"] / 1000) * (1 + 0.5 * (r["row_bindings"] - 1))
+            random.seed(7)
+            r["samples_ms"] = [round(base * (1 + random.gauss(0, 0.004)), 5)
+                               for _ in range(200)]
 if mode == "missing_cell":
     # remove D-LIS W1 x R1 (both variants) -> C 채택(a) has an unmeasured cell
     rows = [r for r in rows if not (r["candidate"] == "D-LIS" and r["workload"] == "swap"
