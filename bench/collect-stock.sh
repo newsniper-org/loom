@@ -165,6 +165,7 @@ fi
 # 그 실패가 스크립트 종료 코드가 되어 뒤이은 Firefox 수집이 통째로 건너뛰어졌다.
 cleanup() {
   [ -n "$THROTTLE_PID" ] && kill "$THROTTLE_PID" 2>/dev/null || true
+  [ -n "${MEM_PID:-}" ] && kill "$MEM_PID" 2>/dev/null || true
   local rc=$?
   kill "$PID" 2>/dev/null || true
   sleep 1
@@ -191,12 +192,49 @@ expected_parts() {
     echo $((TOTAL_GROUPS - FIRST_GROUP))
   fi
 }
+# §8 "환경 명세 ... 실행 시점 기록". 2026-09-26에 머신이 스왑 44/46 GB인 상태에서
+# 측정이 진행됐고, 같은 W6 K 셀이 머신 상태에 따라 **6.6배** 차이로 측정됐다
+# (5,733삽입 30.1분 vs 6,000삽입 272초). 그런 압박이 있었는지를 데이터 옆에
+# 남기지 않으면 나중에 "이 수치가 계산 비용인가 스왑인가"를 물을 수 없다.
+# 하네스(wasm) 밖이므로 §2.5 동결 대상이 아니다 — 측정값을 바꾸지 않는다.
+MEMF="$ROOT/bench/collected/$NAME.mem.jsonl"
+rm -f "$MEMF"
+(
+  while :; do
+    awk -v t="$(date +%s)" '
+      /^MemAvailable:/ {a=$2}
+      /^SwapTotal:/    {st=$2}
+      /^SwapFree:/     {sf=$2}
+      END {printf "{\"t\": %d, \"mem_avail_mb\": %d, \"swap_used_mb\": %d}\n", t, a/1024, (st-sf)/1024}
+    ' /proc/meminfo >> "$MEMF"
+    sleep 30
+  done
+) &
+MEM_PID=$!
+
 EXPECTED=$(expected_parts)
 while [ "$(count_parts)" -lt "$(expected_parts)" ]; do
   EXPECTED=$(expected_parts)
   if ! kill -0 $PID 2>/dev/null; then
     echo "[collect-stock] **브라우저가 죽었다** — 결과 없음" >&2
     exit 1
+  fi
+  # **렌더러만 죽는 경우를 잡는다 (2026-09-26, 실제로 당했다)**: 위 `kill -0`은
+  # **브라우저 프로세스**만 본다. 커널 OOM 킬러는 렌더러를 고른다(Chrome 렌더러는
+  # `oom_score_adj=300`으로 스스로 최우선 희생을 자원한다) — 그러면 페이지는 죽고
+  # 브라우저 프로세스는 멀쩡하므로 이 루프가 **타임아웃까지 그대로 기다린다.**
+  # v21 3차 수집이 그 상태로 4시간을 서 있었고, 10시간 타임아웃까지 갈 예정이었다.
+  # 진행 표식(`.progress.json`)은 하네스가 셀·W6 500삽입마다 POST하므로, 그것이
+  # 굳으면 페이지가 일을 안 하고 있는 것이다. 가장 느린 정상 구간(§8 셀 상한 30분)
+  # 보다 넉넉히 잡되 타임아웃보다는 훨씬 짧게.
+  PROGF="$ROOT/bench/collected/$NAME.progress.json"
+  if [ -f "$PROGF" ]; then
+    PAGE_IDLE=$(( $(date +%s) - $(stat -c %Y "$PROGF") ))
+    if [ "$PAGE_IDLE" -gt "${PAGE_STALL_SEC:-2400}" ]; then
+      echo "[collect-stock] **페이지가 ${PAGE_IDLE}초간 진행 표식을 안 냈다** — 렌더러가 죽었을 가능성이 높다(커널 OOM 등). 브라우저 프로세스는 살아 있어 위 검사로는 안 잡힌다." >&2
+      echo "[collect-stock] 마지막 표식: $(tail -1 "$PROGF" 2>/dev/null)" >&2
+      exit 1
+    fi
   fi
   NOW=$(date +%s); EL=$((NOW-START))
   if [ "$EL" -gt "$TIMEOUT" ]; then

@@ -17,6 +17,8 @@
 `selfcheck.py`가 세 모드를 다 돌려 기대 문구를 단언한다.
 
 모드:
+  stalled_cell — 한 셀의 벽시계만 기대치의 수십 배(표본은 정상). 측정 중 머신
+                 압박으로 멈춰 있던 셀을 정지 흔적 검사가 잡는지 본다.
   scaling_nonmono — C/K 비율이 n에 따라 비단조(0.30 → 0.25 → 0.28). 외삽 문장이
                  끝점만 보고 방향을 말하지 않는지 본다.
   batch_mix    — 같은 논리 셀의 두 write 변형이 다른 배치 모드로 측정된 상태.
@@ -109,6 +111,14 @@ if mode == "partial_cap":
             r["over_cell_cap"] = True
             r["samples_ms"] = r["samples_ms"][:3]
             r["cell_wall_ms"] = 1_800_500.0
+if mode == "stalled_cell":
+    # 한 셀의 벽시계만 기대치의 수십 배로 만든다(표본은 그대로) — 스왑 스래싱·
+    # GC·OS 스케줄링으로 측정 중 멈춰 있던 셀의 형태. 표본이 정상인데 벽시계만
+    # 크므로 §8 상한 항목으로는 안 잡히고, 정지 흔적 검사만 잡을 수 있다.
+    for r in rows:
+        if (r["workload"] == "swap" and r["row_bindings"] == 1 and r["n"] == 1000
+                and r["write_variant"] == "Conditional" and not r["row_variants"]):
+            r["cell_wall_ms"] = 900_000.0
 if mode == "scaling_nonmono":
     # C/K 비율이 n에 따라 **비단조**가 되게 만든다(0.30 → 0.25 → 0.28). 끝점만
     # 비교하면 "감소 = C가 유리해진다"로 읽히지만 가운데가 더 낮으므로 추세가

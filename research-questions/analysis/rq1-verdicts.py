@@ -1041,6 +1041,54 @@ def integrity_checks(rows, browser):
     if "(미기재)" in {k[0] for k in scoped}:
         problems.append("stage_scope 미기재 — 하네스가 구간을 안 싣는 수집분이다")
 
+    # (4-c) **정지 흔적** — 셀 벽시계가 표본 합보다 터무니없이 크면, 그 셀은
+    # 측정 중 멈춰 있었다는 뜻이다(스왑 스래싱·GC·OS 스케줄링). 2026-09-26에
+    # 머신이 스왑 44/46 GB인 상태에서 같은 W6 K 셀이 머신 상태에 따라 **6.6배**
+    # 차이로 측정됐다(5,733삽입 30.1분 vs 6,000삽입 272초). 핵심 격자는 한 셀
+    # 안에서 후보를 rep 단위 라운드로빈으로 재므로 §9가 읽는 **비율**에서 느린
+    # 구간이 약분되지만, 그 사실을 근거 없이 믿지 말고 흔적을 보고한다.
+    #
+    # 기대 벽시계 모델. **첫 판은 배치와 워밍업을 빼먹어 56셀을 전부 오탐했다**
+    # (전부 정확히 10.3×로 나온 것이 모델 오류의 표식이었다) — §8 배치 셀은
+    # rep당 프레임이 `batch_k`개이고(묶음 안의 매 회에 double-rAF 경계를 준다),
+    # 워밍업 50회도 벽시계에 들어간다. 계측이 자기 모델의 오류를 데이터 탓으로
+    # 돌리게 두면 안 된다.
+    #
+    #   기대 ≈ 후보수 × (워밍업 + 측정) × (프레임수 × 16.7ms + tick 비용)
+    #   프레임수 = batch_k(배치 셀) 또는 2(복원 + 측정)
+    VSYNC_MS = 1000.0 / 60.0
+    # **셀 단위로 합산한다.** `cell_wall_ms`는 (조합 × 워크로드) 셀 **전체**의
+    # 값이고 그 안에서 6후보를 라운드로빈으로 돈다. 그런데 한 후보의 median으로
+    # 기대치를 내고 6을 곱하면 "후보 비용이 균질하다"를 가정하게 된다 — W8 셀은
+    # K 46.1ms / D 0.49ms로 **95배** 차이라 벽시계를 K가 정하고, 싼 후보 넷이
+    # 전부 "정지"로 오탐됐다(2차 오탐). 기대치는 그 셀 후보들의 **합**이어야 한다.
+    cells_wall = defaultdict(lambda: [0.0, 0.0, None])  # key -> [기대합, 최대벽시계, 표식]
+    for r in rows:
+        if not r.get("samples_ms") or "cell_wall_ms" not in r:
+            continue
+        # 상한 초과 셀은 정의상 벽시계가 표본을 넘어선 것이고(§8이 거기서 끊는다)
+        # §8 상한 항목이 이미 따로 보고한다 — 여기 남기면 같은 사실을 두 번 센다.
+        if r.get("over_cell_cap"):
+            continue
+        key = (r["item_type"], r["n"], r["row_bindings"], r.get("row_inner", 0),
+               r["row_variants"], r.get("write_variant", "Conditional"), r["workload"])
+        reps_n = len(r["samples_ms"]) + (r.get("warmup") or 0)
+        frames = r.get("batch_k", 1) if r.get("batched") else 2
+        tick_ms = statistics.median(r["samples_ms"]) * frames
+        e = cells_wall[key]
+        e[0] += reps_n * (frames * VSYNC_MS + tick_ms)
+        e[1] = max(e[1], r["cell_wall_ms"])
+        e[2] = (r["clause"], r["n"], r["row_bindings"], r.get("row_inner", 0))
+    stalled = []
+    for expect_ms, wall_ms, tag in cells_wall.values():
+        if expect_ms > 0 and wall_ms > expect_ms * 5:
+            stalled.append((wall_ms / expect_ms, *tag))
+    print(f"  정지 흔적(벽시계 ≫ 기대): {len(stalled)}건")
+    for ratio, cl, n_, rb, inner in sorted(stalled, reverse=True)[:5]:
+        print(f"    {ratio:5.1f}× 기대  {cl} n={n_} R{rb} inner={inner}")
+    if stalled:
+        problems.append(f"정지 흔적 {len(stalled)}셀 — 측정 중 머신 압박 의심")
+
     # (5) §8 표본 수 — **실제 개수**를 센다(2026-09-24). 그 전에는 선언 필드
     # `reps`(항상 200)를 읽어서, 상한 초과로 잘린 셀에서도 "§8 준수"를 찍었다.
     # 계측이 자기가 재려던 것을 안 재는 전형이다.
