@@ -1089,6 +1089,51 @@ def integrity_checks(rows, browser):
     if stalled:
         problems.append(f"정지 흔적 {len(stalled)}셀 — 측정 중 머신 압박 의심")
 
+    # (4-d) **머신 소음이 후보 중립인가** — §9가 읽는 비율의 전제.
+    #
+    # §8은 한 셀 안에서 후보를 rep 단위 라운드로빈으로 돌린다(하네스의
+    # `cand_order`). 그래서 측정 중의 느린 구간(스왑·GC·OS 스케줄링)이 6후보에
+    # 고르게 퍼지고, §9가 읽는 **비율**에서 약분된다 — 이것이 설계된 보호다.
+    # 그런데 그 보호가 실제로 성립하는지는 **아무도 확인하지 않았다.**
+    #
+    # 2026-09-26에 나는 "메모리 압박은 매 틱 전량 재스폰하는 K를 더 벌하므로
+    # C·D·E가 실제보다 좋아 보인다"고 주장하고 그것을 근거로 수집 중단을
+    # 권고했다. 데이터로 재 보니 **반박됐다** — K의 상대 꼬리가 오히려 얇은
+    # 축이었고 후보 간 차이가 6% 이내였다. 추측을 근거로 캠페인을 멈출 뻔했다.
+    #
+    # 지표: 셀마다 후보별 **상대 꼬리** p95/median. 절대 비용이 큰 후보는 절대
+    # 꼬리도 크므로 상대값을 써야 한다. 스톨을 특정 후보가 더 맞으면 그 후보의
+    # 상대 꼬리만 두꺼워진다.
+    tails = defaultdict(list)
+    by_cell = defaultdict(list)
+    for r in rows:
+        if not r.get("samples_ms") or len(r["samples_ms"]) < 20:
+            continue
+        by_cell[(r["item_type"], r["n"], r["row_bindings"], r.get("row_inner", 0),
+                 r["row_variants"], r.get("write_variant", "Conditional"),
+                 r["workload"])].append(r)
+    n_cells = 0
+    for grp in by_cell.values():
+        if len(grp) < 2:
+            continue
+        n_cells += 1
+        for r in grp:
+            ss = sorted(r["samples_ms"])
+            med = statistics.median(ss)
+            if med > 0:
+                tails[r["candidate"]].append(ss[int(0.95 * len(ss))] / med)
+    if n_cells:
+        per = {c: statistics.median(v) for c, v in tails.items() if v}
+        lo_c, hi_c = min(per, key=per.get), max(per, key=per.get)
+        spread = per[hi_c] / per[lo_c] if per[lo_c] > 0 else float("inf")
+        print(f"  머신 소음의 후보 중립성 (셀 {n_cells}개, 상대 꼬리 p95/median 중앙):")
+        print("    " + "  ".join(f"{c}={per[c]:.3f}" for c in sorted(per, key=per.get)))
+        ok_neutral = spread < 1.5
+        print(f"    ⇒ 최대/최소 = {spread:.2f}× ({hi_c}/{lo_c}) — "
+              f"{'중립(§9 비율의 전제 성립)' if ok_neutral else '**특정 후보가 스톨을 더 맞았다**'}")
+        if not ok_neutral:
+            problems.append(f"머신 소음이 후보 중립이 아님({hi_c}의 꼬리가 {spread:.2f}배)")
+
     # (5) §8 표본 수 — **실제 개수**를 센다(2026-09-24). 그 전에는 선언 필드
     # `reps`(항상 200)를 읽어서, 상한 초과로 잘린 셀에서도 "§8 준수"를 찍었다.
     # 계측이 자기가 재려던 것을 안 재는 전형이다.

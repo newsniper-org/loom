@@ -17,6 +17,8 @@
 `selfcheck.py`가 세 모드를 다 돌려 기대 문구를 단언한다.
 
 모드:
+  noise_not_neutral — K만 스톨을 맞아 상대 꼬리가 두꺼운 상태. 머신 소음의
+                 후보 중립성 검사가 그것을 잡는지 본다.
   stalled_cell — 한 셀의 벽시계만 기대치의 수십 배(표본은 정상). 측정 중 머신
                  압박으로 멈춰 있던 셀을 정지 흔적 검사가 잡는지 본다.
   scaling_nonmono — C/K 비율이 n에 따라 비단조(0.30 → 0.25 → 0.28). 외삽 문장이
@@ -111,6 +113,17 @@ if mode == "partial_cap":
             r["over_cell_cap"] = True
             r["samples_ms"] = r["samples_ms"][:3]
             r["cell_wall_ms"] = 1_800_500.0
+if mode == "noise_not_neutral":
+    # **K만** 스톨을 맞은 상태: 표본의 10%를 5배로 늘려 상대 꼬리만 두껍게 한다
+    # (median은 거의 그대로). 머신 소음이 후보 중립이라는 §9 비율의 전제가
+    # 깨진 형태 — 라운드로빈 보호가 실제로 성립하는지를 검사가 보는가.
+    random.seed(11)
+    for r in rows:
+        if r["candidate"] == "K" and r.get("samples_ms"):
+            sm = r["samples_ms"]
+            for _ in range(max(1, len(sm) // 10)):
+                j = random.randrange(len(sm))
+                sm[j] = sm[j] * 5.0
 if mode == "stalled_cell":
     # 한 셀의 벽시계만 기대치의 수십 배로 만든다(표본은 그대로) — 스왑 스래싱·
     # GC·OS 스케줄링으로 측정 중 멈춰 있던 셀의 형태. 표본이 정상인데 벽시계만
