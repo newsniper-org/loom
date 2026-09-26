@@ -12,6 +12,7 @@
 """
 import json
 import sys
+from collections import Counter
 
 args = [a for a in sys.argv[1:]]
 out = "research-questions/data/rq1-phase1-track-l-core-grid-v21-chromium.json"
@@ -29,14 +30,26 @@ for path in args:
     p = path if "/" in path else f"bench/collected/{path}"
     raw = open(p).read()
     i, n0 = 0, len(parts)
+    seg = p.rsplit("/", 1)[-1]
     while i < len(raw):
         while i < len(raw) and raw[i].isspace():
             i += 1
         if i >= len(raw):
             break
         obj, i = dec.raw_decode(raw, i)
+        # **각 레코드에 출처 구간을 찍는다.** 수집이 나뉘면 구간마다 머신 상태가
+        # 다를 수 있고 그 차이가 수치에 들어간다 — 2026-09-26 v21이 실제로 그랬다
+        # (1차 구간은 스왑 44/46 GB 압박, 재개 구간은 여유). 특히 §8이 (후보 ×
+        # 시행)마다 셀 하나로 정의한 W6는 시행끼리도 다른 시각에 돌므로 **같은
+        # 후보의 시행들조차 서로 비교가 안 될 수 있다.** 그 사실을 README에만
+        # 적으면 데이터를 직접 읽는 쪽은 모른다. 하네스가 아니라 병합 시점에 붙는
+        # 메타데이터이므로 §2.5 동결과 무관하다.
+        for r in obj.get("track_l", []):
+            r["_segment"] = seg
+        for r in obj.get("track_t", []):
+            r["_segment"] = seg
         parts.append(obj)
-    print(f"  {p}: 조각 {len(parts) - n0}개")
+    print(f"  {p}: 조각 {len(parts) - n0}개  (구간 표식 _segment={seg!r})")
 
 groups = [p["group"] for p in parts]
 dup = {g for g in groups if groups.count(g) > 1}
@@ -54,3 +67,11 @@ track_t = [r for p in parts for r in p["track_t"]]
 json.dump({"track_l": track_l, "track_t": track_t}, open(out, "w"), indent=1)
 print(f"  → {out}: 그룹 {len(parts)} ({min(groups)}..{max(groups)}), "
       f"트랙 L {len(track_l)} / 트랙 T {len(track_t)} 레코드")
+
+segs = Counter(r["_segment"] for r in track_l)
+if len(segs) > 1:
+    print("  ⚠️ 여러 구간에서 병합됨 — 구간마다 머신 상태가 다를 수 있다:")
+    for k, v in sorted(segs.items()):
+        print(f"      {k}: {v} 레코드")
+    print("     특히 W6는 (후보 × 시행)마다 셀 하나라 시행끼리도 다른 시각에 돈다 —")
+    print("     같은 후보의 시행들조차 서로 비교가 안 될 수 있다.")
