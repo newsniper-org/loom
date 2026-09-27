@@ -28,6 +28,7 @@ RQ1 §9 트랙 L 판정 — 전 조항 일괄 적용
   머신 소음의 후보 중립성 (셀 39개, 상대 꼬리 p95/median 중앙):
     E=1.200  E-LIS=1.200  D=1.215  K=1.232  D-LIS=1.257  C=1.284
     ⇒ 최대/최소 = 1.07× (C/E) — 중립(§9 비율의 전제 성립)
+      (이 지표는 **정지 노출**이 후보 중립이라는 뜻이다 — median이 편향되지 않았다는 증명은 아니다)
   표본: 워밍업 선언 [50] / 측정 선언 [200] / **실제** [136, 200]
     선언보다 적은 셀 6개 (그중 상한 초과 6개 — §8상 유효한 결과)
   §11 개정 #5 이전의 chain 배치 셀: 0건
@@ -48,20 +49,25 @@ RQ1 §9 트랙 L 판정 — 전 조항 일괄 적용
     W3 × R1  C/D                       열세      CI=[ 1.195,  1.259]   C=0.9650ms D-LIS=0.7900ms
     W4 × R1  C/D                       열세      CI=[ 2.244,  2.298]   C=1.0150ms D-LIS=0.4450ms
     ⇒ (a) **불충족**
+    C-4 대체 기준선 반사실 (판정 아님 — D·E 자격은 G0~G2가 정한다): 기준선 E-LIS이면 (a) 불충족 / 기준선 K이면 (a) 충족
   채택 (b): {W1,W2,W3,W4} × R1 중 최소 1셀에서 K 대비 우세
     W1 × R1  C/K                       우세      CI=[ 0.031,  0.032]   C=0.1190ms K=3.7575ms
-    W2 × R1  C/K                       우세      CI=[ 0.303,  0.314]   C=1.0500ms K=3.4025ms
+    W2 × R1  C/K                       우세      CI=[ 0.303,  0.315]   C=1.0500ms K=3.4025ms
     W3 × R1  C/K                       우세      CI=[ 0.267,  0.281]   C=0.9650ms K=3.5450ms
     W4 × R1  C/K                       우세      CI=[ 0.287,  0.292]   C=1.0150ms K=3.5050ms
     ⇒ (b) 충족
   채택 (c): opt-in 문법 수용 — **설계 판단, 실측 아님**(§9 문언)
   기각 앞 분기: W2 × R2에서 C/D 비율 CI 하한 ≥ 3
-    W2 × R2  C/D                       열세      CI=[ 2.630,  2.703]   C=11.9300ms D-LIS=4.4800ms
+    W2 × R2  C/D                       열세      CI=[ 2.630,  2.700]   C=11.9300ms D-LIS=4.4800ms
     ⇒ 앞 분기 미발동 (하한 2.630 < 3)
+    짝짓기 민감도 (판정 아님) — W2×R2 C/D-LIS: 판정 짝 C=Unco / D-LIS=Cond ← **셀을 건넌 짝**
+      같은 셀 Cond/Cond     CI=[2.638, 2.721]  < 3
+      같은 셀 Unco/Unco     CI=[2.131, 2.196]  < 3
+      표류 탐침(무조건/조건부 — 변형을 안 읽는 후보): K [0.992,1.021]  E [0.989,1.015]  E-LIS [0.991,1.014]
+      ⇒ 셀 간 표류 최대 ≈2% — 셀 간 표류 무시할 수준
+      ⇒ 어느 같은 셀 짝에서도 하한 ≥ 3: 아니오
   기각 뒷 분기: W2 × R3에서 archetype move 구간 ≥ 스크립트 시간의 50%
-    (주의: R3 셀은 C만 유효. D/D-LIS/E/E-LIS/K는 2026-08-07까지 축이
-     적용되지 않아 §11-2 개정 #8로 무효 처리됨 — 이 분기는 C 자신의
-     절대 임계값이므로 영향 없다)
+    (이 분기는 C 자신의 절대 임계값이다 — 다른 후보의 R3 값은 쓰지 않는다)
     sync_point=0.6250ms / total=3.3700ms = 18.5%
     ⇒ 뒷 분기 미발동
 
@@ -71,49 +77,53 @@ RQ1 §9 트랙 L 판정 — 전 조항 일괄 적용
 §9 D (keyed 시퀀스 동기화) — CHROMIUM (1차 판정)
 ==============================================================================
   기각 (iii) 앞항: {W1,W2,W3,W4} × {R1,R2} **전 셀**에서 K가 D 대비 동등 이상
-    W1 × R1  K/D                       열세      CI=[ 8.728,  8.816]   K=3.7575ms D-LIS=0.4285ms
+    W1 × R1  K/D                       열세      CI=[ 8.730,  8.817]   K=3.7575ms D-LIS=0.4285ms
     W2 × R1  K/D                       열세      CI=[ 1.117,  1.132]   K=3.4025ms D-LIS=3.0300ms
-    W3 × R1  K/D                       열세      CI=[ 4.443,  4.532]   K=3.5450ms D-LIS=0.7900ms
+    W3 × R1  K/D                       열세      CI=[ 4.440,  4.532]   K=3.5450ms D-LIS=0.7900ms
     W4 × R1  K/D                       열세      CI=[ 7.756,  7.938]   K=3.5050ms D-LIS=0.4450ms
-    W1 × R2  K/D                       열세      CI=[50.534, 56.317]   K=35.0300ms D-LIS=0.6400ms
-    W2 × R2  K/D                       열세      CI=[ 7.854,  8.019]   K=35.5325ms D-LIS=4.4800ms
-    W3 × R2  K/D                       열세      CI=[30.847, 31.547]   K=34.8950ms D-LIS=1.1200ms
-    W4 × R2  K/D                       열세      CI=[50.681, 52.168]   K=35.5550ms D-LIS=0.6900ms
+    W1 × R2  K/D                       열세      CI=[50.698, 56.270]   K=35.0300ms D-LIS=0.6400ms
+    W2 × R2  K/D                       열세      CI=[ 7.852,  8.020]   K=35.5325ms D-LIS=4.4800ms
+    W3 × R2  K/D                       열세      CI=[30.844, 31.549]   K=34.8950ms D-LIS=1.1200ms
+    W4 × R2  K/D                       열세      CI=[50.678, 52.167]   K=35.5550ms D-LIS=0.6900ms
     ⇒ 앞항 **불성립**
   기각 (iii) 뒷항: 부속 비용 프로파일(M4/M7/M3 중 1개 이상)에서 D가 K 대비 순증
     미계측 — M4(이중 저장)·M7(resume walk)·M3는 이 하네스가 수집하지 않는다
-    (§9 문언상 **두 항 모두** 성립해야 기각이므로, 뒷항 미계측이면 기각 불성립)
+    (§9 문언상 **두 항 모두** 성립해야 기각 — 뒷항이 미계측이므로 앞항이 거짓일 때만 '불성립'이 결정적이고, 앞항이 성립하면 '판정 불가'다)
   채택 양성 조건: {W1,W2,W3} × R2 중 최소 1셀에서 K 대비 우세
     W1 × R2  D/K                       우세      CI=[ 0.018,  0.020]   D-LIS=0.6400ms K=35.0300ms
     W2 × R2  D/K                       우세      CI=[ 0.125,  0.127]   D-LIS=4.4800ms K=35.5325ms
     W3 × R2  D/K                       우세      CI=[ 0.032,  0.032]   D-LIS=1.1200ms K=34.8950ms
     ⇒ 양성 조건 충족
   채택 추가 선결: W5(append)에서 K/C 대비 열세면 unkeyed opt-out 명세 부속
-    W5 × R1  D/K                       열세      CI=[49.096, 50.476]   D-LIS=37.0825ms K=0.7425ms
+    W5 × R1  D/K                       열세      CI=[49.099, 50.476]   D-LIS=37.0825ms K=0.7425ms
     W5 × R1  D/C                       열세      CI=[ 4.449,  4.465]   D-LIS=37.0825ms C=8.3200ms
     ⇒ **부속 조건 발동** (K, C 대비 열세)
-    ※ §5 FV 계류(D·E 공통)는 이 스크립트 범위 밖 — 채택은 그것까지 통과해야 한다.
+    ※ 범위 밖: §5 FV 계류(D·E 공통)·D 기각 (i)/(ii)(G0/트랙 N) — 채택은 그것까지 통과해야 한다.
 
-  ▶ D 판정: 기각 (iii) 불성립(앞항 불성립) / 양성 조건 충족 / W5 부속 발동
+  ▶ D 판정: 기각 (iii) 불성립(앞항 불성립 — 뒷항과 무관하게 결정적) / 양성 조건 충족 / W5 부속 발동
 
 ==============================================================================
 §9 E (OrderKey) — CHROMIUM (1차 판정)
 ==============================================================================
   ※ 기각 (i)/(ii)는 **네이티브 경로**에서만 판정(§9 E-1).
-    reposition 경로: 네이티브 498500 / 폴백 0 → 네이티브 경로 확인
+    reposition 경로: 네이티브 1000 / 폴백 0 → 네이티브 경로 확인
   기각 (i): 판정 셀 W1·W3 × R2 중 **어느 셀에서도** K 대비 우세를 못 보이면 기각
-    W1 × R2  E/K                       우세      CI=[ 0.104,  0.107]   E=3.6975ms K=35.0300ms
-    W3 × R2  E/K                       우세      CI=[ 0.101,  0.106]   E=3.6000ms K=34.8950ms
+    W1 × R2  E/K                       우세      CI=[ 0.020,  0.020]   E-LIS=0.6950ms K=35.0300ms
+    W3 × R2  E/K                       우세      CI=[ 0.034,  0.035]   E-LIS=1.2100ms K=34.8950ms
     ⇒ 기각 (i) 미발동
   기각 (i) 병기(결정적): E의 셀당 총 DOM op 수 ≥ K의 50%이면 'DOM 연산 절감 없음'
-    W1 × R2  E=997 K=18201  비율=0.055 → 절감 있음
-    W3 × R2  E=976 K=18201  비율=0.054 → 절감 있음
+    W1 × R2  E=2 K=18201  비율=0.000 → 절감 있음
+    W3 × R2  E=93 K=18201  비율=0.005 → 절감 있음
   기각 (ii): reconcile System 시간 ≥ (K의 DOM 적용 − E의 DOM 적용)  [판정 셀 W1·W3 × R2]
-    W1 × R2  E systems=0.7600ms  절감분=K(27.9500) − E(3.1900) = 24.7600ms → 미발동
-    W3 × R2  E systems=0.9000ms  절감분=K(27.6250) − E(2.5050) = 25.1200ms → 미발동
+    W1 × R2  E systems=1.0950ms  절감분=K(27.9500) − E(0.0850) = 27.8650ms → 미발동
+    W3 × R2  E systems=0.7800ms  절감분=K(27.6250) − E(0.3550) = 27.2700ms → 미발동
     ⇒ 기각 (ii) 미발동
+  무LIS 'E' 병기 (판정 아님 — 사전 등록 E는 LIS 포함):
+    W1 × R2  E(무LIS)/K CI=[0.104, 0.107]  DOM op 997/18201  systems=0.7600 vs 절감분 24.7600ms
+    W3 × R2  E(무LIS)/K CI=[0.101, 0.106]  DOM op 976/18201  systems=0.9000 vs 절감분 25.1200ms
 
   ▶ E 판정: 기각 미발동
+    ※ 범위 밖: E 기각 (iii)(G0 — No-VDOM 판별)·트랙 N 조항(G1/G2)·§5 FV 계류. 채택은 그것까지 통과해야 한다.
 
 ==============================================================================
 W7 (값 갱신) 프로파일 — CHROMIUM (1차 판정)   ※ §9 어느 조항에도 걸리지 않음
@@ -173,25 +183,25 @@ W7 (값 갱신) 프로파일 — CHROMIUM (1차 판정)   ※ §9 어느 조항�
     C vs K                             우세      CI=[ 0.284,  0.292]   C=13.3525ms K=46.1000ms
     D-LIS vs K                         우세      CI=[ 0.010,  0.011]   D-LIS=0.4900ms K=46.1000ms
     D vs K                             우세      CI=[ 0.010,  0.011]   D=0.4850ms K=46.1000ms
-    E vs K                             우세      CI=[ 0.011,  0.011]   E=0.4950ms K=46.1000ms
+    E-LIS vs K                         우세      CI=[ 0.011,  0.011]   E-LIS=0.5100ms K=46.1000ms
     E-LIS vs K                         우세      CI=[ 0.011,  0.011]   E-LIS=0.5100ms K=46.1000ms
   W9 clear (전량 삭제 — K·C의 fast path 표적)
-    C vs K                             열세      CI=[ 1.919,  1.982]   C=2.6550ms K=1.3600ms
+    C vs K                             열세      CI=[ 1.921,  1.982]   C=2.6550ms K=1.3600ms
     D-LIS vs K                         열세      CI=[ 2.066,  2.210]   D-LIS=2.8950ms K=1.3600ms
-    E vs K                             열세      CI=[ 2.162,  2.233]   E=2.9925ms K=1.3600ms
+    E-LIS vs K                         열세      CI=[ 2.158,  2.266]   E-LIS=3.0000ms K=1.3600ms
   W10 아이템 교체 (§9: 판정 셀 아님 — 지도·프로파일 전용)
     C vs K  R1 교체율 50%                 우세      CI=[ 0.202,  0.219]   C=0.7850ms K=3.6700ms
-    D-LIS vs K  R1 교체율 50%             열세      CI=[ 1.241,  1.340]   D-LIS=4.8275ms K=3.6700ms
+    D-LIS vs K  R1 교체율 50%             열세      CI=[ 1.243,  1.340]   D-LIS=4.8275ms K=3.6700ms
     C vs K  R8 교체율 50%                 우세      CI=[ 0.218,  0.228]   C=6.9500ms K=31.3675ms
-    D-LIS vs K  R8 교체율 50%             우세      CI=[ 0.621,  0.669]   D-LIS=19.9425ms K=31.3675ms
+    D-LIS vs K  R8 교체율 50%             우세      CI=[ 0.621,  0.668]   D-LIS=19.9425ms K=31.3675ms
     C vs K  R1 교체율 100%                우세      CI=[ 0.279,  0.294]   C=1.0575ms K=3.7075ms
-    D-LIS vs K  R1 교체율 100%            열세      CI=[ 2.127,  2.258]   D-LIS=8.1325ms K=3.7075ms
-    C vs K  R8 교체율 100%                우세      CI=[ 0.344,  0.356]   C=12.9300ms K=36.9175ms
-    D-LIS vs K  R8 교체율 100%            열세      CI=[ 1.120,  1.148]   D-LIS=41.7550ms K=36.9175ms
+    D-LIS vs K  R1 교체율 100%            열세      CI=[ 2.127,  2.252]   D-LIS=8.1325ms K=3.7075ms
+    C vs K  R8 교체율 100%                우세      CI=[ 0.343,  0.356]   C=12.9300ms K=36.9175ms
+    D-LIS vs K  R8 교체율 100%            열세      CI=[ 1.120,  1.149]   D-LIS=41.7550ms K=36.9175ms
   W11 중간 삭제 (개정 #9-8 등재 — 프로파일 전용)
     C vs K                             우세      CI=[ 0.162,  0.169]   C=0.6100ms K=3.6650ms
     D-LIS vs K                         우세      CI=[ 0.117,  0.122]   D-LIS=0.4400ms K=3.6650ms
-    E vs K                             우세      CI=[ 0.121,  0.127]   E=0.4550ms K=3.6650ms
+    E-LIS vs K                         우세      CI=[ 0.129,  0.134]   E-LIS=0.4850ms K=3.6650ms
 
 ==============================================================================
 §3.3 스케일링 프로파일 — CHROMIUM (1차 판정)
@@ -200,44 +210,44 @@ W7 (값 갱신) 프로파일 — CHROMIUM (1차 판정)   ※ §9 어느 조항�
 
   W2 × R1  (n = 100 → 1,000 → 10,000)
     n=100    K median=    0.478ms 표본=200
-      C          0.153ms  C/K CI=[0.314, 0.332] (우세)
-      D-LIS      0.325ms  D-LIS/K CI=[0.667, 0.703] (우세)
+      C          0.153ms  C/K CI=[0.314, 0.331] (우세)
+      D-LIS      0.325ms  D-LIS/K CI=[0.667, 0.704] (우세)
       D          0.336ms  D/K CI=[0.689, 0.719] (우세)
-      E          0.356ms  E/K CI=[0.728, 0.767] (우세)
-      E-LIS      0.322ms  E-LIS/K CI=[0.659, 0.697] (우세)
+      E-LIS      0.322ms  E-LIS/K CI=[0.658, 0.699] (우세)
+      E-LIS      0.322ms  E-LIS/K CI=[0.659, 0.698] (우세)
     n=1000   K median=    3.402ms 표본=200
       C          1.050ms  C/K CI=[0.303, 0.315] (우세)
       D-LIS      3.030ms  D-LIS/K CI=[0.883, 0.895] (우세)
-      D          3.315ms  D/K CI=[0.968, 0.980] (우세)
-      E          3.178ms  E/K CI=[0.924, 0.938] (우세)
+      D          3.315ms  D/K CI=[0.967, 0.981] (우세)
+      E-LIS      3.090ms  E-LIS/K CI=[0.904, 0.912] (우세)
       E-LIS      3.090ms  E-LIS/K CI=[0.903, 0.912] (우세)
     n=10000  K median=   38.943ms 표본=200
       C         11.933ms  C/K CI=[0.299, 0.312] (우세)
-      D-LIS     78.032ms  D-LIS/K CI=[1.964, 2.037] (열세)
-      D         81.365ms  D/K CI=[2.041, 2.122] (열세)
-      E         78.077ms  E/K CI=[1.965, 2.035] (열세)
-      E-LIS     81.295ms  E-LIS/K CI=[2.043, 2.115] (열세)
+      D-LIS     78.032ms  D-LIS/K CI=[1.959, 2.036] (열세)
+      D         81.365ms  D/K CI=[2.040, 2.121] (열세)
+      E-LIS     81.295ms  E-LIS/K CI=[2.044, 2.115] (열세)
+      E-LIS     81.295ms  E-LIS/K CI=[2.043, 2.116] (열세)
     ⇒ C/K median 비율 외삽: n=100: 0.320 → n=1000: 0.309 → n=10000: 0.306
        단조 감소 — n이 커질수록 C가 K 대비 **유리**해진다
 
   W2 × R2  (n = 100 → 1,000 → 10,000)
     n=100    K median=    3.475ms 표본=200
-      C          1.285ms  C/K CI=[0.367, 0.374] (우세)
+      C          1.285ms  C/K CI=[0.366, 0.374] (우세)
       D-LIS      0.425ms  D-LIS/K CI=[0.121, 0.124] (우세)
       D          0.455ms  D/K CI=[0.129, 0.132] (우세)
-      E          0.500ms  E/K CI=[0.140, 0.146] (우세)
+      E-LIS      0.440ms  E-LIS/K CI=[0.124, 0.127] (우세)
       E-LIS      0.440ms  E-LIS/K CI=[0.124, 0.127] (우세)
     n=1000   K median=   35.532ms 표본=200
       C         11.942ms  C/K CI=[0.332, 0.343] (우세)
       D-LIS      4.480ms  D-LIS/K CI=[0.125, 0.127] (우세)
       D          4.543ms  D/K CI=[0.127, 0.129] (우세)
-      E          4.605ms  E/K CI=[0.128, 0.131] (우세)
+      E-LIS      4.485ms  E-LIS/K CI=[0.125, 0.127] (우세)
       E-LIS      4.485ms  E-LIS/K CI=[0.125, 0.127] (우세)
     n=10000  K median=  435.065ms 표본=136  **상한 초과(프로파일 전용)**
       C        153.417ms  C/K CI=[0.344, 0.359] (우세)  ※상한 초과(표본 136/200)
       D-LIS    110.850ms  D-LIS/K CI=[0.250, 0.259] (우세)  ※상한 초과(표본 136/200)
-      D        110.472ms  D/K CI=[0.249, 0.259] (우세)  ※상한 초과(표본 136/200)
-      E        112.495ms  E/K CI=[0.253, 0.265] (우세)  ※상한 초과(표본 136/200)
+      D        110.472ms  D/K CI=[0.249, 0.260] (우세)  ※상한 초과(표본 136/200)
+      E-LIS    110.147ms  E-LIS/K CI=[0.247, 0.259] (우세)  ※상한 초과(표본 136/200)
       E-LIS    110.147ms  E-LIS/K CI=[0.247, 0.259] (우세)  ※상한 초과(표본 136/200)
     ⇒ C/K median 비율 외삽: n=100: 0.370 → n=1000: 0.336 → n=10000: 0.353
        **비단조** — 방향을 말할 수 없다(폭 0.336~0.370, 끝점만 보면 감소로 오독된다)
@@ -247,19 +257,19 @@ W7 (값 갱신) 프로파일 — CHROMIUM (1차 판정)   ※ §9 어느 조항�
       C          1.479ms  C/K CI=[0.373, 0.393] (우세)
       D-LIS      0.186ms  D-LIS/K CI=[0.047, 0.049] (우세)
       D          0.181ms  D/K CI=[0.046, 0.048] (우세)
-      E          0.193ms  E/K CI=[0.049, 0.051] (우세)
+      E-LIS      0.193ms  E-LIS/K CI=[0.049, 0.051] (우세)
       E-LIS      0.193ms  E-LIS/K CI=[0.049, 0.051] (우세)
     n=1000   K median=   35.555ms 표본=200
       C         11.425ms  C/K CI=[0.317, 0.327] (우세)
       D-LIS      0.690ms  D-LIS/K CI=[0.019, 0.020] (우세)
       D          0.665ms  D/K CI=[0.018, 0.019] (우세)
-      E          0.730ms  E/K CI=[0.020, 0.021] (우세)
+      E-LIS      0.765ms  E-LIS/K CI=[0.021, 0.022] (우세)
       E-LIS      0.765ms  E-LIS/K CI=[0.021, 0.022] (우세)
     n=10000  K median=  439.860ms 표본=200
       C        129.918ms  C/K CI=[0.282, 0.307] (우세)
       D-LIS     15.447ms  D-LIS/K CI=[0.034, 0.036] (우세)
       D         14.793ms  D/K CI=[0.033, 0.034] (우세)
-      E         15.765ms  E/K CI=[0.035, 0.037] (우세)
+      E-LIS     16.227ms  E-LIS/K CI=[0.036, 0.038] (우세)
       E-LIS     16.227ms  E-LIS/K CI=[0.036, 0.038] (우세)
     ⇒ C/K median 비율 외삽: n=100: 0.383 → n=1000: 0.321 → n=10000: 0.295
        단조 감소 — n이 커질수록 C가 K 대비 **유리**해진다
@@ -291,20 +301,20 @@ write 변형 선택 내역 (§9 서두 — 선택은 기계적)
     W3    R1 D-LIS  → Conditional     cond=0.7900 uncond=1.6250  uncond/cond CI=[2.041, 2.076] 열세 [배치 cond=none / uncond=none]
     W4    R1 C      → Unconditional   cond=1.0950 uncond=1.0150  uncond/cond CI=[0.914, 0.936] 우세 [배치 cond=none / uncond=none]
     W4    R1 D-LIS  → Conditional     cond=0.4450 uncond=1.1750  uncond/cond CI=[2.611, 2.663] 열세 [배치 cond=none / uncond=none]
-    W2    R8 C      → Unconditional   cond=11.9425 uncond=11.9300  uncond/cond CI=[0.976, 1.015] 등가 [배치 cond=none / uncond=none]
-    W2    R8 D-LIS  → Conditional     cond=4.4800 uncond=5.5075  uncond/cond CI=[1.213, 1.248] 열세 [배치 cond=none / uncond=none]
-    W1    R8 D-LIS  → Conditional     cond=0.6400 uncond=1.8725  uncond/cond CI=[2.703, 3.000] 열세 [배치 cond=none / uncond=none]
+    W2    R8 C      → Unconditional   cond=11.9425 uncond=11.9300  uncond/cond CI=[0.976, 1.014] 등가 [배치 cond=none / uncond=none]
+    W2    R8 D-LIS  → Conditional     cond=4.4800 uncond=5.5075  uncond/cond CI=[1.213, 1.249] 열세 [배치 cond=none / uncond=none]
+    W1    R8 D-LIS  → Conditional     cond=0.6400 uncond=1.8725  uncond/cond CI=[2.693, 3.000] 열세 [배치 cond=none / uncond=none]
     W3    R8 D-LIS  → Conditional     cond=1.1200 uncond=2.3050  uncond/cond CI=[2.040, 2.085] 열세 [배치 cond=none / uncond=none]
     W4    R8 D-LIS  → Conditional     cond=0.6900 uncond=1.8050  uncond/cond CI=[2.572, 2.674] 열세 [배치 cond=none / uncond=none]
     W10a  R1 C      → Conditional     cond=0.7850 uncond=1.2300  uncond/cond CI=[1.539, 1.596] 열세 [배치 cond=none / uncond=none]
     W10a  R1 D-LIS  → Conditional     cond=4.8275 uncond=5.6975  uncond/cond CI=[1.151, 1.204] 열세 [배치 cond=none / uncond=none]
     W10a  R8 C      → Conditional     cond=6.9500 uncond=11.3000  uncond/cond CI=[1.565, 1.654] 열세 [배치 cond=none / uncond=none]
-    W10a  R8 D-LIS  → Conditional     cond=19.9425 uncond=23.3700  uncond/cond CI=[1.112, 1.197] 열세 [배치 cond=none / uncond=none]
-    W10b  R1 C      → Unconditional   cond=1.1125 uncond=1.0575  uncond/cond CI=[0.924, 0.982] 우세 [배치 cond=none / uncond=none]
-    W10b  R1 D-LIS  → Unconditional   cond=8.2025 uncond=8.1325  uncond/cond CI=[0.957, 1.028] 등가 [배치 cond=none / uncond=none]
-    W10b  R8 C      → Unconditional   cond=13.7125 uncond=12.9300  uncond/cond CI=[0.922, 0.963] 우세 [배치 cond=none / uncond=none]
-    W10b  R8 D-LIS  → Unconditional   cond=43.1500 uncond=41.7550  uncond/cond CI=[0.951, 0.983] 우세 [배치 cond=none / uncond=none]
-    W2    R1 D      → Conditional     cond=3.3150 uncond=4.0275  uncond/cond CI=[1.193, 1.245] 열세 [배치 cond=none / uncond=none]
+    W10a  R8 D-LIS  → Conditional     cond=19.9425 uncond=23.3700  uncond/cond CI=[1.111, 1.196] 열세 [배치 cond=none / uncond=none]
+    W10b  R1 C      → Unconditional   cond=1.1125 uncond=1.0575  uncond/cond CI=[0.923, 0.982] 우세 [배치 cond=none / uncond=none]
+    W10b  R1 D-LIS  → Unconditional   cond=8.2025 uncond=8.1325  uncond/cond CI=[0.959, 1.028] 등가 [배치 cond=none / uncond=none]
+    W10b  R8 C      → Unconditional   cond=13.7125 uncond=12.9300  uncond/cond CI=[0.921, 0.963] 우세 [배치 cond=none / uncond=none]
+    W10b  R8 D-LIS  → Unconditional   cond=43.1500 uncond=41.7550  uncond/cond CI=[0.952, 0.983] 우세 [배치 cond=none / uncond=none]
+    W2    R1 D      → Conditional     cond=3.3150 uncond=4.0275  uncond/cond CI=[1.193, 1.246] 열세 [배치 cond=none / uncond=none]
 
 ------------------------------------------------------------------------------
 §8 배치 모드 혼용 (판정 짝의 두 레코드가 다른 모드)
@@ -314,24 +324,25 @@ write 변형 선택 내역 (§9 서두 — 선택은 기계적)
 ------------------------------------------------------------------------------
 §8 판정 어휘 겹침 (우세/열세 ∩ 등가 — 우세/열세 우선으로 읽음)
 ------------------------------------------------------------------------------
-  8건. 이 셀들은 등가로 읽었다면 판정이 달라질 수 있었다.
-  어휘 배타를 요구해 실제로 갈리는 조항: C 채택 (b) · D 채택 양성 조건 · D W5 부속 · E 기각 (i).
-  (C 채택 (a)·D 기각 (iii) 앞항은 '동등 이상' = 우세 ∪ 등가라 무영향, C 기각 앞 분기·E 기각 (ii)는 어휘가 아니라 임계값 비교라 무관.)
+  7건. 이 셀들은 등가로 읽었다면 판정이 달라질 수 있었다.
+  우세∩등가에서 갈리는 조항: C 채택 (b) · D 채택 양성 조건 · D W5 부속 · E 기각 (i).
+  열세∩등가에서 갈리는 조항: 위 넷 + C 채택 (a) · D 기각 (iii) 앞항('동등 이상').
+  '동등 이상'(C 채택 (a)·D 기각 (iii) 앞항)은 우세∩등가에서는 무영향이지만 **열세∩등가에서는 갈린다**.
+  C 기각 앞 분기·E 기각 (ii)는 어휘가 아니라 임계값 비교라 무관.
     열세  CI=[1.014, 1.058]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] §9 서두 '셀별 우세 write 변형' — W2×R1 C 변형선택(판정 아님)
     열세  CI=[1.025, 1.079]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] §9 서두 '셀별 우세 write 변형' — W3×R1 C 변형선택(판정 아님)
     우세  CI=[0.914, 0.936]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] §9 서두 '셀별 우세 write 변형' — W4×R1 C 변형선택(판정 아님)
-    우세  CI=[0.924, 0.982]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] §9 서두 '셀별 우세 write 변형' — W10b×R1 C 변형선택(판정 아님)
-    우세  CI=[0.922, 0.963]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] §9 서두 '셀별 우세 write 변형' — W10b×R2 C 변형선택(판정 아님)
-    우세  CI=[0.951, 0.983]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] §9 서두 '셀별 우세 write 변형' — W10b×R2 D-LIS 변형선택(판정 아님)
-    우세  CI=[0.968, 0.980]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] 개정 #9 신설 셀 프로파일(판정 아님) — W11×R1 E/K
-    우세  CI=[0.924, 0.938]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] 개정 #9 신설 셀 프로파일(판정 아님) — W11×R1 E/K
+    우세  CI=[0.923, 0.982]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] §9 서두 '셀별 우세 write 변형' — W10b×R1 C 변형선택(판정 아님)
+    우세  CI=[0.921, 0.963]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] §9 서두 '셀별 우세 write 변형' — W10b×R2 C 변형선택(판정 아님)
+    우세  CI=[0.952, 0.983]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] §9 서두 '셀별 우세 write 변형' — W10b×R2 D-LIS 변형선택(판정 아님)
+    우세  CI=[0.967, 0.981]  (등가 대역 [0.909, 1.100] 안)  [CHROMIUM (1차 판정)] §3.3 스케일링 프로파일(판정 아님) — W2×R1 n=1000 D/K
 
 
 ==============================================================================
 종합 (Chromium 1차 판정 기준)
 ==============================================================================
   C: 채택(a)=X 채택(b)=O 기각=미발동
-  D: 기각(iii) 앞항=불성립 (뒷항 미계측 → 기각 불성립) / 양성조건=O
+  D: 기각(iii) 앞항=불성립 → 연접=불성립(뒷항 미계측) / 양성조건=O / W5 부속=발동
   E: 기각(i)=미발동 기각(ii)=미발동
 
 
@@ -340,9 +351,39 @@ write 변형 선택 내역 (§9 서두 — 선택은 기계적)
 ##############################################################################
   범위: §8 '트랙 L 핵심 격자' — 20셀 (그 밖의 셀은 범위 밖이지 미계측이 아니다)
 
+==============================================================================
+무결성 점검 (판정 전) — CHROMIUM 4× 스로틀
+==============================================================================
+  노드 슬롯 상주 최대 비율: 1.00× (n=1000, inner=0, E/append)
+    ⇒ 정상 (수리 전이면 tick 수 × n으로 자란다)
+  배치 모드가 후보 간에 갈린 셀: 0/20
+    ⇒ 정상
+    모드 분포: {'none': 120}
+  §8 셀 상한(30분) 초과: 0건 — 최대 셀 벽시계 1007.9초
+  타이머 해상도: [0.005] ms — 격리 정상(엔진별 하한: Chromium 0.005 / Firefox 0.020)
+  단계·M2 귀속 구간(`stage_scope`) 분포:
+    last_step_of_sequence (스텝 100): 12건 ['append'] ← samples_ms와 스케일 다름(나누지 말 것)
+    the_measured_step (스텝 1): 108건 ['head_insert', 'shuffle', 'shuffle10', 'swap', 'value_update']
+  정지 흔적(벽시계 ≫ 기대): 1건
+      5.0× 기대  W2 n=1000 R8 inner=0
+  머신 소음의 후보 중립성 (셀 20개, 상대 꼬리 p95/median 중앙):
+    D-LIS=1.526  E-LIS=1.567  C=1.581  D=1.622  E=1.660  K=2.049
+    ⇒ 최대/최소 = 1.34× (K/D-LIS) — 중립(§9 비율의 전제 성립)
+      (이 지표는 **정지 노출**이 후보 중립이라는 뜻이다 — median이 편향되지 않았다는 증명은 아니다)
+  표본: 워밍업 선언 [50] / 측정 선언 [200] / **실제** [200]
+    ⇒ 전 셀이 선언 표본 수를 채웠다
+  §11 개정 #5 이전의 chain 배치 셀: 0건
+  §7 M2 런 내부 결정성: 위반 0건 (검사된 셀 24개)
+  §7 M2 결정성(브라우저 간 op 수 일치)은 종합 절에서 대조한다.
+  노드 슬롯 / (n × 기대 노드/row): 최대 1.00× (R1, inner=0, E/append)
+  방출 setText ↔ 관측 characterData 유실 셀: 0건
+  브라우저 빌드 식별자: 있음 — Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)
+
+  ⇒ 무결성 문제 1건: ['정지 흔적 1셀 — 측정 중 머신 압박 의심']
+
   실효 스로틀 배수 (스로틀 median / 비스로틀 median, 셀 단위 분해):
     전체 중앙 4.38× (셀 12개)
-    셀 간 표류: 셀 내 중앙 3.45× (W2×R1) ~ 4.75× (W7×R2) — 두 조건이 다른 런이라 셀마다 머신 상태가 다르다
+    셀 간 표류: 셀 내 중앙 3.46× (W2×R1) ~ 4.75× (W7×R2) — 두 조건이 다른 런이라 셀마다 머신 상태가 다르다
     셀 내 후보 간: 최대/최소의 중앙 1.13× — 후보들이 같이 움직였다(비율 보존 — 판정 대조의 전제 성립)
     ⇒ 스로틀 적용 확인. 명목 4×의 위인 것은 CDP CPU 스로틀이 스크립트 실행만
       늦추는 것과(→ 4× 미만 쪽) 런 간 표류(→ 양쪽)가 겹친 결과다. 절대 배수는
@@ -356,7 +397,7 @@ write 변형 선택 내역 (§9 서두 — 선택은 기계적)
   (비교 불가)  W1×R1 C/K      — 비스로틀/4×스로틀 배치 모드 불일치 (alternate/none, alternate/none)
   (비교 불가)  W1×R1 K/D-LIS  — 비스로틀/4×스로틀 배치 모드 불일치 (alternate/none, alternate/none)
   (비교 불가)  W1×R1 D-LIS/K      — 비스로틀/4×스로틀 배치 모드 불일치 (alternate/none, alternate/none)
-  (비교 불가)  W1×R1 E/K      — 비스로틀/4×스로틀 배치 모드 불일치 (alternate/none, alternate/none)
+  (비교 불가)  W1×R1 E-LIS/K      — 비스로틀/4×스로틀 배치 모드 불일치 (alternate/none, alternate/none)
 
   비교쌍 35건: 어휘 불일치 0건, 그중 **정반대** 0건
   ⇒ 방향이 갈린 판정 셀 없음 — 4×스로틀에서도 우세 방향이 유지된다.
@@ -370,76 +411,123 @@ write 변형 선택 내역 (§9 서두 — 선택은 기계적)
 §9 C (고정 슬롯) — CHROMIUM 4× 스로틀 (강건성)
 ==============================================================================
   채택 (a): {W1,W2,W3,W4} × R1 전 셀에서 D 대비 동등 이상
-    W1 × R1  C/D                       우세      CI=[ 0.180,  0.286]   C=0.4325ms D-LIS=1.6875ms
+    W1 × R1  C/D                       우세      CI=[ 0.187,  0.286]   C=0.4325ms D-LIS=1.6875ms
     W2 × R1  C/D                       우세      CI=[ 0.402,  0.455]   C=4.4850ms D-LIS=10.4800ms
-    W3 × R1  C/D                       열세      CI=[ 1.298,  1.436]   C=4.5900ms D-LIS=3.3625ms
-    W4 × R1  C/D                       열세      CI=[ 1.965,  2.242]   C=4.2550ms D-LIS=2.0350ms
+    W3 × R1  C/D                       열세      CI=[ 1.299,  1.435]   C=4.5900ms D-LIS=3.3625ms
+    W4 × R1  C/D                       열세      CI=[ 1.968,  2.241]   C=4.2550ms D-LIS=2.0350ms
     ⇒ (a) **불충족**
+    C-4 대체 기준선 반사실 (판정 아님 — D·E 자격은 G0~G2가 정한다): 기준선 E-LIS이면 (a) 불충족 / 기준선 K이면 (a) 충족
   채택 (b): {W1,W2,W3,W4} × R1 중 최소 1셀에서 K 대비 우세
-    W1 × R1  C/K                       우세      CI=[ 0.023,  0.032]   C=0.4325ms K=14.9375ms
-    W2 × R1  C/K                       우세      CI=[ 0.296,  0.357]   C=4.4850ms K=13.3475ms
+    W1 × R1  C/K                       우세      CI=[ 0.021,  0.032]   C=0.4325ms K=14.9375ms
+    W2 × R1  C/K                       우세      CI=[ 0.296,  0.358]   C=4.4850ms K=13.3475ms
     W3 × R1  C/K                       우세      CI=[ 0.247,  0.282]   C=4.5900ms K=17.5625ms
-    W4 × R1  C/K                       우세      CI=[ 0.207,  0.243]   C=4.2550ms K=18.7500ms
+    W4 × R1  C/K                       우세      CI=[ 0.208,  0.243]   C=4.2550ms K=18.7500ms
     ⇒ (b) 충족
   채택 (c): opt-in 문법 수용 — **설계 판단, 실측 아님**(§9 문언)
   기각 앞 분기: W2 × R2에서 C/D 비율 CI 하한 ≥ 3
-    W2 × R2  C/D                       열세      CI=[ 2.561,  2.714]   C=51.5000ms D-LIS=19.4725ms
-    ⇒ 앞 분기 미발동 (하한 2.561 < 3)
+    W2 × R2  C/D                       열세      CI=[ 2.563,  2.712]   C=51.5000ms D-LIS=19.4725ms
+    ⇒ 앞 분기 미발동 (하한 2.563 < 3)
+    짝짓기 민감도 (판정 아님) — W2×R2 C/D-LIS: 판정 짝 C=Unco / D-LIS=Cond ← **셀을 건넌 짝**
+      같은 셀 Cond/Cond     CI=[2.964, 3.080]  < 3
+      같은 셀 Unco/Unco     CI=[2.183, 2.321]  < 3
+      표류 탐침(무조건/조건부 — 변형을 안 읽는 후보): K [0.901,0.951]  E [0.869,0.927]  E-LIS [0.865,0.912]
+      ⇒ 셀 간 표류 최대 ≈14% — 짝짓기에 따라 수치가 흔들릴 수 있다
+      ⇒ 어느 같은 셀 짝에서도 하한 ≥ 3: 아니오
   기각 뒷 분기: W2 × R3에서 archetype move 구간 ≥ 스크립트 시간의 50%
-    (주의: R3 셀은 C만 유효. D/D-LIS/E/E-LIS/K는 2026-08-07까지 축이
-     적용되지 않아 §11-2 개정 #8로 무효 처리됨 — 이 분기는 C 자신의
-     절대 임계값이므로 영향 없다)
-    미계측 — R3 셀 또는 §7.1 단계 귀속 없음
+    (이 분기는 C 자신의 절대 임계값이다 — 다른 후보의 R3 값은 쓰지 않는다)
+    범위 밖 — §8은 4× 스로틀을 핵심 격자에만 요구한다(W2×R3는 핵심 격자가 아니다)
 
-  ▷ C (강건성 확인 — 판정 아님): 기각 **판정 불가(데이터 없음)**
+  ▷ C (강건성 확인 — 판정 아님): 기각 미발동, 채택 조건 불충족 → 채택 불가 (뒷 분기는 범위 밖 — 앞 분기만 대조)
 
 ==============================================================================
 §9 D (keyed 시퀀스 동기화) — CHROMIUM 4× 스로틀 (강건성)
 ==============================================================================
   기각 (iii) 앞항: {W1,W2,W3,W4} × {R1,R2} **전 셀**에서 K가 D 대비 동등 이상
-    W1 × R1  K/D                       열세      CI=[ 8.464,  9.315]   K=14.9375ms D-LIS=1.6875ms
-    W2 × R1  K/D                       열세      CI=[ 1.194,  1.439]   K=13.3475ms D-LIS=10.4800ms
-    W3 × R1  K/D                       열세      CI=[ 4.823,  5.547]   K=17.5625ms D-LIS=3.3625ms
-    W4 × R1  K/D                       열세      CI=[ 8.575, 10.260]   K=18.7500ms D-LIS=2.0350ms
-    W1 × R2  K/D                       열세      CI=[55.198, 57.466]   K=143.7425ms D-LIS=2.5600ms
-    W2 × R2  K/D                       열세      CI=[ 8.236,  8.555]   K=163.5000ms D-LIS=19.4725ms
-    W3 × R2  K/D                       열세      CI=[30.240, 32.170]   K=145.9850ms D-LIS=4.7450ms
-    W4 × R2  K/D                       열세      CI=[54.630, 62.066]   K=182.6200ms D-LIS=3.1375ms
+    W1 × R1  K/D                       열세      CI=[ 8.482,  9.310]   K=14.9375ms D-LIS=1.6875ms
+    W2 × R1  K/D                       열세      CI=[ 1.197,  1.439]   K=13.3475ms D-LIS=10.4800ms
+    W3 × R1  K/D                       열세      CI=[ 4.824,  5.565]   K=17.5625ms D-LIS=3.3625ms
+    W4 × R1  K/D                       열세      CI=[ 8.563, 10.242]   K=18.7500ms D-LIS=2.0350ms
+    W1 × R2  K/D                       열세      CI=[55.283, 57.484]   K=143.7425ms D-LIS=2.5600ms
+    W2 × R2  K/D                       열세      CI=[ 8.237,  8.552]   K=163.5000ms D-LIS=19.4725ms
+    W3 × R2  K/D                       열세      CI=[30.268, 32.170]   K=145.9850ms D-LIS=4.7450ms
+    W4 × R2  K/D                       열세      CI=[54.367, 61.935]   K=182.6200ms D-LIS=3.1375ms
     ⇒ 앞항 **불성립**
   기각 (iii) 뒷항: 부속 비용 프로파일(M4/M7/M3 중 1개 이상)에서 D가 K 대비 순증
     미계측 — M4(이중 저장)·M7(resume walk)·M3는 이 하네스가 수집하지 않는다
-    (§9 문언상 **두 항 모두** 성립해야 기각이므로, 뒷항 미계측이면 기각 불성립)
+    (§9 문언상 **두 항 모두** 성립해야 기각 — 뒷항이 미계측이므로 앞항이 거짓일 때만 '불성립'이 결정적이고, 앞항이 성립하면 '판정 불가'다)
   채택 양성 조건: {W1,W2,W3} × R2 중 최소 1셀에서 K 대비 우세
     W1 × R2  D/K                       우세      CI=[ 0.017,  0.018]   D-LIS=2.5600ms K=143.7425ms
     W2 × R2  D/K                       우세      CI=[ 0.117,  0.121]   D-LIS=19.4725ms K=163.5000ms
     W3 × R2  D/K                       우세      CI=[ 0.031,  0.033]   D-LIS=4.7450ms K=145.9850ms
     ⇒ 양성 조건 충족
   채택 추가 선결: W5(append)에서 K/C 대비 열세면 unkeyed opt-out 명세 부속
-    W5 × R1  D/K                       열세      CI=[41.898, 45.601]   D-LIS=157.5250ms K=3.5925ms
-    W5 × R1  D/C                       열세      CI=[ 4.278,  4.351]   D-LIS=157.5250ms C=36.4750ms
+    W5 × R1  D/K                       열세      CI=[41.900, 45.659]   D-LIS=157.5250ms K=3.5925ms
+    W5 × R1  D/C                       열세      CI=[ 4.276,  4.351]   D-LIS=157.5250ms C=36.4750ms
     ⇒ **부속 조건 발동** (K, C 대비 열세)
-    ※ §5 FV 계류(D·E 공통)는 이 스크립트 범위 밖 — 채택은 그것까지 통과해야 한다.
+    ※ 범위 밖: §5 FV 계류(D·E 공통)·D 기각 (i)/(ii)(G0/트랙 N) — 채택은 그것까지 통과해야 한다.
 
-  ▷ D (강건성 확인 — 판정 아님): 기각 (iii) 불성립(앞항 불성립) / 양성 조건 충족 / W5 부속 발동
+  ▷ D (강건성 확인 — 판정 아님): 기각 (iii) 불성립(앞항 불성립 — 뒷항과 무관하게 결정적) / 양성 조건 충족 / W5 부속 발동
 
 ==============================================================================
 §9 E (OrderKey) — CHROMIUM 4× 스로틀 (강건성)
 ==============================================================================
   ※ 기각 (i)/(ii)는 **네이티브 경로**에서만 판정(§9 E-1).
-    reposition 경로: 네이티브 498500 / 폴백 0 → 네이티브 경로 확인
+    reposition 경로: 네이티브 1000 / 폴백 0 → 네이티브 경로 확인
   기각 (i): 판정 셀 W1·W3 × R2 중 **어느 셀에서도** K 대비 우세를 못 보이면 기각
-    W1 × R2  E/K                       우세      CI=[ 0.106,  0.108]   E=15.3800ms K=143.7425ms
-    W3 × R2  E/K                       우세      CI=[ 0.105,  0.115]   E=16.1475ms K=145.9850ms
+    W1 × R2  E/K                       우세      CI=[ 0.019,  0.021]   E-LIS=2.8850ms K=143.7425ms
+    W3 × R2  E/K                       우세      CI=[ 0.033,  0.035]   E-LIS=5.0000ms K=145.9850ms
     ⇒ 기각 (i) 미발동
   기각 (i) 병기(결정적): E의 셀당 총 DOM op 수 ≥ K의 50%이면 'DOM 연산 절감 없음'
-    W1 × R2  E=997 K=18201  비율=0.055 → 절감 있음
-    W3 × R2  E=976 K=18201  비율=0.054 → 절감 있음
+    W1 × R2  E=2 K=18201  비율=0.000 → 절감 있음
+    W3 × R2  E=93 K=18201  비율=0.005 → 절감 있음
   기각 (ii): reconcile System 시간 ≥ (K의 DOM 적용 − E의 DOM 적용)  [판정 셀 W1·W3 × R2]
-    W1 × R2  E systems=2.6700ms  절감분=K(108.1150) − E(12.4200) = 95.6950ms → 미발동
-    W3 × R2  E systems=3.7550ms  절감분=K(162.4200) − E(12.3500) = 150.0700ms → 미발동
+    W1 × R2  E systems=2.4400ms  절감분=K(108.1150) − E(0.4000) = 107.7150ms → 미발동
+    W3 × R2  E systems=2.7350ms  절감분=K(162.4200) − E(1.5300) = 160.8900ms → 미발동
     ⇒ 기각 (ii) 미발동
+  무LIS 'E' 병기 (판정 아님 — 사전 등록 E는 LIS 포함):
+    W1 × R2  E(무LIS)/K CI=[0.106, 0.108]  DOM op 997/18201  systems=2.6700 vs 절감분 95.6950ms
+    W3 × R2  E(무LIS)/K CI=[0.105, 0.115]  DOM op 976/18201  systems=3.7550 vs 절감분 150.0700ms
 
   ▷ E (강건성 확인 — 판정 아님): 기각 미발동
+    ※ 범위 밖: E 기각 (iii)(G0 — No-VDOM 판별)·트랙 N 조항(G1/G2)·§5 FV 계류. 채택은 그것까지 통과해야 한다.
+
+  스로틀 변형 선택 (34건):
+    W1    R1 C      → Conditional     cond=0.4325 uncond=4.0500  uncond/cond CI=[8.168, 13.024] 열세 [배치 cond=none / uncond=none]
+    W1    R1 D-LIS  → Conditional     cond=1.6875 uncond=5.4700  uncond/cond CI=[3.070, 3.515] 열세 [배치 cond=none / uncond=none]
+    W1    R1 D      → Conditional     cond=2.6460 uncond=3.1900  uncond/cond CI=[1.195, 1.214] 열세 [배치 cond=alternate / uncond=none] ← **두 변형의 배치 모드가 다르다**
+    W1    R1 D      → Conditional     cond=10.6500 uncond=17.5425  uncond/cond CI=[1.502, 1.778] 열세 [배치 cond=none / uncond=none]
+    W1    R8 C      → Conditional     cond=0.2725 uncond=9.2725  uncond/cond CI=[33.418, 34.620] 열세 [배치 cond=none / uncond=none]
+    W1    R8 C      → Conditional     cond=1.0750 uncond=43.1050  uncond/cond CI=[38.661, 42.112] 열세 [배치 cond=none / uncond=none]
+    W1    R8 D-LIS  → Conditional     cond=2.5600 uncond=9.1550  uncond/cond CI=[3.483, 3.707] 열세 [배치 cond=none / uncond=none]
+    W1    R8 D      → Conditional     cond=3.6125 uncond=4.5550  uncond/cond CI=[1.247, 1.276] 열세 [배치 cond=none / uncond=none]
+    W1    R8 D      → Conditional     cond=14.9400 uncond=20.5175  uncond/cond CI=[1.347, 1.394] 열세 [배치 cond=none / uncond=none]
+    W2    R1 C      → Conditional     cond=4.4850 uncond=6.6850  uncond/cond CI=[1.320, 1.651] 열세 [배치 cond=none / uncond=none]
+    W2    R1 D-LIS  → Conditional     cond=10.4800 uncond=22.2950  uncond/cond CI=[1.965, 2.251] 열세 [배치 cond=none / uncond=none]
+    W2    R1 D      → Conditional     cond=10.2925 uncond=22.3950  uncond/cond CI=[2.041, 2.262] 열세 [배치 cond=none / uncond=none]
+    W2    R8 C      → Unconditional   cond=58.7925 uncond=51.5000  uncond/cond CI=[0.852, 0.895] 우세 [배치 cond=none / uncond=none]
+    W2    R8 D-LIS  → Conditional     cond=19.4725 uncond=22.7600  uncond/cond CI=[1.137, 1.209] 열세 [배치 cond=none / uncond=none]
+    W2    R8 D      → Conditional     cond=4.5425 uncond=5.5350  uncond/cond CI=[1.202, 1.244] 열세 [배치 cond=none / uncond=none]
+    W2    R8 D      → Conditional     cond=19.8950 uncond=23.0675  uncond/cond CI=[1.118, 1.211] 열세 [배치 cond=none / uncond=none]
+    W3    R1 C      → Conditional     cond=4.5900 uncond=5.7975  uncond/cond CI=[1.176, 1.440] 열세 [배치 cond=none / uncond=none]
+    W3    R1 D-LIS  → Conditional     cond=3.3625 uncond=8.0725  uncond/cond CI=[2.253, 2.559] 열세 [배치 cond=none / uncond=none]
+    W3    R1 D      → Conditional     cond=2.6025 uncond=3.3000  uncond/cond CI=[1.239, 1.285] 열세 [배치 cond=none / uncond=none]
+    W3    R1 D      → Conditional     cond=11.8800 uncond=17.0575  uncond/cond CI=[1.313, 1.517] 열세 [배치 cond=none / uncond=none]
+    W3    R8 C      → Conditional     cond=10.4200 uncond=12.2050  uncond/cond CI=[1.160, 1.187] 열세 [배치 cond=none / uncond=none]
+    W3    R8 C      → Conditional     cond=46.6475 uncond=69.6800  uncond/cond CI=[1.423, 1.559] 열세 [배치 cond=none / uncond=none]
+    W3    R8 D-LIS  → Conditional     cond=4.7450 uncond=12.9900  uncond/cond CI=[2.621, 2.940] 열세 [배치 cond=none / uncond=none]
+    W3    R8 D      → Conditional     cond=3.4100 uncond=4.6275  uncond/cond CI=[1.344, 1.382] 열세 [배치 cond=none / uncond=none]
+    W3    R8 D      → Conditional     cond=15.4900 uncond=26.9125  uncond/cond CI=[1.615, 1.904] 열세 [배치 cond=none / uncond=none]
+    W4    R1 C      → Unconditional   cond=5.1525 uncond=4.2550  uncond/cond CI=[0.718, 0.898] 우세 [배치 cond=none / uncond=none]
+    W4    R1 D-LIS  → Conditional     cond=2.0350 uncond=4.8550  uncond/cond CI=[2.246, 2.582] 열세 [배치 cond=none / uncond=none]
+    W4    R1 D      → Conditional     cond=0.4200 uncond=1.1450  uncond/cond CI=[2.682, 2.726] 열세 [배치 cond=none / uncond=none]
+    W4    R1 D      → Conditional     cond=1.8475 uncond=4.7725  uncond/cond CI=[2.365, 2.720] 열세 [배치 cond=none / uncond=none]
+    W4    R8 C      → Unconditional   cond=11.4250 uncond=10.7800  uncond/cond CI=[0.927, 0.958] 우세 [배치 cond=none / uncond=none]
+    W4    R8 C      → Conditional     cond=62.8575 uncond=65.9950  uncond/cond CI=[0.955, 1.129] 비결정 [배치 cond=none / uncond=none]
+    W4    R8 D-LIS  → Conditional     cond=3.1375 uncond=9.4825  uncond/cond CI=[2.720, 3.412] 열세 [배치 cond=none / uncond=none]
+    W4    R8 D      → Conditional     cond=0.6650 uncond=1.8500  uncond/cond CI=[2.734, 2.842] 열세 [배치 cond=none / uncond=none]
+    W4    R8 D      → Conditional     cond=2.9375 uncond=9.4500  uncond/cond CI=[2.901, 3.503] 열세 [배치 cond=none / uncond=none]
+  스로틀 어휘 겹침: 1건 / 배치 모드 혼용: 0건
+    우세  CI=[0.927, 0.958]  [CHROMIUM (1차 판정)] §9 서두 '셀별 우세 write 변형' — W4×R2 C 변형선택(판정 아님)
 
 ------------------------------------------------------------------------------
 게이트 구성 요소 대조 (비스로틀 → 4× 스로틀)

@@ -315,11 +315,25 @@ def build_index(rows):
 # 쪽으로 읽고 있었다 — §10이 재심사 대상으로 못 박은 변형에 대해 판정을
 # 내리고 있었던 셈이다.
 #
-# E는 §10에 같은 고정이 없으므로 하네스의 "E"(무LIS)를 그대로 쓰고, "E-LIS"는
-# 변형 프로파일로 병기한다.
+# **E도 LIS 포함이 사전 등록된 E다** (2026-09-27 정정 — v21 적대적 검증에서 3명이
+# 독립적으로 지적, 검증자 3명이 실재 확인). 2026-08-04에 D를 D-LIS로 고칠 때 E는
+# "§10에 같은 고정이 없으므로" 무LIS 'E'를 그대로 뒀는데, 그 판단은 §10의 **침묵**만
+# 보고 §9 E의 **자기 문언**을 대조하지 않은 것이었다:
+#   - §9 E 기각 (ii): "reconcile System 시간(매칭 + **LIS** + successor 검색 + 이동 집합 정렬)"
+#   - §7.1: "reconcile System(해시 매칭 + **LIS** + successor 검색)"
+#   - §3.4: "D, E (O(이동 수)**+LIS**)"
+#   - RQ1 E 항목: "'O(이동 수)' 주장은 LIS 계산 없이는 불성립 — 명세에 LIS를 명시"
+#   - §10 D-4가 D를 LIS로 고정한 근거 (2)가 바로 이 E 항목의 확정 사실이다.
+# 판정된 무LIS 'E'는 W1×R2의 2행 교환에서 reposition 997을 낸다(E-LIS는 2) — O(이동 수)
+# 성질이 없는 arm으로 "O(이동 수)" 후보를 판정하고 있었다. 무LIS 'E'는 변형으로 병기한다.
+#
+# **방향 공개**: 이 정정은 E에 **유리한** 쪽이다(E/K가 0.104/0.101 → 0.020/0.035). 판정은
+# 양쪽 arm 모두에서 "기각 미발동"으로 같다 — 결과를 보고 arm을 고른 것이 아니라 조항
+# 문언이 가리키는 arm으로 맞춘 것이고, 무LIS 결과도 계속 찍는다.
 D = "D-LIS"          # §10 D-4: LIS 고정
 D_NOLIS = "D"        # 무LIS 변형 — §11-1(c)로 W2×R1 1셀 한정 추가 측정 지위
-E = "E"
+E = "E-LIS"          # §9 E (ii)·§7.1·§3.4·RQ1 E 명세: LIS 포함
+E_NOLIS = "E"        # 무LIS 변형 — 병기만(판정 아님)
 K = "K"
 C = "C"
 
@@ -483,6 +497,65 @@ def line(label, v, lo, hi, note=""):
 # §9 C
 # ---------------------------------------------------------------------------
 
+def pairing_sensitivity(idx, w, b, cand, base, threshold=None):
+    """판정 짝이 **셀을 건넜을 때** 결론이 짝짓기에 얼마나 민감한지 공개한다(판정 아님).
+
+    §9 서두의 "셀별 우세 write 변형"(2026-08-12 조작화: median이 작은 변형)은 후보마다
+    변형을 따로 고르므로, 고른 두 레코드가 **서로 다른 셀 = 다른 페이지 로드·다른
+    시간창**에서 올 수 있다. 같은 rep 인덱스는 같은 target이지만(시드가 변형을 안 포함),
+    라운드로빈 보호("같은 시간창")는 **셀 안에서만** 성립한다 — 셀 사이의 표류는
+    paired 부트스트랩 CI에 들어가지 않는다. 2026-09-27 적대적 검증이 이것을 잡았다:
+    스로틀 W2×R2에서 C(무조건, 그룹 17)와 D-LIS(조건부, 그룹 9)가 77분 떨어져 측정됐고
+    그 사이 8~12% 표류가 있어 C 기각 앞 분기 하한이 2.561로 **낮게** 보였다(같은 셀
+    짝이면 3.019 [2.964, 3.083]).
+
+    **표류 탐침**: K·E(무LIS)·E-LIS는 write 변형을 읽지 않는다(E 계열 매크로는 그 인자를
+    받지 않고 K 본문은 참조하지 않는다 — M2 op 수도 두 변형에서 같다). 그러므로 이들의
+    무조건 셀 / 조건부 셀 비율은 **순수한 셀 간 표류**다. 1에서 멀면 셀을 건넌 짝을
+    믿으면 안 된다.
+
+    판정은 등재된 절차 그대로 두고 이 민감도를 병기한다 — 결과를 본 뒤 짝짓기를 바꾸면
+    §11-3이 막는 기준 선택이 된다. 방법의 수정은 다음 캠페인 항목(하네스가 두 write
+    변형을 **같은 셀 안에서** 라운드로빈으로 재도록)으로 등재한다.
+    """
+    def raw(c_, wv):
+        return _raw(idx, w, b, c_, False, N, POD, 0, wv)
+    ca, cb = cell(idx, w, b, cand), cell(idx, w, b, base)
+    if not ca or not cb:
+        return None
+    cross = ca.get("write_variant") != cb.get("write_variant")
+    rows = []
+    for wv in ("Conditional", "Unconditional"):
+        a_, b_ = raw(cand, wv), raw(base, wv)
+        if a_ and b_ and a_.get("samples_ms") and b_.get("samples_ms") and not (unusable(a_) or unusable(b_)):
+            rows.append((f"같은 셀 {wv[:4]}/{wv[:4]}", *paired_ratio_ci(a_["samples_ms"], b_["samples_ms"])))
+    probes = []
+    for pc in (K, E_NOLIS, E):
+        u_, c_ = raw(pc, "Unconditional"), raw(pc, "Conditional")
+        if u_ and c_ and u_.get("samples_ms") and c_.get("samples_ms"):
+            probes.append((pc, *paired_ratio_ci(u_["samples_ms"], c_["samples_ms"])))
+    lab = f"{w}×R{1 if b == 1 else 2} {cand}/{base}"
+    print(f"    짝짓기 민감도 (판정 아님) — {lab}: 판정 짝 "
+          f"{cand}={ca.get('write_variant', '?')[:4]} / {base}={cb.get('write_variant', '?')[:4]}"
+          f"{' ← **셀을 건넌 짝**' if cross else ' (같은 셀)'}")
+    for name, lo_, hi_ in rows:
+        mark = ""
+        if threshold is not None:
+            mark = f"  {'≥' if lo_ >= threshold else '<'} {threshold:g}"
+        print(f"      {name:18s} CI=[{lo_:.3f}, {hi_:.3f}]{mark}")
+    if probes:
+        pmin = min(p_[1] for p_ in probes); pmax = max(p_[2] for p_ in probes)
+        print(f"      표류 탐침(무조건/조건부 — 변형을 안 읽는 후보): " +
+              "  ".join(f"{p_[0]} [{p_[1]:.3f},{p_[2]:.3f}]" for p_ in probes))
+        drift = max(abs(1 - pmin), abs(pmax - 1))
+        print(f"      ⇒ 셀 간 표류 최대 ≈{drift * 100:.0f}% — "
+              f"{'짝짓기에 따라 수치가 흔들릴 수 있다' if drift > 0.03 else '셀 간 표류 무시할 수준'}")
+    if threshold is not None and rows:
+        anyf = any(lo_ >= threshold for _, lo_, _ in rows)
+        print(f"      ⇒ 어느 같은 셀 짝에서도 하한 ≥ {threshold:g}: {'**예**' if anyf else '아니오'}")
+    return {"cross": cross, "same_cell": rows, "probes": probes}
+
+
 def gate_c(idx, browser):
     set_ctx(browser=browser, clause="§9 C (절 미지정)")
     print(f"\n{'=' * 78}\n§9 C (고정 슬롯) — {browser}\n{'=' * 78}")
@@ -496,6 +569,17 @@ def gate_c(idx, browser):
         vs_a.append(v)
     ok_a = resolve_all(vs_a, at_least_equal)
     print(f"    ⇒ (a) {say(ok_a, '충족', '**불충족**')}")
+    # §9 C-4: D가 자격을 잃으면 기준선을 D → E → K로 내린다. 자격(G0~G2 통과)은 이
+    # 스크립트의 입력이 아니다 — 그래서 **평가하지 않고 반사실만 병기한다**. 2026-09-27
+    # 검증 지적: G2(트랙 N)는 기반 528e991에서 인증됐고 v21의 D-LIS·E 구현은 그 뒤
+    # 바뀌었다. 재인증 전까지 이 대체가 발동할 가능성은 열려 있고, D·E가 **모두**
+    # 탈락하면 기준선이 K가 되어 C 채택 (a)가 뒤집힌다 — 그 사실을 숨기지 않는다.
+    alt = []
+    for base_ in (E, K):
+        vv = [compare(idx, w, 1, C, base_)[0] for w in JUDGE_WORKLOADS]
+        alt.append((base_, resolve_all(vv, at_least_equal)))
+    print("    C-4 대체 기준선 반사실 (판정 아님 — D·E 자격은 G0~G2가 정한다): " +
+          " / ".join(f"기준선 {b_}이면 (a) {say(r_, '충족', '불충족')}" for b_, r_ in alt))
 
     set_ctx(clause="C 채택 (b)")
     print("  채택 (b): {W1,W2,W3,W4} × R1 중 최소 1셀에서 K 대비 우세")
@@ -518,13 +602,23 @@ def gate_c(idx, browser):
     fired_front = None if v in UNRESOLVED else lo >= 3.0
     print(f"    ⇒ 앞 분기 {say(fired_front, '**발동**', '미발동')}"
           + ("" if fired_front is None else f" (하한 {lo:.3f} {'≥' if fired_front else '<'} 3)"))
+    pairing_sensitivity(idx, "W2", 8, C, D, threshold=3.0)
 
     print("  기각 뒷 분기: W2 × R3에서 archetype move 구간 ≥ 스크립트 시간의 50%")
-    print("    (주의: R3 셀은 C만 유효. D/D-LIS/E/E-LIS/K는 2026-08-07까지 축이")
-    print("     적용되지 않아 §11-2 개정 #8로 무효 처리됨 — 이 분기는 C 자신의")
-    print("     절대 임계값이므로 영향 없다)")
+    # 2026-09-27 정정: 전에는 "R3 셀은 C만 유효(개정 #8로 D/E/K 무효)"를 고정 문구로
+    # 찍었다. 개정 #8의 무효는 v11~v18 수집분 대상이고, v21은 축 수리 뒤 수집이라
+    # 6후보 전부의 R3가 유효하다(실측: K의 W2×R3 create 1,500 = 1,000 + <em> 500).
+    print("    (이 분기는 C 자신의 절대 임계값이다 — 다른 후보의 R3 값은 쓰지 않는다)")
     r = cell(idx, "W2", 1, C, variants=True)
-    if not r or "stage_ms" not in r:
+    back_out_of_scope = False
+    if (not r or "stage_ms" not in r) and ROBUSTNESS["on"]:
+        # 강건성(스로틀) 모드에서 R3 셀이 없는 것은 **범위 밖**이지 미계측이 아니다 —
+        # §8은 스로틀을 핵심 격자에만 요구했다(2026-09-27 보강 등재). "판정 불가"로
+        # 접으면 ▷ 줄이 스로틀에서 C 기각이 결론 불가인 것처럼 읽힌다.
+        print("    범위 밖 — §8은 4× 스로틀을 핵심 격자에만 요구한다(W2×R3는 핵심 격자가 아니다)")
+        fired_back = False
+        back_out_of_scope = True
+    elif not r or "stage_ms" not in r:
         print("    미계측 — R3 셀 또는 §7.1 단계 귀속 없음")
         fired_back = None
     else:
@@ -540,6 +634,11 @@ def gate_c(idx, browser):
     rejected = resolve_any([fired_front, fired_back], lambda x: x is True)
     # `None`(판정 불가)을 "불충족"으로 접지 않는다.
     adopt_ab = resolve_all([ok_a, ok_b], lambda x: x is True)
+    if back_out_of_scope and rejected is not True:
+        # 범위 밖 분기를 '미발동'으로 둔 것은 **앞 분기만 본 결론**임을 줄에 적는다.
+        rejected_note = " (뒷 분기는 범위 밖 — 앞 분기만 대조)"
+    else:
+        rejected_note = ""
     if rejected is True:
         c_line = "**기각**"
     elif rejected is None:
@@ -551,7 +650,7 @@ def gate_c(idx, browser):
     else:
         c_line = ("채택 조건 (a)(b) 충족 — (c)는 설계 판단" if adopt_ab
                   else "기각 미발동, 채택 조건 불충족 → 채택 불가")
-    print(f"\n  {verdict_head('C')}: {c_line}")
+    print(f"\n  {verdict_head('C')}: {c_line}{rejected_note}")
     return {"adopt_a": ok_a, "adopt_b": ok_b, "reject": rejected,
             # 스로틀 강건성 대조는 분기별로 한다 — 뒷 분기(W2×R3)는 스로틀 범위 밖이다.
             "reject_front": fired_front, "reject_back": fired_back}
@@ -578,7 +677,14 @@ def gate_d(idx, browser):
 
     print("  기각 (iii) 뒷항: 부속 비용 프로파일(M4/M7/M3 중 1개 이상)에서 D가 K 대비 순증")
     print("    미계측 — M4(이중 저장)·M7(resume walk)·M3는 이 하네스가 수집하지 않는다")
-    print("    (§9 문언상 **두 항 모두** 성립해야 기각이므로, 뒷항 미계측이면 기각 불성립)")
+    # **연접은 규약대로 푼다** (2026-09-27 정정). 전에는 "뒷항 미계측이면 기각 불성립"을
+    # 데이터와 무관하게 찍었다 — 그런데 앞항이 **성립**하고 뒷항이 없으면 연접은
+    # 판정 불가다(`resolve_all([True, None]) = None`). 불성립이 결정적인 것은 앞항이
+    # **거짓**일 때뿐이다. 2026-09-24 #14 수리가 앞항만 `resolve_all`로 바꾸고 이 줄과
+    # 종합 괄호를 그대로 남겨, D에 유리한 방향(기각이 덜 발동)의 접힘이 잔존했다.
+    back_iii = None   # M4/M7/M3 미계측
+    print("    (§9 문언상 **두 항 모두** 성립해야 기각 — 뒷항이 미계측이므로 앞항이 거짓일 때만 "
+          "'불성립'이 결정적이고, 앞항이 성립하면 '판정 불가'다)")
 
     set_ctx(clause="D 채택 양성 조건")
     print("  채택 양성 조건: {W1,W2,W3} × R2 중 최소 1셀에서 K 대비 우세")
@@ -607,13 +713,20 @@ def gate_d(idx, browser):
     # 결론 불가 셀이 있으면 판정 불가.
     w5_rider = resolve_any(w5_vs, lambda v: v == "열세")
     print(f"    ⇒ {say(w5_rider, '**부속 조건 발동**' + (' (' + ', '.join(w5_worse) + ' 대비 열세)' if w5_worse else ''), '미발동')}")
-    print("    ※ §5 FV 계류(D·E 공통)는 이 스크립트 범위 밖 — 채택은 그것까지 통과해야 한다.")
+    print("    ※ 범위 밖: §5 FV 계류(D·E 공통)·D 기각 (i)/(ii)(G0/트랙 N) — 채택은 그것까지 통과해야 한다.")
 
-    front_txt = say(k_all, "앞항 성립 — 그러나 뒷항 미계측이라 기각 불성립", "불성립(앞항 불성립)")
+    reject_iii = resolve_all([k_all, back_iii], lambda x: x is True)
+    if reject_iii is False:
+        front_txt = "불성립(앞항 불성립 — 뒷항과 무관하게 결정적)"
+    elif k_all is True:
+        front_txt = "**판정 불가**(앞항 성립, 뒷항 미계측)"
+    else:
+        front_txt = "**판정 불가**(앞항 판정 불가)"
     print(f"\n  {verdict_head('D')}: 기각 (iii) {front_txt}"
           f" / 양성 조건 {say(ok_pos, '충족', '불충족')}"
           f" / W5 부속 {say(w5_rider, '발동', '미발동')}")
-    return {"reject_iii_front": k_all, "adopt_positive": ok_pos, "w5_rider": w5_rider}
+    return {"reject_iii_front": k_all, "reject_iii": reject_iii,
+            "adopt_positive": ok_pos, "w5_rider": w5_rider}
 
 
 # ---------------------------------------------------------------------------
@@ -686,7 +799,27 @@ def gate_e(idx, browser):
     # ▶ 줄도 `None`을 접지 않는다 — 어느 한쪽이 발동이면 기각(결정적), 둘 다
     # 미발동이면 미발동, 그 외(한쪽이 판정 불가)는 판정 불가.
     e_reject = resolve_any([fired_i, fired_ii], lambda x: x is True)
+
+    # **무LIS 'E' 병기(판정 아님)** — 2026-09-27에 판정 arm을 E-LIS로 바로잡았다
+    # (상수 E의 주석 참고). 이전 판정문의 E 수치가 이 arm의 것이었으므로 대조할 수
+    # 있게 같은 셀을 찍는다.
+    print(f"  무LIS 'E' 병기 (판정 아님 — 사전 등록 E는 LIS 포함):")
+    for w in ["W1", "W3"]:
+        en, k = cell(idx, w, 8, E_NOLIS), cell(idx, w, 8, K)
+        if en and k and en.get("samples_ms") and k.get("samples_ms") and not (unusable(en) or unusable(k)):
+            lo_, hi_ = paired_ratio_ci(en["samples_ms"], k["samples_ms"])
+            extra = ""
+            if "stage_ms" in en and "stage_ms" in k:
+                sav = k["stage_ms"]["dom_apply"] - en["stage_ms"]["dom_apply"]
+                extra = f"  systems={en['stage_ms']['systems']:.4f} vs 절감분 {sav:.4f}ms"
+            print(f"    {w} × R2  E(무LIS)/K CI=[{lo_:.3f}, {hi_:.3f}]  "
+                  f"DOM op {en['m2_dom_ops']['total_mutations']}/{k['m2_dom_ops']['total_mutations']}{extra}")
+
     print(f"\n  {verdict_head('E')}: {say(e_reject, '**기각**', '기각 미발동')}")
+    # 이 스크립트가 **평가하지 않는** E 조항을 적는다 — 안 적으면 "기각 미발동"이 E의
+    # 모든 기각 조항을 통과했다는 뜻으로 읽힌다(2026-09-27 검증 지적).
+    print("    ※ 범위 밖: E 기각 (iii)(G0 — No-VDOM 판별)·트랙 N 조항(G1/G2)·§5 FV 계류. "
+          "채택은 그것까지 통과해야 한다.")
     return {"reject_i": fired_i, "reject_ii": fired_ii}
 
 
@@ -745,6 +878,9 @@ def profile_scaling(idx, browser):
                     continue
                 why = unusable(r) or unusable(k)
                 m = statistics.median(r["samples_ms"])
+                # 2026-09-27 정정: 이 절은 `compare()`를 안 거쳐 맥락을 안 세웠고, 그래서
+                # 어휘 겹침 기록이 **직전 절의 낡은 라벨**("W11×R1 E/K")을 달았다.
+                VOCAB_CTX["where"] = ctx_where(f"{w}×{rlabel} n={n_} {c}/K")
                 if why:
                     # 상한 초과라도 median은 남는다 — 비율만 '판정 아님'으로 적는다.
                     lo, hi = paired_ratio_ci(r["samples_ms"], k["samples_ms"])
@@ -870,10 +1006,14 @@ def report_vocab_overlap():
     # "동등 이상"을 요구하는 C 채택 (a)·D 기각 (iii) 앞항은 어느 우선순위로 읽어도
     # 충족이므로 영향이 없다.
     print(f"  {len(VOCAB_OVERLAP)}건. 이 셀들은 등가로 읽었다면 판정이 달라질 수 있었다.")
-    print("  어휘 배타를 요구해 실제로 갈리는 조항: C 채택 (b) · D 채택 양성 조건 · "
-          "D W5 부속 · E 기각 (i).")
-    print("  (C 채택 (a)·D 기각 (iii) 앞항은 '동등 이상' = 우세 ∪ 등가라 무영향, "
-          "C 기각 앞 분기·E 기각 (ii)는 어휘가 아니라 임계값 비교라 무관.)")
+    print("  우세∩등가에서 갈리는 조항: C 채택 (b) · D 채택 양성 조건 · D W5 부속 · E 기각 (i).")
+    print("  열세∩등가에서 갈리는 조항: 위 넷 + C 채택 (a) · D 기각 (iii) 앞항('동등 이상').")
+    # 2026-09-27 정정: 전에는 "'동등 이상' 조항은 무영향"이라 적었다. 그건 **우세∩등가**
+    # 겹침에만 참이다. **열세∩등가** 겹침(예: CI [1.02, 1.08])에서는 열세 우선이면
+    # '동등 이상'이 거짓, 등가 우선이면 참이 된다 — C 채택 (a)와 D 기각 (iii) 앞항도 갈린다.
+    print("  '동등 이상'(C 채택 (a)·D 기각 (iii) 앞항)은 우세∩등가에서는 무영향이지만 "
+          "**열세∩등가에서는 갈린다**.")
+    print("  C 기각 앞 분기·E 기각 (ii)는 어휘가 아니라 임계값 비교라 무관.")
     blind = 0
     for v, lo, hi, where in VOCAB_OVERLAP:
         if "브라우저?" in where or "조항?" in where:
@@ -1154,6 +1294,7 @@ def integrity_checks(rows, browser):
         ok_neutral = spread < 1.5
         print(f"    ⇒ 최대/최소 = {spread:.2f}× ({hi_c}/{lo_c}) — "
               f"{'중립(§9 비율의 전제 성립)' if ok_neutral else '**특정 후보가 스톨을 더 맞았다**'}")
+        print("      (이 지표는 **정지 노출**이 후보 중립이라는 뜻이다 — median이 편향되지 않았다는 증명은 아니다)")
         if not ok_neutral:
             problems.append(f"머신 소음이 후보 중립이 아님({hi_c}의 꼬리가 {spread:.2f}배)")
 
@@ -1332,7 +1473,9 @@ def main():
     print(f"  C: 채택(a)={say(c['C']['adopt_a'], 'O', 'X')} "
           f"채택(b)={say(c['C']['adopt_b'], 'O', 'X')} 기각={say(c['C']['reject'], '발동', '미발동')}")
     print(f"  D: 기각(iii) 앞항={say(c['D']['reject_iii_front'], '성립', '불성립')} "
-          f"(뒷항 미계측 → 기각 불성립) / 양성조건={say(c['D']['adopt_positive'], 'O', 'X')}")
+          f"→ 연접={say(c['D']['reject_iii'], '성립', '불성립')}(뒷항 미계측) "
+          f"/ 양성조건={say(c['D']['adopt_positive'], 'O', 'X')} "
+          f"/ W5 부속={say(c['D']['w5_rider'], '발동', '미발동')}")
     print(f"  E: 기각(i)={say(c['E']['reject_i'], '발동', '미발동')} "
           f"기각(ii)={say(c['E']['reject_ii'], '발동', '미발동')}")
     # ---------------------------------------------------------------------
@@ -1421,6 +1564,10 @@ def robustness_throttle(c, trows):
                     for r in trows if r.get("clause") != "W6"})
     print(f"  범위: §8 '트랙 L 핵심 격자' — {len(scope)}셀 "
           f"(그 밖의 셀은 범위 밖이지 미계측이 아니다)")
+    # **스로틀 수집분에도 무결성 점검을 돌린다** (2026-09-27 정정). 전에는 안 돌려서,
+    # 스로틀 C 기각 셀의 정지 흔적과 변형 전환이 보고서에서 빠졌다(검증 지적).
+    integrity_checks(trows, "CHROMIUM 4× 스로틀")
+    n_var, n_voc, n_mix = len(VARIANT_LOG), len(VOCAB_OVERLAP), len(BATCH_MIX)
     report_throttle_multipliers(c["_idx"], tidx)
 
     print(f"\n{'-' * 78}\n(a) 판정 셀 우세 방향 — 비스로틀 ↔ 4× 스로틀\n{'-' * 78}")
@@ -1436,6 +1583,15 @@ def robustness_throttle(c, trows):
         t = {"C": gate_c(tidx, label), "D": gate_d(tidx, label), "E": gate_e(tidx, label)}
     finally:
         ROBUSTNESS["on"] = False
+
+    # 스로틀 게이트가 남긴 변형 선택·어휘 겹침·배치 혼용 기록을 여기서 찍는다 — 전역
+    # 보고 절은 비스로틀 뒤에 이미 출력됐으므로 그대로 두면 스로틀 기록이 사라진다.
+    print(f"\n  스로틀 변형 선택 ({len(VARIANT_LOG) - n_var}건):")
+    for wl, b_, cd, pick, note in VARIANT_LOG[n_var:]:
+        print(f"    {wl:5s} R{b_} {cd:6s} → {pick:15s} {note}")
+    print(f"  스로틀 어휘 겹침: {len(VOCAB_OVERLAP) - n_voc}건 / 배치 모드 혼용: {len(BATCH_MIX) - n_mix}건")
+    for v_, lo_, hi_, where in VOCAB_OVERLAP[n_voc:]:
+        print(f"    {v_}  CI=[{lo_:.3f}, {hi_:.3f}]  {where}")
 
     print(f"\n{'-' * 78}\n게이트 구성 요소 대조 (비스로틀 → 4× 스로틀)\n{'-' * 78}")
     diff = unresolved_n = 0
