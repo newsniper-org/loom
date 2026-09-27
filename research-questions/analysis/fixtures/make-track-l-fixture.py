@@ -26,6 +26,10 @@ C·D·D-LIS 두 변형이 **같은 셀**(9후보), rep별 단계 시간(`stage_s
   cross_cell   — v22 형식인데 C의 무조건 변형이 **다른 셀(그룹)**에 있다(옛 하네스처럼). 셀 구성 점검과
                  같은 셀 짝 보고가 그것을 잡는가.
   gc_missing   — Chromium인데 GC 통제가 안 된 셀(바인딩 없음)·강제 GC 미관측 셀·로그 유실 셀이 섞였다.
+  e_ii_margin  — E 기각 (ii): rep별 짝지은 margin의 median은 +0.15ms(미발동)인데 마지막 rep 점값으로는
+                 발동. 판정이 개정 #10 조작화(짝지은 margin의 median ≤ 0)를 읽는가 — 부호를 뒤집으면 깨진다.
+  throttle_not_applied — 스로틀 파일인데 두 셀의 셀 시작 배수가 1(에이전트 인자 실수 등). 잡는가.
+  write_axis_inert — 무조건 변형의 M2가 조건부와 같다(축이 행동에 안 닿는 상태). 존재 단언이 잡는가.
   stage_median — C의 W2×R3에서 마지막 rep 점값은 sync_point 60%(v21 방식이면 기각 뒷 분기 발동)인데
                  rep별 median은 30%. 판정이 rep별 median을 읽는가.
   throttle_threshold — 비스로틀 C/D 2.5 → 스로틀 3.5. 어휘는 "열세→열세"로 그대로인데
@@ -215,6 +219,15 @@ if mode == "missing_cell":
                                     and r["row_bindings"] == 1 and r["n"] == 1000)]
 
 THROTTLE_ROWS = None
+if mode == "throttle_not_applied":
+    CORE_ = {"swap", "shuffle", "shuffle10", "head_insert", "append", "value_update"}
+    THROTTLE_ROWS = []
+    for r in rows:
+        if (r["n"] == 1000 and r["item_type"] == POD and not r["row_variants"]
+                and r.get("row_inner", 0) == 0 and r["workload"] in CORE_):
+            t = json.loads(json.dumps(r))
+            t["samples_ms"] = [v * 3.45 for v in t["samples_ms"]]
+            THROTTLE_ROWS.append(t)
 if mode == "throttle_threshold":
     # **어휘는 안 바뀌는데 임계 발동만 갈리는** 상태 — 2026-09-27 등재한 구멍 그 자체.
     # 비스로틀: W2×R2 C/D-LIS = 2.5 (열세, C 기각 앞 분기 임계 3 미만 → 미발동)
@@ -271,6 +284,11 @@ def modernize(rows, throttle_rate=1):
         ov = [0.0] * m
         for j in range(0, m, 17):
             ov[j] = 0.01
+        # 실제 하네스처럼 C·D·D-LIS의 무조건 변형은 M2가 다르다(스모크: C set_text 2 → 1000).
+        if (r["write_variant"] == "Unconditional" and r["candidate"] in ("C", "D", "D-LIS")
+                and mode != "write_axis_inert"):
+            r["m2_dom_ops"] = dict(r["m2_dom_ops"], total_mutations=1000, set_text_content=1000)
+            r["mutation_records"] = dict(r["mutation_records"], character_data=1000)
         r["gc"] = {"control": "cdp", "source": "cdp-trace v8+cppgc renderer-main",
                    "cell_start": {"ok": True, "throttle_rate": throttle_rate, "tracing": "v8,cppgc"},
                    "forced": {"ok": True, "method": "HeapProfiler.collectGarbage"},
@@ -305,6 +323,26 @@ if mode == "gc_missing":
         elif r["group"] == gs[4]:
             r["gc"] = dict(r["gc"], segments=[dict(r["gc"]["segments"][0], data_loss=True)],
                            log_complete=False, with_gc=None, overlap_ms=None)
+        elif r["group"] == gs[5]:
+            # 비스로틀 1차 열인데 스로틀이 걸린 셀(에이전트 인자 실수 등).
+            r["gc"] = dict(r["gc"], cell_start=dict(r["gc"]["cell_start"], throttle_rate=4))
+if mode == "throttle_not_applied":
+    tg = sorted({t["group"] for t in THROTTLE_ROWS})[:2]
+    for t in THROTTLE_ROWS:
+        if t["group"] in tg:
+            t["gc"] = dict(t["gc"], cell_start=dict(t["gc"]["cell_start"], throttle_rate=1))
+if mode == "e_ii_margin":
+    for r in rows:
+        if (r["workload"] in ("swap", "shuffle10") and r["row_bindings"] == 8 and r["n"] == 1000
+                and not r["row_variants"] and r["item_type"] == POD):
+            m = len(r["samples_ms"])
+            if r["candidate"] == "E-LIS":
+                r["stage_samples_ms"]["systems"] = [0.05] * m
+                r["stage_samples_ms"]["dom_apply"] = [0.3] * m
+                r["stage_ms"] = dict(r["stage_ms"], systems=0.5, dom_apply=0.3)   # 마지막 rep: 발동
+            elif r["candidate"] == "K":
+                r["stage_samples_ms"]["dom_apply"] = [0.5] * m
+                r["stage_ms"] = dict(r["stage_ms"], dom_apply=0.5)
 if mode == "stage_median":
     for r in rows:
         if r["candidate"] == "C" and r["row_variants"] and r["workload"] == "shuffle":

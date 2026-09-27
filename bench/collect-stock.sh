@@ -221,7 +221,11 @@ trap cleanup EXIT
 
 echo "[collect-stock] $NAME 시작 (pid=$PID, 상한 ${TIMEOUT}초)"
 START=$(date +%s)
-count_parts() { grep -c '"group":' "$PARTS" 2>/dev/null || echo 0; }
+# **조각 헤더로 센다** (개정 #10 후속, 수집 전 적대적 검증이 잡음). 전에는 `"group":`을 셌는데
+# 개정 #10부터 레코드마다 `"group"` 필드가 붙어 조각 하나가 1 + 레코드 수로 세어졌다 — 58셀 전수
+# 수집이 12셀에서, 스로틀 12셀이 2셀에서 "완료"로 끝날 뻔했다(단일 그룹 스모크로는 안 드러났다).
+# `"total_cells"`는 조각마다 정확히 한 번(하네스의 조각 머리) 나온다.
+count_parts() { grep -c '"total_cells":' "$PARTS" 2>/dev/null || echo 0; }
 # **기대 조각 수는 하네스가 말해 준다** (2026-09-24). 첫 조각의 `total_cells`를
 # 읽는다 — 셀 목록(`cell_list()`, `?cells=core` 필터)을 아는 것은 하네스뿐이고,
 # 여기 하드코딩(69)은 `CELLS=core`(20셀)에서 정상 종료를 타임아웃 실패로 만들었다.
@@ -258,7 +262,22 @@ rm -f "$MEMF"
 MEM_PID=$!
 
 EXPECTED=$(expected_parts)
+AGENT_DEADLINE=$(( $(date +%s) + ${AGENT_ATTACH_SEC:-90} ))
 while [ "$(count_parts)" -lt "$(expected_parts)" ]; do
+  # **에이전트가 살아 있지만 아무 페이지에도 안 붙은 상태**를 빨리 잡는다 (개정 #10 후속). 그러면
+  # 셀마다 바인딩을 60초 기다린 뒤 `missing-binding`으로 GC 통제·스로틀 없이 측정되는데, 에이전트는
+  # 살아 있으므로 아래 사망 검사로는 안 잡힌다.
+  if [ -n "$THROTTLE_PID" ] && [ "$(date +%s)" -gt "$AGENT_DEADLINE" ] &&
+     ! grep -q "페이지 타깃에 붙음" "$AGENT_LOG" 2>/dev/null; then
+    echo "[collect-stock] **CDP 에이전트가 ${AGENT_ATTACH_SEC:-90}초 안에 이 수집의 페이지에 붙지 않았다** — $(tail -2 "$AGENT_LOG" 2>/dev/null | tr '\n' ' ')" >&2
+    exit 1
+  fi
+  # 조각에 **체계적 GC 통제 실패**(바인딩 없음·셀 시작 실패)가 보이면 멈춘다 — 그 뒤 셀도 같다.
+  # 측정 끝(measure-end)의 단발 실패는 그 셀의 주석만 null로 두고 계속 간다(판정기가 셀 단위로 보고).
+  if [ -n "$CDP_Q" ] && grep -qE '"control": "(missing-binding|cell-start-)' "$PARTS" 2>/dev/null; then
+    echo "[collect-stock] **GC 통제가 셀 시작에서 실패한 조각이 왔다** — $(grep -oE '"control": "[a-z-]+"' "$PARTS" | sort | uniq -c | tr '\n' ' ')" >&2
+    exit 1
+  fi
   EXPECTED=$(expected_parts)
   if ! kill -0 $PID 2>/dev/null; then
     echo "[collect-stock] **브라우저가 죽었다** — 결과 없음" >&2

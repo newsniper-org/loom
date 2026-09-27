@@ -112,13 +112,25 @@ const stats = { throttle: 0, gc: 0, traces: 0 };
 // end 전 도착 0회).
 // ---------------------------------------------------------------------------
 const traceBuf = new Map(); // sessionId → { events, done }
-on("Tracing.dataCollected", (p, sid) => traceBuf.get(sid)?.events.push(...p.value));
+// **압축 보관** (개정 #10 후속): 셀 하나가 수십만 이벤트(스모크 W1×R1: 40만)이고 30분 셀은 그 몇 배다.
+// 전체 객체를 쌓으면 에이전트 힙이 GB 단위가 된다 — 필요한 필드만 남긴다.
+on("Tracing.dataCollected", (p, sid) => {
+  const t = traceBuf.get(sid);
+  if (!t) return;
+  for (const e of p.value) {
+    if (e.cat === "blink.user_timing" && e.name?.startsWith("loom:")) {
+      t.marks.push({ name: e.name, ts: e.ts, pid: e.pid, tid: e.tid, startTime: e.args?.data?.startTime });
+    } else if (e.ph === "X" && GC_NAME.test(e.name) && (e.cat.includes("v8") || e.cat.includes("cppgc"))) {
+      t.gc.push([e.ts, e.dur ?? 0, e.name, e.pid, e.tid]);
+    }
+  }
+});
 on("Tracing.tracingComplete", (p, sid) => traceBuf.get(sid)?.done(p));
 
 async function traceStart(sid) {
   let done;
   const complete = new Promise((r) => (done = r));
-  traceBuf.set(sid, { events: [], done, complete });
+  traceBuf.set(sid, { marks: [], gc: [], done, complete });
   await send(
     "Tracing.start",
     {
@@ -136,7 +148,7 @@ async function traceEnd(sid) {
   const fin = await t.complete;
   traceBuf.delete(sid);
   stats.traces++;
-  return { events: t.events, dataLoss: !!fin.dataLossOccurred };
+  return { marks: t.marks, gc: t.gc, dataLoss: !!fin.dataLossOccurred };
 }
 
 const GC_NAME = /^(MinorGC|MajorGC|V8\.GC|CppGC\.)/;
@@ -154,23 +166,27 @@ const median = (xs) => {
  *   그것이 이 주석의 시간 정밀도다.
  */
 function extract(trace) {
-  const marks = trace.events.filter((e) => e.cat === "blink.user_timing" && e.name?.startsWith("loom:"));
+  const marks = trace.marks;
   if (!marks.length) {
     return { ok: false, why: "트레이스에 loom: 표식이 없다 — 시계 대응 불가", data_loss: trace.dataLoss };
   }
+  // 시계 대응이 **숫자여야 한다** (개정 #10 후속). 표식 형식이 바뀌어 startTime이 없으면 NaN이 되고,
+  // 그러면 모든 구간 끝점이 JSON에서 null이 되어 "GC 0"이라는 공허한 결과가 된다 — 실패로 돌려준다.
+  if (marks.some((m) => typeof m.startTime !== "number" || !Number.isFinite(m.startTime))) {
+    return { ok: false, why: "loom: 표식에 args.data.startTime이 없다 — 시계 대응 불가", data_loss: trace.dataLoss };
+  }
   const { pid, tid } = marks[0];
-  const offs = marks.map((m) => m.ts / 1000 - m.args.data.startTime);
+  const offs = marks.map((m) => m.ts / 1000 - m.startTime);
   const off = median(offs);
   const spread = Math.max(...offs) - Math.min(...offs);
-  const markTimes = Object.fromEntries(marks.map((m) => [m.name, m.args.data.startTime]));
+  const markTimes = Object.fromEntries(marks.map((m) => [m.name, m.startTime]));
   const counts = {};
   const raw = [];
-  for (const e of trace.events) {
-    if (e.ph !== "X" || e.pid !== pid || e.tid !== tid || !GC_NAME.test(e.name)) continue;
-    if (!(e.cat.includes("v8") || e.cat.includes("cppgc"))) continue;
-    counts[e.name] = (counts[e.name] || 0) + 1;
-    const s = e.ts / 1000 - off;
-    raw.push([s, s + (e.dur ?? 0) / 1000, e.name]);
+  for (const [ts, dur, name, epid, etid] of trace.gc) {
+    if (epid !== pid || etid !== tid) continue;
+    counts[name] = (counts[name] || 0) + 1;
+    const s = ts / 1000 - off;
+    raw.push([s, s + dur / 1000, name]);
   }
   raw.sort((a, b) => a[0] - b[0]);
   // 중첩(예: MajorGC ⊃ V8.GCFinalizeMC)을 합집합으로 접는다.
@@ -263,8 +279,18 @@ async function handle(sid, req) {
 }
 
 // 바인딩 호출 → 처리 → `window.__loomCdpAck(응답)`. 페이지는 그동안 멈춰 있다.
-on("Runtime.bindingCalled", async (p, sid) => {
+//
+// **세션마다 직렬로 처리한다** (개정 #10 후속). 페이지가 응답을 120초 기다리다 포기하고 다음 명령을
+// 보내면, 앞 명령(큰 트레이스의 종료·파싱)과 겹쳐 같은 세션의 트레이스 상태를 두 핸들러가 만졌다.
+// 이제 앞 명령이 끝나야 다음 명령이 시작되고, 응답에는 요청 id가 실려 페이지가 늦은 응답을 버린다.
+const chains = new Map(); // sessionId → Promise
+on("Runtime.bindingCalled", (p, sid) => {
   if (p.name !== BINDING) return;
+  const prev = chains.get(sid) ?? Promise.resolve();
+  const next = prev.then(() => onBinding(p, sid)).catch((e) => log(`핸들러 오류: ${e.message}`));
+  chains.set(sid, next);
+});
+async function onBinding(p, sid) {
   let req;
   try {
     req = JSON.parse(p.payload);
@@ -277,6 +303,7 @@ on("Runtime.bindingCalled", async (p, sid) => {
   } catch (e) {
     reply = { ok: false, why: String(e.message ?? e) };
   }
+  reply.req_id = req.req_id ?? null;
   if (!reply.ok) log(`명령 실패 group=${req.group} ${req.cmd}: ${reply.why}`);
   else if (req.cmd === "measure-end" || req.cmd === "cell-start")
     log(`group=${req.group} ${req.cmd}${reply.n_events !== undefined ? ` GC 이벤트 ${reply.n_events}, 유실=${reply.data_loss}, 강제GC MajorGC=${reply.forced_majorgc_events}` : ` 배수=${reply.throttle_rate}`}`);
@@ -289,17 +316,21 @@ on("Runtime.bindingCalled", async (p, sid) => {
   } catch (e) {
     log(`응답 전달 실패(페이지가 이미 이동했을 수 있다): ${e.message}`);
   }
-});
+}
 
 // ---------------------------------------------------------------------------
 // 페이지 타깃에 붙는다. 바인딩은 "이후 생기는 컨텍스트에도" 설치되므로 페이지가 스스로 다음
 // 그룹으로 이동해도(같은 타깃) 다시 걸 필요가 없다.
 // ---------------------------------------------------------------------------
 const attached = new Set();
+const refused = new Set();
 async function attach(info) {
   if (info.type !== "page" || attached.has(info.targetId)) return;
   if (!info.url.includes(`collect=${collectName}&`) && !info.url.endsWith(`collect=${collectName}`)) {
-    log(`다른 수집의 페이지 — 붙지 않는다: ${info.url}`);
+    if (!refused.has(info.targetId + info.url)) {
+      refused.add(info.targetId + info.url);
+      log(`다른 수집의 페이지 — 붙지 않는다: ${info.url}`);
+    }
     return;
   }
   attached.add(info.targetId);
@@ -309,6 +340,8 @@ async function attach(info) {
   log(`페이지 타깃에 붙음 ${info.targetId.slice(0, 8)} — ${info.url}`);
 }
 on("Target.targetCreated", (p) => attach(p.targetInfo).catch((e) => log(`붙기 실패: ${e.message}`)));
+// 발견 시점에 URL이 아직 수집 URL이 아니었던 탭(about:blank 등)을 놓치지 않게, URL이 바뀌면 다시 본다.
+on("Target.targetInfoChanged", (p) => attach(p.targetInfo).catch((e) => log(`붙기 실패: ${e.message}`)));
 await send("Target.setDiscoverTargets", { discover: true });
 for (const t of (await send("Target.getTargets")).targetInfos) await attach(t).catch((e) => log(`붙기 실패: ${e.message}`));
 

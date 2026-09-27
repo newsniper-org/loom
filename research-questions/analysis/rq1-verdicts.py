@@ -690,13 +690,19 @@ def gate_c(idx, browser):
         # 개정 #10 조작화(수집 전 등재): rep별 (sync_point/total)의 median ≥ 0.5.
         ss = r["stage_samples_ms"]
         shares = [sp / t for sp, t in zip(ss["sync_point"], ss["total"]) if t > 0]
-        share = statistics.median(shares) if shares else 0.0
-        fired_back = share >= 0.5
-        print(f"    rep별 sync_point/total — median {share * 100:.1f}% "
-              f"[p25 {qtl(shares, 0.25) * 100:.1f}%, p75 {qtl(shares, 0.75) * 100:.1f}%, p95 {qtl(shares, 0.95) * 100:.1f}%] "
-              f"(n={len(shares)}, {r.get('stage_samples_scope', '?')})")
+        if not shares:
+            # 전 rep의 total이 0(형식상 0.0000)이면 비율이 없다 — 미발동이 아니라 판정 불가.
+            print("    rep별 total이 전부 0 — 비율을 낼 수 없다(판정 불가)")
+            fired_back = None
+            share = None
+        else:
+            share = statistics.median(shares)
+            fired_back = share >= 0.5
+            print(f"    rep별 sync_point/total — median {share * 100:.1f}% "
+                  f"[p25 {qtl(shares, 0.25) * 100:.1f}%, p75 {qtl(shares, 0.75) * 100:.1f}%, p95 {qtl(shares, 0.95) * 100:.1f}%] "
+                  f"(n={len(shares)}, {r.get('stage_samples_scope', '?')})")
         print(f"    (병기: 마지막 rep 점값 {r['stage_ms']['sync_point'] / r['stage_ms']['total'] * 100 if r['stage_ms']['total'] > 0 else 0:.1f}% — v21의 판정 방식, 판정에 안 씀)")
-        print(f"    ⇒ 뒷 분기 {'**발동**' if fired_back else '미발동'}")
+        print(f"    ⇒ 뒷 분기 {say(fired_back, '**발동**', '미발동')}")
     else:
         st = r["stage_ms"]
         share = st["sync_point"] / st["total"] if st["total"] > 0 else 0.0
@@ -881,9 +887,12 @@ def gate_e(idx, browser):
             saving = k["stage_ms"]["dom_apply"] - e["stage_ms"]["dom_apply"]
             hit = recon >= saving
             ii_hits.append("발동" if hit else "미발동")
+            # 이 분기는 **점값**으로 계산한다 — 한쪽에만 rep별 표본이 있어도 라벨은 점값이다
+            # (전에는 E 쪽 출처를 붙여 점값 계산 옆에 "rep별 median"이 찍힐 수 있었다).
+            mixed = has_stage_samples(e) != has_stage_samples(k)
             print(f"    {w} × R2  E systems={recon:.4f}ms  절감분=K({k['stage_ms']['dom_apply']:.4f}) "
                   f"− E({e['stage_ms']['dom_apply']:.4f}) = {saving:.4f}ms → {'**발동**' if hit else '미발동'}"
-                  f"  ← {stage_source(e)}")
+                  f"  ← **n=1 점값**{' — ⚠️한쪽에만 rep별 표본이 있다(형식 혼용)' if mixed else '(마지막 측정 rep — v21 이전 형식)'}")
     fired_ii = resolve_any(ii_hits, lambda v: v == "발동")
     print(f"    ⇒ 기각 (ii) {say(fired_ii, '**발동**', '미발동')}")
 
@@ -958,6 +967,11 @@ def profile_scaling(idx, browser):
         if not got:
             print("    미계측 — 이 계열의 셀이 데이터에 없다")
             continue
+        # **가운데 점의 측정 환경이 다를 수 있다** (개정 #10 후속). n=1,000 점은 핵심 격자 셀이라
+        # 이중 측정(9후보 — 인스턴스 +3, rep 간격 ×1.5)이고 n=100·10,000은 6후보 셀이다.
+        cc = {n_: got[n_][0].get("cell_candidates") for n_ in got}
+        if len({v for v in cc.values() if v is not None}) > 1:
+            print(f"    ※ 셀 후보 수가 n마다 다르다 {cc} — 가운데 점은 9후보 셀(환경이 다르다), 추세 해석 주의")
         for n_ in sorted(got):
             k, others = got[n_]
             cap = "  **상한 초과(프로파일 전용)**" if k.get("over_cell_cap") else ""
@@ -1180,6 +1194,8 @@ def profile_w7(idx, browser):
                 u = _raw(idx, "W7", b, cand, False, N, item, 0, "Unconditional")
                 c_ = _raw(idx, "W7", b, cand, False, N, item, 0, "Conditional")
                 if u and c_ and not (unusable(u) or unusable(c_)):
+                    # 어휘 겹침 기록의 맥락 — 안 세우면 앞 게이트의 낡은 라벨("E 기각 (i) …")이 붙는다.
+                    VOCAB_CTX["where"] = ctx_where(f"W7×R{1 if b == 1 else 2}×{iname} {cand} 무조건/조건부")
                     lo, hi = paired_ratio_ci(u["samples_ms"], c_["samples_ms"])
                     sc = same_cell(u, c_)
                     print(f"      {cand:6s} 무조건/조건부 CI=[{lo:.3f}, {hi:.3f}] {verdict(lo, hi)}"
@@ -1238,7 +1254,17 @@ def gc_integrity(rows, browser):
         for g in cells.values():
             cs = g.get("cell_start")
             rates[cs.get("throttle_rate") if isinstance(cs, dict) else None] += 1
-        print(f"    강제 GC 관측: {len(cells) - len(forced0)}/{len(cells)}셀 · 로그 완결: {len(cells) - len(lost)}/{len(cells)}셀 "
+        # **비스로틀 1차 열에 스로틀이 걸리지 않았는가** (개정 #10 후속). 스로틀 열(라벨에 "스로틀")은
+        # robustness_throttle이 4×를 요구하고, 1차 열은 1×여야 한다 — 에이전트 인자 실수 하나로 1차 판정
+        # 데이터 전체가 저사양 프록시 데이터가 되는 경로가 있었는데 아무도 보지 않았다.
+        if "스로틀" not in browser:
+            # 배수가 없는 셀(None — GC 통제 자체가 안 된 셀)은 위에서 따로 잡는다. 여기는 **걸린 배수가 1이 아닌** 셀만.
+            not1 = sum(v for k_, v in rates.items() if k_ is not None and k_ != 1)
+            if not1:
+                problems.append(f"비스로틀 열인데 스로틀 배수가 1이 아닌 셀 {not1}개 {dict(rates)}")
+        # 분자는 GC 통제가 된(`cdp`) 셀 중 관측·완결된 수다 — 통제가 없던 셀을 "관측"으로 세지 않는다.
+        n_cdp = sum(1 for g in cells.values() if g.get("control") == "cdp")
+        print(f"    강제 GC 관측: {n_cdp - len(forced0)}/{len(cells)}셀 · 로그 완결: {n_cdp - len(lost)}/{len(cells)}셀 "
               f"· 시계 대응 흩어짐 최대 {max(spreads) if spreads else float('nan'):.4f}ms · 셀 시작 시 걸린 스로틀 배수 {dict(rates)}")
     else:
         if set(ctl) != {"unavailable"}:
@@ -1250,8 +1276,10 @@ def gc_integrity(rows, browser):
 def report_gc_annotation(idx, browser):
     """판정 셀의 GC 주석 — **주석이지 제외 근거가 아니다**(§8 "이상치 제거 없이 GC 주석 병기").
 
-    GC는 후보 자신의 비용이다: 쓰레기를 많이 만드는 후보가 그 GC를 치른다. 그러므로 후보 간
-    GC 비율 차이는 오염이 아니라 비용 구조의 일부이고, 여기서는 그것을 **보이게** 할 뿐이다.
+    **귀속은 근사다**: 힙은 한 페이지의 후보들이 공유하고 라운드로빈 순서는 셀마다 고정이다. GC는
+    쓰레기를 만든 후보가 아니라 **GC가 촉발된 순간 할당하던 후보**의 창에 떨어질 수 있다 — 예컨대 K가
+    쌓은 쓰레기의 스윕이 순서상 K 다음 후보의 창에 얹힐 수 있다(개정 #10 적대적 검증 지적). 그래서 이
+    주석은 "누가 치렀는가"를 보일 뿐 "누가 만들었는가"를 말하지 않으며, 표본 제거의 근거가 아니다(§8).
     """
     set_ctx(browser=browser, clause="§8 GC 주석(판정 아님)")
     print(f"\n{'=' * 78}\n§8 GC 주석 — 판정 셀 (표본 중 GC와 겹친 비율 / 표본 시간 중 GC 비중) — {browser}\n{'=' * 78}")
@@ -1352,6 +1380,21 @@ def same_cell_structure(rows):
         if bad_len:
             problems.append(f"그룹 {g}: stage_samples 길이가 samples_ms와 다르다 {bad_len}")
     print(f"  셀 구성(개정 #10): 셀 {len(groups)}개 중 이중 측정 {len(doubled)}개(9후보), 나머지 6후보")
+    # **write 변형이 행동을 실제로 바꿨는가**(존재 단언). 하네스의 축 점검은 리소스 **설치**만 본다 —
+    # 시스템이 리소스를 안 읽으면 두 인스턴스가 같은 것을 재면서 두 변형인 척한다(개정 #8의 R3가 그랬다).
+    # M2 op 수가 두 변형에서 다른 이중 측정 셀이 후보마다 **하나 이상** 있어야 한다. (모든 셀에서 달라야
+    # 하는 것은 아니다 — 예: W10 100% 교체는 조건부도 전 슬롯을 쓴다.)
+    if doubled:
+        for cand in sorted(DOUBLED_CANDIDATES):
+            n_diff = 0
+            for g in doubled:
+                by = {x.get("write_variant"): x for x in groups[g] if x["candidate"] == cand}
+                a_, b_ = by.get("Conditional"), by.get("Unconditional")
+                if a_ and b_ and a_.get("m2_dom_ops") != b_.get("m2_dom_ops"):
+                    n_diff += 1
+            print(f"    write 변형이 M2를 바꾼 이중 측정 셀 — {cand}: {n_diff}/{len(doubled)}")
+            if n_diff == 0:
+                problems.append(f"{cand}: write 변형이 M2를 바꾼 이중 측정 셀이 **없다** — 축이 행동에 안 닿는다")
     return problems
 
 

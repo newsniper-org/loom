@@ -641,6 +641,11 @@ fn median_of(xs: &[f64]) -> f64 {
 /// 에이전트 응답 대기 상한. 넘기면 레코드에 `timeout`으로 실린다(조용히 넘어가지 않는다).
 const CDP_TIMEOUT_MS: i32 = 120_000;
 
+thread_local! {
+    /// 페이지 안의 에이전트 요청 일련번호(응답 짝 맞추기용).
+    static NEXT_CDP_REQ: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
+}
+
 /// 이 런에 에이전트가 붙어 있어야 하는가. 드라이버가 Chromium 런에 `?cdp=1`을 붙인다.
 /// Firefox는 CDP 수단이 없다(§8이 스로틀에 대해 이미 명기한 것과 같은 한계).
 fn cdp_expected() -> bool {
@@ -705,10 +710,26 @@ async fn cdp_call(cmd: &str, group: usize, cid: &str) -> CdpReply {
     }
     let Some(f) = f else { return CdpReply::Missing };
     let f: js_sys::Function = f.unchecked_into();
-    let payload = format!("{{\"cmd\": \"{cmd}\", \"group\": {group}, \"cid\": \"{cid}\"}}");
+    // **요청 id** (개정 #10 후속). 응답 슬롯(`__loomCdpAck`)은 하나뿐이라, 앞 호출이 시간 초과로
+    // 끝난 뒤 늦게 온 응답이 **다음 호출**을 엉뚱한 내용으로 풀 수 있었다. 에이전트가 id를 되돌려
+    // 주고, id가 다른 응답은 버린다.
+    let req_id = NEXT_CDP_REQ.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
+    let payload =
+        format!("{{\"cmd\": \"{cmd}\", \"group\": {group}, \"cid\": \"{cid}\", \"req_id\": {req_id}}}");
     let mut timer = 0;
     let promise = js_sys::Promise::new(&mut |resolve, _| {
-        let _ = js_sys::Reflect::set(&win, &JsValue::from_str("__loomCdpAck"), &resolve);
+        let r1 = resolve.clone();
+        let ack = Closure::<dyn FnMut(JsValue)>::new(move |v: JsValue| {
+            if js_get(&v, "req_id").as_f64() == Some(req_id as f64) {
+                let _ = r1.call1(&JsValue::NULL, &v);
+            }
+        });
+        let _ = js_sys::Reflect::set(&win, &JsValue::from_str("__loomCdpAck"), ack.as_ref());
+        ack.forget();
         let r2 = resolve.clone();
         let cb = Closure::once_into_js(move || {
             let _ = r2.call1(&JsValue::NULL, &JsValue::from_str("__timeout"));
@@ -799,15 +820,25 @@ impl GcCtl {
         }
         match cdp_call(cmd, self.group, &self.cid).await {
             CdpReply::Ok(v) if js_get(&v, "ok").as_bool() == Some(true) => {
-                let flat: Vec<f64> = js_sys::Array::from(&js_get(&v, "union"))
+                // **구간 배열이 온전한가** (개정 #10 후속). 숫자만 걸러 짝지으면, 에이전트의 시계
+                // 대응이 NaN일 때 끝점이 전부 null이 되어 "완결 로그 + GC 0"이라는 공허한 확인이
+                // 되고, 일부만 null이면 짝이 밀린다. 짝수 길이·전부 유한·(이벤트가 있으면) 비어
+                // 있지 않음을 요구하고, 어긋나면 이 셀의 로그를 불완전으로 둔다.
+                let raw: Vec<Option<f64>> = js_sys::Array::from(&js_get(&v, "union"))
                     .iter()
-                    .filter_map(|x| x.as_f64())
+                    .map(|x| x.as_f64().filter(|f| f.is_finite()))
                     .collect();
+                let n_events = js_get(&v, "n_events").as_f64().unwrap_or(0.0);
+                let _ = js_sys::Reflect::delete_property(v.unchecked_ref::<js_sys::Object>(), &JsValue::from_str("union"));
+                self.segments.push(js_json(&v));
+                if raw.len() % 2 != 0 || raw.iter().any(|x| x.is_none()) || (n_events > 0.0 && raw.is_empty()) {
+                    self.control = format!("{cmd}-bad-union");
+                    return;
+                }
+                let flat: Vec<f64> = raw.into_iter().flatten().collect();
                 for p in flat.chunks_exact(2) {
                     self.union.push((p[0], p[1]));
                 }
-                let _ = js_sys::Reflect::delete_property(v.unchecked_ref::<js_sys::Object>(), &JsValue::from_str("union"));
-                self.segments.push(js_json(&v));
             }
             CdpReply::Ok(v) => {
                 self.segments.push(js_json(&v));
@@ -1127,7 +1158,7 @@ async fn run_combination<T, F>(
     // 우세 변형을 고르므로 판정 짝의 두 레코드가 서로 다른 페이지 로드에서 올 수 있었고,
     // 라운드로빈 보호("같은 시간창")는 셀 안에서만 성립하므로 셀 간 표류가 paired CI 밖에
     // 있었다 — 4× 스로틀 W2×R2에서 77분 떨어진 두 셀을 짝지어 C 기각 앞 분기 하한이
-    // 2.561로 보였고 같은 셀 짝이면 3.019였다(v21 적대적 검증 3번).
+    // 2.561로 보였고 같은 셀 짝이면 하한 2.964(점추정 3.019)였다(v21 적대적 검증 1-a·3번).
     //
     // 이제 C·D·D-LIS의 무조건 변형 인스턴스가 **같은 셀의 후보**로 라운드로빈에 들어간다.
     // 변형 선택도, 선택된 짝도 같은 시간창이 된다. K·E·E-LIS는 이 축을 안 읽으므로 한 벌뿐이다.
@@ -1140,9 +1171,11 @@ async fn run_combination<T, F>(
             }
         }
     }
-    // 각 인스턴스에 **자기 변형이 실제로 걸렸는가** — 축은 리소스이고, 리소스를 안 읽는
-    // 경로가 생기면 두 인스턴스가 같은 것을 재면서 두 변형인 척한다(개정 #8의 R3가 정확히
-    // 그 상태였다). 리소스 값 자체를 대조한다.
+    // 각 인스턴스에 **자기 변형 리소스가 설치됐는가**. 이것은 **설치 확인일 뿐이다** — 같은
+    // `RowShape`에서 나온 값끼리의 대조라, 어떤 시스템이 리소스를 **안 읽는** 결함은 원리적으로
+    // 못 잡는다(개정 #10 적대적 검증 지적 — 처음 주석은 그것까지 잡는다고 과장했다). 읽는지는
+    // 런타임의 축 골든(C·D·D-LIS의 UNCOND 절 ≠ R1 절)이 고정하고, 수집 데이터에서는 판정기가
+    // "write 변형이 M2를 실제로 바꾼 이중 측정 셀"의 **존재**를 단언한다.
     for c in &candidates {
         let applied = c.app.world.get_resource::<loom_runtime::WriteVariant>().copied();
         assert_eq!(
@@ -1362,7 +1395,10 @@ async fn run_combination<T, F>(
         // 점값(n=1)이었다 — §9 C 기각 뒷 분기와 E 기각 (ii)가 그 값으로 판정됐고, §8의 분포
         // 보고 규정(median/IQR/p95)이 적용되지 않는 단일 표본이었다(v21 적대적 검증 7번).
         // 스케일은 표본(`samples_ms`)과 같게 맞춘다: 단발 = 그 스텝, 배치 = 정방향 스텝의
-        // 평균, 시퀀스 = 스텝 합.
+        // 평균, 시퀀스 = 스텝 합. **배치는 스케일만 같고 스텝 집합은 다르다** — 표본과 GC 겹침은
+        // 정·역 10스텝의 평균이고 단계 시간은 정방향 5스텝의 평균이다(되돌림 비용은 단계 시간에
+        // 없다). 판정 조작화는 단계 시간 **안에서만** 비교하므로 영향이 없지만, 단계 합을 표본과
+        // 나란히 읽으면 안 된다(개정 #10 적대적 검증 지적).
         let mut stage_samples: Vec<Vec<StageAcc>> =
             vec![Vec::with_capacity(reps as usize); candidates.len()];
         // §8 M-15의 GC 주석 재료 — 표본을 이루는 timed window 전부.
@@ -1373,6 +1409,13 @@ async fn run_combination<T, F>(
             _ => 1,
         };
         let mut over_cap = warmup_capped;
+        // **측정 직전에 트레이스를 한 번 비운다** (개정 #10 후속). 셀 하나의 트레이스가 파일럿·
+        // 워밍업·측정(최대 30분)을 다 담으면 가장 무거운 셀(n=10,000 R2, 4× 스로틀 W2×R2)에서
+        // 버퍼가 차 **뒤쪽 = 측정 구간**이 버려진다(`recordUntilFull`). 여기서 비우면 측정
+        // 구간이 자기 트레이스를 갖고, 강제 GC 관측은 첫 구간(segments[0])에 남는다. 비우는 동안
+        // 페이지는 멈춰 기다리며, 그 뒤 첫 rep 앞에는 어차피 복원 + double-rAF가 있다.
+        perf_mark("loom:pre-measure-flush");
+        gc.collect("trace-flush").await;
         perf_mark("loom:measure:start");
         'measure: for rep in 0..reps {
             if warmup_capped {
@@ -1904,6 +1947,10 @@ async fn run_w6_cell(
     let mut max_flush = 0.0_f64;
     let mut max_flush_at = 0usize;
     let mut over_cap = false;
+    // 트레이스 flush 대기의 누계 — §8 셀 상한 시계에서 **뺀다**(개정 #10 후속). 대기는 측정이
+    // 아니고, 빼지 않으면 트레이스가 가장 큰 후보(K — v21에서 상한에 걸린 유일한 arm)의 상한이
+    // 앞당겨져 W6 보고표가 K 쪽으로만 기운다. 레코드에도 싣는다.
+    let mut handshake_ms = 0.0_f64;
     perf_mark("loom:measure:start");
 
     for i in 0..INSERTS {
@@ -1916,7 +1963,7 @@ async fn run_w6_cell(
             max_flush_at = i;
         }
         // §8 셀 상한 — 초과는 중단이 아니라 "측정 불가" 프로파일 등재다.
-        if measure_now() - started > CELL_CAP_MS {
+        if measure_now() - started - handshake_ms > CELL_CAP_MS {
             over_cap = true;
             break;
         }
@@ -1935,7 +1982,9 @@ async fn run_w6_cell(
             // 비측정 경계(double-rAF)이고, 비우는 동안 페이지는 응답을 기다리며 멈춰 있다.
             // 구간마다 시계 대응 표식이 필요하므로 앞뒤로 찍는다.
             perf_mark("loom:w6:flush");
+            let h0 = measure_now();
             gc.collect("trace-flush").await;
+            handshake_ms += measure_now() - h0;
             perf_mark("loom:w6:resume");
             double_raf().await;
         }
@@ -1964,6 +2013,7 @@ async fn run_w6_cell(
          \"max_single_flush_ms\": {:.5}, \"relabel_events\": null, \
          \"cell_wall_ms\": {:.1}, \"over_cell_cap\": {}, \"user_agent\": \"{}\", \
          \"group\": {group}, \"cell_id\": \"{cid}\", \"max_flush_insert_index\": {max_flush_at}, \
+         \"handshake_ms_total\": {handshake_ms:.1}, \
          \"max_flush_insert_gc_overlap_ms\": {max_flush_gc}, \"gc\": {}}}",
         candidate.name,
         trial,

@@ -11,14 +11,22 @@
 미계측으로 읽는다 — 왜 없는지는 알 수 없게 된다.
 """
 import json
+import os
 import sys
 from collections import Counter
 
 args = [a for a in sys.argv[1:]]
-out = "research-questions/data/rq1-phase1-track-l-core-grid-v21-chromium.json"
+# **기본 출력 경로를 두지 않는다** (개정 #10 후속). 전에는 v21 판정 데이터 파일이 기본값이라, v22 병합에서
+# `--out`을 빠뜨리면 커밋된 v21 원시 데이터를 조용히 덮어썼다(§11-5 append-only 위반).
+out = None
 expect = None
 if "--out" in args:
     i = args.index("--out"); out = args[i + 1]; del args[i:i + 2]
+if out is None:
+    sys.exit("--out <경로>가 필요하다 (기본 출력 경로 없음 — 커밋된 데이터 파일 덮어쓰기 방지)")
+if os.path.exists(out) and "--overwrite" not in args:
+    sys.exit(f"{out}이(가) 이미 있다 — 원시 데이터는 append-only(§11-5). 정말 덮어쓰려면 --overwrite")
+args = [a_ for a_ in args if a_ != "--overwrite"]
 if "--expect" in args:
     i = args.index("--expect"); expect = int(args[i + 1]); del args[i:i + 2]
 # `--groups 2,4,11,...`: **의도적으로 드문드문한** 그룹 집합을 병합할 때 기대 목록을 준다.
