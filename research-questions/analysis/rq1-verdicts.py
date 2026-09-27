@@ -42,6 +42,10 @@ DATA = os.environ.get("RQ1_DATA_DIR",
 # 128B로 바꾼 것이 **기존 셀의 수치 자체를 바꾸고**, §9 C 판정 하나가 R1 셀
 # (채택 a)과 R2 셀(기각)을 한 판정식 안에서 만나게 하기 때문이다.
 VERSION = "v21"
+# §8 "저사양 프록시" 통과의 수집 파일. 있으면 강건성 확인을 돌린다(판정은 불변).
+THROTTLE_FILE = os.environ.get(
+    "RQ1_THROTTLE_FILE",
+    "/home/ybi/loom-research/bench/collected/v21-chromium-throttle4.json")
 # 옛 오버레이 기제는 남기지 않는다 — 전면 재수집이라 섞을 기반이 없다.
 # (개정 #8의 R3 오버레이 주석은 git 이력에 남아 있다.)
 INVALIDATED = [f"v{i}" for i in range(1, 19)] + ["v19-r3", "v20-chromium-headed"]
@@ -261,6 +265,12 @@ def load(browser):
 
     check_labels(rows, browser)
 
+    return rows, build_index(rows)
+
+
+def build_index(rows):
+    """셀 키 → 레코드. `load()`와 스로틀 수집분이 **같은 키 규칙**을 써야 한다 —
+    다르면 조건 간 대조가 조용히 빈 비교가 된다."""
     idx = {}
     for r in rows:
         # W6은 인덱스에 안 넣는다: 후보당 **독립 5시행**이라 같은 키가 다섯 번
@@ -276,7 +286,7 @@ def load(browser):
         if key in idx:
             raise SystemExit(f"셀 키 충돌 — 같은 셀이 두 번 들어왔다: {key}")
         idx[key] = r
-    return rows, idx
+    return idx
 
 
 # ---------------------------------------------------------------------------
@@ -1312,6 +1322,35 @@ def main():
           f"(뒷항 미계측 → 기각 불성립) / 양성조건={say(c['D']['adopt_positive'], 'O', 'X')}")
     print(f"  E: 기각(i)={say(c['E']['reject_i'], '발동', '미발동')} "
           f"기각(ii)={say(c['E']['reject_ii'], '발동', '미발동')}")
+    # ---------------------------------------------------------------------
+    # §8 "저사양 프록시: 4× CPU throttle을 트랙 L 핵심 격자에 **추가**".
+    #
+    # §9의 어느 조항도 이 결과를 참조하지 않는다(스로틀 의존 조항은 트랙 T의
+    # F 기각 하나뿐이다 — v1.1 F-2). 그래서 **판정을 바꾸지 않고 강건성 확인으로
+    # 쓴다** — §8이 Firefox 교차 확인에 준 것과 같은 지위다(2026-09-27 등재,
+    # 스로틀 수집분 수신 전). 방향이 뒤집힌 판정 셀은 §11-1(b) 검토 대상이다.
+    #
+    # 조건 간 풀링·평균은 금지다: 개정 #9 공평성 진술 7이 적었듯 **스로틀은 상수
+    # 배수가 아니라** 후보마다 배수가 다르므로(실측 첫 셀 C 4.27× vs K 3.92×),
+    # 섞으면 어느 조건도 아닌 수가 된다.
+    if c and THROTTLE_FILE:
+        try:
+            trows = _read(THROTTLE_FILE, "throttle4")
+        except FileNotFoundError:
+            trows = None
+            print(f"\n[스로틀] 파일 없음 — 건너뜀: {THROTTLE_FILE}")
+        if trows:
+            print(f"\n\n{'#' * 78}\n# CHROMIUM 4× CPU 스로틀 (강건성 확인 — 판정 아님)"
+                  f"   (레코드 {len(trows)})\n{'#' * 78}")
+            set_ctx(browser="CHROMIUM 4× 스로틀", clause="강건성 확인(판정 아님)")
+            check_labels(trows, "chromium-throttle4")
+            tidx = build_index(trows)
+            print(f"\n{'-' * 78}\n비스로틀 ↔ 4× 스로틀 우세 방향 대조\n{'-' * 78}")
+            direction_diff(c["_idx"], tidx, "비스로틀", "4×스로틀",
+                           "§8은 스로틀을 격자에 '추가'만 하고 §9는 참조하지 않는다 — "
+                           "판정 대체가 아니라 강건성 확인이다(2026-09-27 등재)")
+            report_throttle_multipliers(c["_idx"], tidx)
+
     f = results.get("firefox")
     if f:
         for cand in ("C", "D", "E"):
@@ -1351,6 +1390,40 @@ def cross_browser_consistency(results):
     return set(mode_diff)
 
 
+def report_throttle_multipliers(iu, it):
+    """후보별 **실효 스로틀 배수**를 판정 셀에서 보고한다.
+
+    "스로틀 명령이 성공했다"와 "측정이 실제로 느려졌다"는 다르다 — 감시자가 죽어
+    조용히 비스로틀이 되는 경로가 실재한다(2026-09-27에 실제로 당했다). 배수가
+    1.0 근처면 그 수집분은 스로틀이 안 걸린 것이고, 라벨만 스로틀인 데이터다.
+    """
+    print(f"\n  실효 스로틀 배수 (판정 셀, 스로틀 median / 비스로틀 median):")
+    per = defaultdict(list)
+    for w in JUDGE_WORKLOADS:
+        for b in (1, 8):
+            for cand in (C, D, E, K):
+                a, t = cell(iu, w, b, cand), cell(it, w, b, cand)
+                if not a or not t or not a.get("samples_ms") or not t.get("samples_ms"):
+                    continue
+                ma = statistics.median(a["samples_ms"])
+                if ma > 0:
+                    per[cand].append(statistics.median(t["samples_ms"]) / ma)
+    if not per:
+        print("    비교 가능한 셀 없음")
+        return
+    for cand in sorted(per, key=lambda c_: -statistics.median(per[c_])):
+        v = per[cand]
+        print(f"    {cand:6s} 중앙 {statistics.median(v):.2f}×  (셀 {len(v)}개, "
+              f"{min(v):.2f}~{max(v):.2f})")
+    allv = [x for v in per.values() for x in v]
+    med = statistics.median(allv)
+    print(f"    ⇒ 전체 중앙 {med:.2f}× — "
+          f"{'**스로틀이 안 걸렸다**(라벨만 스로틀인 데이터다)' if med < 1.5 else '스로틀 적용 확인'}")
+    print("    ※ 4배에 못 미치는 것은 정상이다 — CDP CPU 스로틀은 **스크립트 실행**만")
+    print("      늦추고 컴포지터·브라우저 프로세스 작업은 늦추지 않는다. 후보마다 배수가")
+    print("      다른 것도 예고돼 있다(개정 #9 공평성 진술 7).")
+
+
 def cross_browser_direction_check(results, incomparable=frozenset()):
     """§8: "Firefox 교차 확인이 우세 방향을 뒤집으면 자동 판정 변경이 아니라
     §11-1(b) 검토 대상 등재."
@@ -1364,6 +1437,20 @@ def cross_browser_direction_check(results, incomparable=frozenset()):
     """
     print(f"\n{'-' * 78}\n브라우저 간 우세 방향 대조 (§8 — 뒤집히면 §11-1(b) 등재 사유)\n{'-' * 78}")
     ci, fi = results["chromium"]["_idx"], results["firefox"]["_idx"]
+    direction_diff(ci, fi, "Chromium", "Firefox",
+                   "§8: Firefox 교차 확인이 우세 방향을 뒤집으면 §11-1(b) 등재")
+
+
+def direction_diff(ia, ib, label_a, label_b, why):
+    """두 조건(브라우저 또는 비스로틀/스로틀)의 **셀 단위 우세 방향**을 대조한다.
+
+    게이트 결론이 같아도 셀 단위 방향은 뒤집힐 수 있다 — v15에서 게이트는 전부
+    일치하는데 비교쌍 40건 중 9건이 정반대였다(2026-08-03). 그래서 셀 단위로 센다.
+
+    **판정을 바꾸지 않는다.** §8은 "판정은 1차 판정 열에서만" + "조건 간 풀링·평균
+    금지"이므로, 여기서 나오는 것은 §11-1(b) 검토 대상 목록이다.
+    """
+    print(f"  근거: {why}")
     # **후보 상수를 쓴다** — `D`는 §10 D-4로 LIS 고정이라 데이터의 "D-LIS"다.
     # 2026-09-22까지 리터럴 "D"(무LIS)로 계산하면서 라벨은 D-LIS 게이트를 가리켰다
     # (감사 발견 #15).
@@ -1373,8 +1460,8 @@ def cross_browser_direction_check(results, incomparable=frozenset()):
     for w in JUDGE_WORKLOADS:
         for bindings in (1, 8):
             for a, b, tag in pairs:
-                ka, kb = cell(ci, w, bindings, a), cell(ci, w, bindings, b)
-                fa, fb = cell(fi, w, bindings, a), cell(fi, w, bindings, b)
+                ka, kb = cell(ia, w, bindings, a), cell(ia, w, bindings, b)
+                fa, fb = cell(ib, w, bindings, a), cell(ib, w, bindings, b)
                 if not (ka and kb and fa and fb):
                     continue
                 # **이미 조회한 레코드로 직접 대조한다.** 2026-09-22까지 옛 6-튜플 키로
@@ -1385,7 +1472,7 @@ def cross_browser_direction_check(results, incomparable=frozenset()):
                 # Unconditional이 뽑힌 셀을 놓친다(감사 발견 #3/#16).
                 if ka.get("batch_mode") != fa.get("batch_mode") or kb.get("batch_mode") != fb.get("batch_mode"):
                     print(f"  (비교 불가)  {w}×R{1 if bindings == 1 else 2} {a}/{b:5s}  "
-                          f"— 브라우저 간 배치 모드 불일치 "
+                          f"— {label_a}/{label_b} 배치 모드 불일치 "
                           f"({ka.get('batch_mode')}/{fa.get('batch_mode')}, {kb.get('batch_mode')}/{fb.get('batch_mode')})")
                     continue
                 total += 1
@@ -1398,11 +1485,14 @@ def cross_browser_direction_check(results, incomparable=frozenset()):
                 opposite += hard
                 mark = "⚠️ 정반대" if hard else "  (한쪽 비결정)"
                 print(f"  {mark}  {w}×R{1 if bindings == 1 else 2:1d} {a}/{b:2s}  "
-                      f"Chromium={vc:4s} → Firefox={vf:4s}   [{tag}]")
+                      f"{label_a}={vc:4s} → {label_b}={vf:4s}   [{tag}]")
     print(f"\n  비교쌍 {total}건: 어휘 불일치 {mismatch}건, 그중 **정반대** {opposite}건")
     if opposite:
-        print("  ⇒ §11-1(b) **검토 대상 등재 사유 발생**. 판정은 §8대로 Chromium 단독으로")
-        print("     유지하되(브라우저 간 풀링·평균 금지), 이 목록을 RQ1에 병기할 것.")
+        print(f"  ⇒ §11-1(b) **검토 대상 등재 사유 발생**. 판정은 §8대로 {label_a} 단독으로")
+        print("     유지하되(조건 간 풀링·평균 금지), 이 목록을 RQ1에 병기할 것.")
+    else:
+        # **갈리지 않았다는 사실도 적는다** — 안 적으면 "확인 안 함"과 구별되지 않는다.
+        print(f"  ⇒ 방향이 갈린 판정 셀 없음 — {label_b}에서도 우세 방향이 유지된다.")
 
 
 if __name__ == "__main__":
