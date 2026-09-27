@@ -21,6 +21,15 @@ if "--out" in args:
     i = args.index("--out"); out = args[i + 1]; del args[i:i + 2]
 if "--expect" in args:
     i = args.index("--expect"); expect = int(args[i + 1]); del args[i:i + 2]
+# `--groups 2,4,11,...`: **의도적으로 드문드문한** 그룹 집합을 병합할 때 기대 목록을 준다.
+# §8 커버리지 표가 Firefox에 "§9 판정 관여 셀 전부 + 스케일링 셀"만 요구하므로 전수가
+# 아니라 부분 집합을 그룹 단위로 돈다. 그때 연속 구간 검사는 거짓 "누락"을 낸다 —
+# 대신 명시한 목록과 **정확히** 일치하는지를 본다(빠진 것도, 남는 것도 실패).
+groups_expected = None
+if "--groups" in args:
+    i = args.index("--groups")
+    groups_expected = sorted(int(x) for x in args[i + 1].split(","))
+    del args[i:i + 2]
 if not args:
     print(__doc__); sys.exit(2)
 
@@ -55,9 +64,17 @@ groups = [p["group"] for p in parts]
 dup = {g for g in groups if groups.count(g) > 1}
 if dup:
     sys.exit(f"**그룹 번호 중복 {sorted(dup)}** — 같은 셀을 두 번 세게 된다")
-missing = [g for g in range(min(groups), max(groups) + 1) if g not in groups]
-if missing:
-    sys.exit(f"**그룹 번호 누락 {missing}** — 그 셀은 판정기에서 미계측이 된다")
+if groups_expected is not None:
+    missing = [g for g in groups_expected if g not in groups]
+    extra = [g for g in groups if g not in groups_expected]
+    if missing:
+        sys.exit(f"**기대 그룹 누락 {missing}** — 그 셀은 판정기에서 미계측이 된다")
+    if extra:
+        sys.exit(f"**기대하지 않은 그룹 {extra}** — 어느 수집에서 섞였는지 확인할 것")
+else:
+    missing = [g for g in range(min(groups), max(groups) + 1) if g not in groups]
+    if missing:
+        sys.exit(f"**그룹 번호 누락 {missing}** — 그 셀은 판정기에서 미계측이 된다")
 if expect is not None and len(parts) != expect:
     sys.exit(f"**조각 {len(parts)}개, 기대 {expect}개** — 구간이 덜 모였다")
 
