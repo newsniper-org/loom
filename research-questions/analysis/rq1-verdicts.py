@@ -41,7 +41,10 @@ DATA = os.environ.get("RQ1_DATA_DIR",
 # 않는다: R2를 조항 원문(반응 바인딩 8개 + 중첩 조건부 1개)으로, heap 아이템을
 # 128B로 바꾼 것이 **기존 셀의 수치 자체를 바꾸고**, §9 C 판정 하나가 R1 셀
 # (채택 a)과 R2 셀(기각)을 한 판정식 안에서 만나게 하기 때문이다.
-VERSION = "v21"
+# **개정 #10(2026-09-27)** — 같은 셀 write 변형·GC 통제·W7 변형·rep별 단계 시간을 고친
+# 하네스로 전면 재수집한 것이 v22다. v21(개정 #9 수집분)도 `RQ1_VERSION=v21`로 이 스크립트를
+# 그대로 돌릴 수 있다 — 새 필드가 없으면 옛 경로로 떨어지고, 그 사실을 줄마다 밝힌다.
+VERSION = os.environ.get("RQ1_VERSION", "v22")
 # §8 "저사양 프록시" 통과의 수집 파일. 있으면 강건성 확인을 돌린다(판정은 불변).
 # **판정 데이터와 같은 디렉터리에서 찾는다.** 처음엔 `bench/collected/`의 드라이버
 # 산출물을 가리켰는데, 그러면 합성 픽스처로 돌릴 때(`RQ1_DATA_DIR`)도 **실측 스로틀
@@ -433,6 +436,52 @@ def cell(idx, workload, bindings, cand, variants=False, n=N, item=POD, inner=0):
     return _VARIANT_CACHE[ck]
 
 
+# ---------------------------------------------------------------------------
+# 단계 시간 — rep별 분포(개정 #10) 또는 v21의 점값
+# ---------------------------------------------------------------------------
+#
+# v21까지 `stage_ms`는 **마지막 측정 rep 1 tick의 점값**(n=1)이었고 §9 C 기각 뒷 분기와 E 기각
+# (ii)가 그 값으로 판정됐다(v21 적대적 검증 7번). v22부터 하네스가 rep마다 `stage_samples_ms`를
+# 싣는다. 판정 조작화는 **개정 #10에 수집 전 등재**한 그대로다:
+#   - C 기각 뒷 분기 "archetype move 구간 ≥ 스크립트 시간의 50%" = rep별 (sync_point/total)의 median ≥ 0.5
+#   - E 기각 (ii) "reconcile System 시간 ≥ (K의 DOM 적용 − E의 DOM 적용)" = 같은 rep 인덱스끼리
+#     짝지은 (K.dom_apply − E.dom_apply) − E.systems 의 median ≤ 0이면 발동
+# 둘 다 **median 점값 비교**다 — v21의 n=1 점값을 같은 자리의 대표값(§8 보고 규정의 median)으로
+# 바꾼 것이고 임계값은 한 글자도 안 바뀌었다.
+
+def qtl(xs, p):
+    """분위수 — `pct`는 **정렬된** 목록과 0~1 비율을 받는다(정렬 안 된 목록을 넘기면 조용히 틀린다)."""
+    return pct(sorted(xs), p)
+
+
+def has_stage_samples(r):
+    return bool(r) and isinstance(r.get("stage_samples_ms"), dict) and bool(r["stage_samples_ms"].get("total"))
+
+
+def stage_source(r):
+    if has_stage_samples(r):
+        return f"rep별 median (n={len(r['stage_samples_ms']['total'])}, {r.get('stage_samples_scope', '?')})"
+    return "**n=1 점값**(마지막 측정 rep — v21 이전 형식)"
+
+
+def stage_median(r, key):
+    if has_stage_samples(r):
+        return statistics.median(r["stage_samples_ms"][key])
+    return r["stage_ms"][key]
+
+
+# 판정 짝이 **같은 셀(= 같은 페이지 로드·같은 라운드로빈)**에서 왔는가 — 개정 #10의 목적 자체다.
+# `compare()`가 짝마다 적고 `report_same_cell()`이 판정 뒤에 모아 찍는다.
+SAME_CELL = []
+
+
+def same_cell(a, b):
+    """True/False, 또는 판별 불가(v21 이전 형식 — `group` 필드 없음)면 None."""
+    if a.get("group") is None or b.get("group") is None:
+        return None
+    return a["group"] == b["group"] and a.get("cell_id") == b.get("cell_id")
+
+
 # 조건 판정에서 **결론으로 쓸 수 없는** 판정값들. §9는 기각/충족 조건의 해당
 # 범위를 "등가·열세·비결정"처럼 **열거**하는데 그 목록에 미계측은 없다 — 데이터가
 # 없다는 것은 조건이 충족됐다는 뜻도, 안 됐다는 뜻도 아니다.
@@ -482,9 +531,13 @@ def compare(idx, workload, bindings, cand, base, **kw):
         BATCH_MIX.append((VOCAB_CTX["where"], cand, a.get("batch_mode"),
                           base, b.get("batch_mode"),
                           a.get("write_variant"), b.get("write_variant")))
+    sc = same_cell(a, b)
+    SAME_CELL.append((VOCAB_CTX["browser"], VOCAB_CTX["clause"], VOCAB_CTX["where"], sc,
+                      a.get("group"), b.get("group")))
+    cross = "  ⚠️**셀을 건넌 짝**  " if sc is False else ""
     lo, hi = paired_ratio_ci(a["samples_ms"], b["samples_ms"])
     return (verdict(lo, hi), lo, hi,
-            f"{mix}{cand}={statistics.median(a['samples_ms']):.4f}ms "
+            f"{mix}{cross}{cand}={statistics.median(a['samples_ms']):.4f}ms "
             f"{base}={statistics.median(b['samples_ms']):.4f}ms")
 
 
@@ -523,6 +576,15 @@ def pairing_sensitivity(idx, w, b, cand, base, threshold=None):
     ca, cb = cell(idx, w, b, cand), cell(idx, w, b, base)
     if not ca or not cb:
         return None
+    sc = same_cell(ca, cb)
+    if sc is not None:
+        # 개정 #10 형식 — 셀 소속이 레코드에 있다. 두 변형이 한 셀의 후보이므로 셀 간 표류
+        # 탐침(무조건 셀/조건부 셀)이 존재할 수 없고, 필요하지도 않다.
+        lab = f"{w}×R{1 if b == 1 else 2} {cand}/{base}"
+        print(f"    짝짓기 (판정 아님) — {lab}: 판정 짝 {cand}={ca.get('write_variant', '?')[:4]} / "
+              f"{base}={cb.get('write_variant', '?')[:4]} — "
+              f"{'같은 셀(그룹 ' + str(ca['group']) + ')' if sc else '**셀을 건넌 짝** — 개정 #10 하네스에서는 일어나면 안 된다'}")
+        return {"cross": not sc, "same_cell": [], "probes": []}
     cross = ca.get("write_variant") != cb.get("write_variant")
     rows = []
     for wv in ("Conditional", "Unconditional"):
@@ -621,12 +683,26 @@ def gate_c(idx, browser):
     elif not r or "stage_ms" not in r:
         print("    미계측 — R3 셀 또는 §7.1 단계 귀속 없음")
         fired_back = None
+    elif unusable(r):
+        print(f"    {unusable(r)} — §8상 측정 불가 셀이라 판정에 못 쓴다")
+        fired_back = None
+    elif has_stage_samples(r):
+        # 개정 #10 조작화(수집 전 등재): rep별 (sync_point/total)의 median ≥ 0.5.
+        ss = r["stage_samples_ms"]
+        shares = [sp / t for sp, t in zip(ss["sync_point"], ss["total"]) if t > 0]
+        share = statistics.median(shares) if shares else 0.0
+        fired_back = share >= 0.5
+        print(f"    rep별 sync_point/total — median {share * 100:.1f}% "
+              f"[p25 {qtl(shares, 0.25) * 100:.1f}%, p75 {qtl(shares, 0.75) * 100:.1f}%, p95 {qtl(shares, 0.95) * 100:.1f}%] "
+              f"(n={len(shares)}, {r.get('stage_samples_scope', '?')})")
+        print(f"    (병기: 마지막 rep 점값 {r['stage_ms']['sync_point'] / r['stage_ms']['total'] * 100 if r['stage_ms']['total'] > 0 else 0:.1f}% — v21의 판정 방식, 판정에 안 씀)")
+        print(f"    ⇒ 뒷 분기 {'**발동**' if fired_back else '미발동'}")
     else:
         st = r["stage_ms"]
         share = st["sync_point"] / st["total"] if st["total"] > 0 else 0.0
         fired_back = share >= 0.5
         print(f"    sync_point={st['sync_point']:.4f}ms / total={st['total']:.4f}ms "
-              f"= {share * 100:.1f}%")
+              f"= {share * 100:.1f}%  ← {stage_source(r)}")
         print(f"    ⇒ 뒷 분기 {'**발동**' if fired_back else '미발동'}")
 
     # 어느 한 분기라도 발동이면 기각(결정적, "또는"), 둘 다 미발동이면 미발동,
@@ -787,12 +863,27 @@ def gate_e(idx, browser):
             print(f"    {w} × R2: 상한 초과 셀 — 판정 불가")
             ii_hits.append("상한초과")
             continue
-        recon = e["stage_ms"]["systems"]
-        saving = k["stage_ms"]["dom_apply"] - e["stage_ms"]["dom_apply"]
-        hit = recon >= saving
-        ii_hits.append("발동" if hit else "미발동")
-        print(f"    {w} × R2  E systems={recon:.4f}ms  절감분=K({k['stage_ms']['dom_apply']:.4f}) "
-              f"− E({e['stage_ms']['dom_apply']:.4f}) = {saving:.4f}ms → {'**발동**' if hit else '미발동'}")
+        if has_stage_samples(e) and has_stage_samples(k):
+            # 개정 #10 조작화(수집 전 등재): 같은 rep 인덱스끼리 짝지은
+            # margin_i = (K.dom_apply_i − E.dom_apply_i) − E.systems_i 의 median ≤ 0이면 발동.
+            es, ks = e["stage_samples_ms"], k["stage_samples_ms"]
+            m = min(len(es["systems"]), len(ks["dom_apply"]))
+            margins = [(ks["dom_apply"][i] - es["dom_apply"][i]) - es["systems"][i] for i in range(m)]
+            med_margin = statistics.median(margins)
+            hit = med_margin <= 0
+            ii_hits.append("발동" if hit else "미발동")
+            print(f"    {w} × R2  rep별 margin=(K.dom−E.dom)−E.systems  median {med_margin:.4f}ms "
+                  f"[p5 {qtl(margins, 0.05):.4f}, p95 {qtl(margins, 0.95):.4f}] (n={m})  "
+                  f"— median들: E systems={stage_median(e, 'systems'):.4f} / K dom={stage_median(k, 'dom_apply'):.4f} "
+                  f"/ E dom={stage_median(e, 'dom_apply'):.4f} → {'**발동**' if hit else '미발동'}")
+        else:
+            recon = e["stage_ms"]["systems"]
+            saving = k["stage_ms"]["dom_apply"] - e["stage_ms"]["dom_apply"]
+            hit = recon >= saving
+            ii_hits.append("발동" if hit else "미발동")
+            print(f"    {w} × R2  E systems={recon:.4f}ms  절감분=K({k['stage_ms']['dom_apply']:.4f}) "
+                  f"− E({e['stage_ms']['dom_apply']:.4f}) = {saving:.4f}ms → {'**발동**' if hit else '미발동'}"
+                  f"  ← {stage_source(e)}")
     fired_ii = resolve_any(ii_hits, lambda v: v == "발동")
     print(f"    ⇒ 기각 (ii) {say(fired_ii, '**발동**', '미발동')}")
 
@@ -810,8 +901,8 @@ def gate_e(idx, browser):
             lo_, hi_ = paired_ratio_ci(en["samples_ms"], k["samples_ms"])
             extra = ""
             if "stage_ms" in en and "stage_ms" in k:
-                sav = k["stage_ms"]["dom_apply"] - en["stage_ms"]["dom_apply"]
-                extra = f"  systems={en['stage_ms']['systems']:.4f} vs 절감분 {sav:.4f}ms"
+                sav = stage_median(k, "dom_apply") - stage_median(en, "dom_apply")
+                extra = f"  systems={stage_median(en, 'systems'):.4f} vs 절감분 {sav:.4f}ms ({stage_source(en)})"
             print(f"    {w} × R2  E(무LIS)/K CI=[{lo_:.3f}, {hi_:.3f}]  "
                   f"DOM op {en['m2_dom_ops']['total_mutations']}/{k['m2_dom_ops']['total_mutations']}{extra}")
 
@@ -1066,21 +1157,203 @@ def report_variant_choices():
 def profile_w7(idx, browser):
     set_ctx(browser=browser, clause="W7 프로파일(판정 아님)")
     print(f"\n{'=' * 78}\nW7 (값 갱신) 프로파일 — {browser}   ※ §9 어느 조항에도 걸리지 않음\n{'=' * 78}")
-    print("  §3.4 기대: 'C, D, E (retain 경로)' / 'K (전량 재스폰)'")
-    for cand in ["K", "C", "D", "E", "D-LIS", "E-LIS"]:
-        r = cell(idx, "W7", 1, cand, item=STR)  # §3.2: W7은 양쪽 — heap 쪽 프로파일
-        if not r:
-            continue
-        ops = r["m2_dom_ops"]["total_mutations"]
-        med = statistics.median(r["samples_ms"])
-        print(f"    {cand:6s} median={med:8.4f}ms  DOM op={ops:5d}")
+    print("  §3.4 기대: 'C, D, E (retain 경로)' / 'K (전량 재스폰)' / 'C·D (조건부 write vs Changed 폭풍 양자 노출)'")
+    print("  §10: 'W7은 양쪽 × Item 타입 축' — {R1,R2} × {POD, heap} × C·D 양 변형 (개정 #10으로 이행)")
+    for item, iname in ((POD, "POD"), (STR, "heap")):
+        for b in (1, 8):
+            rows_ = []
+            for cand in ["K", "C", "D", "D-LIS", "E", "E-LIS"]:
+                for wv in ("Conditional", "Unconditional"):
+                    r = _raw(idx, "W7", b, cand, False, N, item, 0, wv)
+                    if r and r.get("samples_ms") and not unusable(r):
+                        rows_.append((cand, wv, r))
+            if not rows_:
+                print(f"    W7 × R{1 if b == 1 else 2} × {iname}: 미계측")
+                continue
+            print(f"    W7 × R{1 if b == 1 else 2} × {iname}:")
+            for cand, wv, r in rows_:
+                ops = r["m2_dom_ops"]["total_mutations"]
+                med = statistics.median(r["samples_ms"])
+                tag = "" if cand in DOUBLED_CANDIDATES or wv == "Conditional" else " (축 없음)"
+                print(f"      {cand:6s} {wv[:6]:6s}{tag} median={med:8.4f}ms  DOM op={ops:5d}")
+            for cand in sorted(DOUBLED_CANDIDATES):
+                u = _raw(idx, "W7", b, cand, False, N, item, 0, "Unconditional")
+                c_ = _raw(idx, "W7", b, cand, False, N, item, 0, "Conditional")
+                if u and c_ and not (unusable(u) or unusable(c_)):
+                    lo, hi = paired_ratio_ci(u["samples_ms"], c_["samples_ms"])
+                    sc = same_cell(u, c_)
+                    print(f"      {cand:6s} 무조건/조건부 CI=[{lo:.3f}, {hi:.3f}] {verdict(lo, hi)}"
+                          f"{'' if sc is None else ('  (같은 셀)' if sc else '  ⚠️셀을 건넌 짝')}")
     print("  ※ Phase 1의 D는 키가 아이템 표시 텍스트 자체라 값 변경 = 키 변경 —")
     print("     §3.4의 'D (retain 경로)' 기대는 별도 key 채널을 전제한 것이다(§11 개정 #3).")
 
 
 # ---------------------------------------------------------------------------
+# §8 GC 통제(M-15) — 개정 #10
+# ---------------------------------------------------------------------------
+
+def _gc_cells(rows):
+    """셀(group)마다 `gc` 객체 하나 — 같은 셀의 레코드는 같은 객체를 반복해 싣는다."""
+    cells = {}
+    for r in rows:
+        g = r.get("gc")
+        if isinstance(g, dict):
+            cells.setdefault((r.get("group"), r.get("cell_id")), g)
+    return cells
+
+
+def gc_integrity(rows, browser):
+    """§8 "성능·메모리 셀 시작 시 CDP 강제 GC 1회, 측정 중 GC 이벤트 로그" — **존재 단언부터**.
+
+    "GC 주석이 비어 있다"는 GC가 없었다는 뜻일 수도, 로그가 안 돌았다는 뜻일 수도 있다(공허한
+    확인). 그래서 (1) 에이전트가 붙었는가, (2) 강제 GC가 **실제로 관측됐는가**(요청~완료 표식
+    사이 MajorGC ≥ 1), (3) 트레이스가 유실 없이 돌아왔는가를 먼저 본다. 문제 목록을 돌려준다.
+    """
+    problems = []
+    cells = _gc_cells(rows)
+    chromium = "CHROMIUM" in browser.upper()
+    if not cells:
+        print("  GC 통제(M-15): 레코드에 `gc` 필드가 없다 — **v21 이전 형식**(M-15 미이행 수집분). "
+              "강제 GC·GC 주석 없음.")
+        if VERSION not in ("v21",) and chromium:
+            problems.append("gc 필드 없음 — 개정 #10 하네스 수집분이 아니다")
+        return problems
+    ctl = defaultdict(int)
+    for g in cells.values():
+        ctl[g.get("control", "?")] += 1
+    print(f"  GC 통제(M-15): 셀 {len(cells)}개 — control 분포 {dict(ctl)}")
+    if chromium:
+        bad = {k: v for k, v in ctl.items() if k != "cdp"}
+        if bad:
+            problems.append(f"Chromium인데 GC 통제가 이행되지 않은 셀 {sum(bad.values())}개 {bad}")
+        forced0 = [k for k, g in cells.items() if g.get("control") == "cdp"
+                   and not ((g.get("segments") or [{}])[0].get("forced_majorgc_events") or 0) >= 1]
+        if forced0:
+            problems.append(f"강제 GC가 트레이스에서 관측되지 않은 셀 {len(forced0)}개 (그룹 {[k[0] for k in forced0][:8]})")
+        lost = [k for k, g in cells.items() if g.get("control") == "cdp" and not g.get("log_complete")]
+        if lost:
+            problems.append(f"GC 로그가 불완전한 셀 {len(lost)}개(유실·구간 실패) — 그 셀의 주석은 null")
+        spreads = [seg.get("sync_spread_ms", 0) for g in cells.values() for seg in (g.get("segments") or [])]
+        rates = defaultdict(int)
+        for g in cells.values():
+            cs = g.get("cell_start")
+            rates[cs.get("throttle_rate") if isinstance(cs, dict) else None] += 1
+        print(f"    강제 GC 관측: {len(cells) - len(forced0)}/{len(cells)}셀 · 로그 완결: {len(cells) - len(lost)}/{len(cells)}셀 "
+              f"· 시계 대응 흩어짐 최대 {max(spreads) if spreads else float('nan'):.4f}ms · 셀 시작 시 걸린 스로틀 배수 {dict(rates)}")
+    else:
+        if set(ctl) != {"unavailable"}:
+            problems.append(f"Firefox인데 control이 unavailable 아닌 셀 {dict(ctl)}")
+        print("    Firefox: CDP 수단 부재 — 강제 GC·GC 로그 없음(개정 #10 등재 한계, §8 스로틀 한계와 같은 성격)")
+    return problems
+
+
+def report_gc_annotation(idx, browser):
+    """판정 셀의 GC 주석 — **주석이지 제외 근거가 아니다**(§8 "이상치 제거 없이 GC 주석 병기").
+
+    GC는 후보 자신의 비용이다: 쓰레기를 많이 만드는 후보가 그 GC를 치른다. 그러므로 후보 간
+    GC 비율 차이는 오염이 아니라 비용 구조의 일부이고, 여기서는 그것을 **보이게** 할 뿐이다.
+    """
+    set_ctx(browser=browser, clause="§8 GC 주석(판정 아님)")
+    print(f"\n{'=' * 78}\n§8 GC 주석 — 판정 셀 (표본 중 GC와 겹친 비율 / 표본 시간 중 GC 비중) — {browser}\n{'=' * 78}")
+    # **`cell()`을 부르지 않는다** — 그러면 판정에 안 쓰이는 셀에서도 §9 서두 변형 선택(부트스트랩)이
+    # 일어나 난수열이 밀리고 변형 로그·어휘 겹침 기록에 판정과 무관한 줄이 섞인다(2026-09-27 v21 재실행
+    # 대조로 발견). 두 변형을 그대로 나열한다.
+    any_ = False
+    for b in (1, 8):
+        for w in JUDGE_WORKLOADS:
+            parts = []
+            for cand, wv in ((K, "Conditional"), (C, "Conditional"), (C, "Unconditional"),
+                             (D, "Conditional"), (D, "Unconditional"), (E, "Conditional")):
+                r = _raw(idx, w, b, cand, False, N, POD, 0, wv)
+                g = (r or {}).get("gc")
+                if not r or not isinstance(g, dict):
+                    continue
+                ov = g.get("overlap_ms")
+                if ov is None:
+                    parts.append(f"{cand} 주석없음({g.get('control')})")
+                    continue
+                any_ = True
+                tot = sum(r["samples_ms"]) or float("nan")
+                parts.append(f"{cand}{'' if cand not in DOUBLED_CANDIDATES else '/' + r.get('write_variant', '?')[:4]} "
+                             f"{g.get('with_gc', 0)}/{len(ov)}표본 · {sum(ov) / tot * 100:.2f}%")
+            if parts:
+                print(f"    {w} × R{1 if b == 1 else 2}: " + " | ".join(parts))
+    if not any_:
+        print("    주석 없음 — v21 이전 형식이거나 GC 로그가 없는 수집분")
+
+
+def report_same_cell():
+    print(f"\n{'=' * 78}\n판정 짝의 셀 소속 (개정 #10 — 두 write 변형을 같은 셀에서 잰다)\n{'=' * 78}")
+    if not SAME_CELL:
+        print("  짝 없음")
+        return
+    by = defaultdict(lambda: [0, 0, 0])
+    crossed = []
+    for browser, clause, where, sc, ga, gb in SAME_CELL:
+        k = 0 if sc is True else (1 if sc is False else 2)
+        by[browser][k] += 1
+        if sc is False:
+            crossed.append((browser, clause, where, ga, gb))
+    for browser, (t, f, u) in by.items():
+        print(f"  [{browser}] 같은 셀 {t} · **셀을 건넌 짝 {f}** · 판별 불가(셀 소속 필드 없음 — v21 이전 형식) {u}")
+    for browser, clause, where, ga, gb in crossed[:20]:
+        print(f"    ⚠️ {browser} / {clause} / {where}: 그룹 {ga} vs {gb}")
+    if crossed:
+        print("  ⇒ 개정 #10 하네스에서는 판정 짝이 셀을 건널 수 없다 — 건넜다면 수집분이 옛 하네스이거나 "
+              "셀 목록·그룹 기록에 결함이 있다.")
+
+
+# ---------------------------------------------------------------------------
 # §7 M2 교차 검증 — 조항이 요구하는 대응표가 실제로 맞는지
 # ---------------------------------------------------------------------------
+
+def phys_cell_key(r):
+    """**물리적 셀**(= 한 페이지 로드·한 라운드로빈) 키.
+
+    개정 #10 형식은 `group`이 곧 셀이고 두 write 변형이 **그 안에** 함께 있다. 옛 형식(v21 이전)은
+    write 변형마다 별도 셀이었다. 셀 단위 검사(배치 모드 분기·정지 흔적·후보 중립성)가 옛 키를 쓰면
+    새 형식의 9후보 셀이 조건부 6 / 무조건 3으로 쪼개져, 싼 후보 셋만 모인 조각이 셀 전체 벽시계와
+    대조되어 거짓 "정지"가 난다(2026-09-27, 수집 전 코드 대조로 발견).
+    """
+    if r.get("group") is not None:
+        return ("group", r["group"], r.get("cell_id"))
+    return (r["item_type"], r["n"], r["row_bindings"], r.get("row_inner", 0),
+            r["row_variants"], r.get("write_variant", "Conditional"), r["workload"])
+
+
+def same_cell_structure(rows):
+    """개정 #10 형식이면: 셀(group)마다 후보 구성이 설계대로인가 — 이중 측정 셀은 9(C·D·D-LIS가
+    두 변형, K·E·E-LIS 하나), 나머지는 6. **존재 단언부터**: 이중 측정 셀이 하나도 없으면 그 자체가 문제다."""
+    problems = []
+    rs = [r for r in rows if r.get("clause") != "W6" and r.get("workload") != "stress"]
+    if not any("group" in r for r in rs):
+        print("  셀 구성: 셀 소속 필드(`group`) 없음 — v21 이전 형식. 두 write 변형이 다른 셀(페이지 로드)에서 왔을 수 있다.")
+        return problems
+    missing = [r for r in rs if "group" not in r or "stage_samples_ms" not in r]
+    if missing:
+        problems.append(f"개정 #10 필드(group·stage_samples_ms)가 빠진 레코드 {len(missing)}개")
+    groups = defaultdict(list)
+    for r in rs:
+        groups[r.get("group")].append(r)
+    doubled = [g for g, v in groups.items() if any(x.get("write_axis_in_cell") for x in v)]
+    if not doubled:
+        problems.append("이중 측정 셀(write_axis_in_cell)이 **하나도 없다** — §3.3 write 변형 이중 측정 미이행")
+    for g, v in groups.items():
+        want = 9 if g in doubled else 6
+        pairs = {(x["candidate"], x.get("write_variant")) for x in v}
+        if len(v) != want or len(pairs) != want:
+            problems.append(f"그룹 {g}: 레코드 {len(v)}개(고유 {len(pairs)}) — {want}이어야 한다")
+        if g in doubled:
+            for cand in DOUBLED_CANDIDATES:
+                if {(cand, "Conditional"), (cand, "Unconditional")} - pairs:
+                    problems.append(f"그룹 {g}: {cand}의 두 변형이 한 셀에 다 있지 않다")
+        bad_len = [x["candidate"] for x in v
+                   if has_stage_samples(x) and len(x["stage_samples_ms"]["total"]) != len(x["samples_ms"])]
+        if bad_len:
+            problems.append(f"그룹 {g}: stage_samples 길이가 samples_ms와 다르다 {bad_len}")
+    print(f"  셀 구성(개정 #10): 셀 {len(groups)}개 중 이중 측정 {len(doubled)}개(9후보), 나머지 6후보")
+    return problems
+
 
 def integrity_checks(rows, browser):
     """판정을 내리기 **전에** 데이터가 조항이 요구하는 조건에서 나왔는지 본다.
@@ -1091,6 +1364,8 @@ def integrity_checks(rows, browser):
     """
     print(f"\n{'=' * 78}\n무결성 점검 (판정 전) — {browser}\n{'=' * 78}")
     problems = []
+    problems += gc_integrity(rows, browser)
+    problems += same_cell_structure(rows)
 
     # W6은 스키마가 다르다(§8 "반복 개념 없음" — `samples_ms`도 `live_node_slots`도
     # 없다). 아래 공통 점검은 비교 가능한 셀에만 걸고, W6은 자기 항목으로 따로 본다.
@@ -1148,9 +1423,7 @@ def integrity_checks(rows, browser):
         # 두 write 변형(서로 다른 셀이고 배치 판정도 각자 한다)이 한 키로 합쳐져
         # 거짓 "§8 시드 열 공유 전제 붕괴" 경보가 난다. 이 검사가 잡으려는 것은
         # **한 셀 안에서 후보 간** 배치 모드가 갈리는 것이다.
-        modes[(r["item_type"], r["n"], r["row_bindings"], r.get("row_inner", 0),
-               r["row_variants"], r.get("write_variant", "Conditional"), r["workload"])].add(
-            r.get("batch_mode", "?"))
+        modes[phys_cell_key(r)].add(r.get("batch_mode", "?"))
     split = [k for k, v in modes.items() if len(v) > 1]
     print(f"  배치 모드가 후보 간에 갈린 셀: {len(split)}/{len(modes)}")
     print(f"    ⇒ {'정상' if not split else '**§8 시드 열 공유 전제 붕괴**'}")
@@ -1233,8 +1506,7 @@ def integrity_checks(rows, browser):
         # §8 상한 항목이 이미 따로 보고한다 — 여기 남기면 같은 사실을 두 번 센다.
         if r.get("over_cell_cap"):
             continue
-        key = (r["item_type"], r["n"], r["row_bindings"], r.get("row_inner", 0),
-               r["row_variants"], r.get("write_variant", "Conditional"), r["workload"])
+        key = phys_cell_key(r)
         reps_n = len(r["samples_ms"]) + (r.get("warmup") or 0)
         frames = r.get("batch_k", 1) if r.get("batched") else 2
         tick_ms = statistics.median(r["samples_ms"]) * frames
@@ -1272,9 +1544,7 @@ def integrity_checks(rows, browser):
     for r in rows:
         if not r.get("samples_ms") or len(r["samples_ms"]) < 20:
             continue
-        by_cell[(r["item_type"], r["n"], r["row_bindings"], r.get("row_inner", 0),
-                 r["row_variants"], r.get("write_variant", "Conditional"),
-                 r["workload"])].append(r)
+        by_cell[phys_cell_key(r)].append(r)
     n_cells = 0
     for grp in by_cell.values():
         if len(grp) < 2:
@@ -1454,6 +1724,7 @@ def main():
             "D": gate_d(idx, label),
             "E": gate_e(idx, label),
         }
+        report_gc_annotation(idx, label)
         profile_w7(idx, label)
         profile_new_cells(rows, idx, label)
         profile_scaling(idx, label)
@@ -1461,6 +1732,7 @@ def main():
 
     report_variant_choices()
     report_batch_mix()
+    report_same_cell()
     report_vocab_overlap()
     print(f"\n\n{'=' * 78}\n종합 (Chromium 1차 판정 기준)\n{'=' * 78}")
     c = results.get("chromium")
@@ -1560,14 +1832,28 @@ def robustness_throttle(c, trows):
     print(f"\n\n{'#' * 78}\n# CHROMIUM 4× CPU 스로틀 — 강건성 확인 (판정 아님)"
           f"   (레코드 {len(trows)})\n{'#' * 78}")
     tidx = build_index(trows)
-    scope = sorted({(r["clause"], r["row_bindings"], r.get("write_variant", "Conditional"))
-                    for r in trows if r.get("clause") != "W6"})
+    scope = {phys_cell_key(r) for r in trows if r.get("clause") != "W6"}
     print(f"  범위: §8 '트랙 L 핵심 격자' — {len(scope)}셀 "
           f"(그 밖의 셀은 범위 밖이지 미계측이 아니다)")
     # **스로틀 수집분에도 무결성 점검을 돌린다** (2026-09-27 정정). 전에는 안 돌려서,
     # 스로틀 C 기각 셀의 정지 흔적과 변형 전환이 보고서에서 빠졌다(검증 지적).
     integrity_checks(trows, "CHROMIUM 4× 스로틀")
+    # **스로틀이 실제로 걸렸다는 증거가 레코드에 있는가** (개정 #10). v21까지 그 증거는 감시
+    # 프로세스 로그뿐이었고, 감시 프로세스가 죽은 것을 늦게 알아챈 적이 있다. 이제 에이전트가
+    # 셀 시작마다 건 배수를 응답하고 하네스가 그것을 레코드에 싣는다.
+    tcells = _gc_cells(trows)
+    if tcells:
+        rates = defaultdict(int)
+        for g in tcells.values():
+            cs = g.get("cell_start")
+            rates[cs.get("throttle_rate") if isinstance(cs, dict) else None] += 1
+        ok = set(rates) == {4}
+        print(f"  스로틀 적용 증거(레코드): 셀 시작 시 걸린 배수 {dict(rates)} → "
+              f"{'전 셀 4×' if ok else '**4×가 아닌 셀이 있다 — 그 셀은 스로틀 데이터가 아니다**'}")
+    else:
+        print("  스로틀 적용 증거(레코드): 없음 — v21 이전 형식(증거는 감시 프로세스 로그뿐)")
     n_var, n_voc, n_mix = len(VARIANT_LOG), len(VOCAB_OVERLAP), len(BATCH_MIX)
+    n_same = len(SAME_CELL)
     report_throttle_multipliers(c["_idx"], tidx)
 
     print(f"\n{'-' * 78}\n(a) 판정 셀 우세 방향 — 비스로틀 ↔ 4× 스로틀\n{'-' * 78}")
@@ -1590,6 +1876,9 @@ def robustness_throttle(c, trows):
     for wl, b_, cd, pick, note in VARIANT_LOG[n_var:]:
         print(f"    {wl:5s} R{b_} {cd:6s} → {pick:15s} {note}")
     print(f"  스로틀 어휘 겹침: {len(VOCAB_OVERLAP) - n_voc}건 / 배치 모드 혼용: {len(BATCH_MIX) - n_mix}건")
+    ts = SAME_CELL[n_same:]
+    print(f"  스로틀 판정 짝의 셀 소속: 같은 셀 {sum(1 for x in ts if x[3] is True)} · "
+          f"**셀을 건넌 짝 {sum(1 for x in ts if x[3] is False)}** · 판별 불가 {sum(1 for x in ts if x[3] is None)}")
     for v_, lo_, hi_, where in VOCAB_OVERLAP[n_voc:]:
         print(f"    {v_}  CI=[{lo_:.3f}, {hi_:.3f}]  {where}")
 

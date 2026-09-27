@@ -60,7 +60,10 @@ FIRST_GROUP="${FIRST_GROUP:-0}"
 # 스케일링 6 + R3 1 + W6 30 + W8 1 + W9 1 + W11 1 + heap 1) + write 변형 이중 12
 # = 69. 셀 수가 바뀌면 여기도 바꿔야 한다 — 하네스가 범위 밖 인덱스에서 빈
 # 결과를 내므로 그것으로 대조할 것.
-TOTAL_GROUPS="${TOTAL_GROUPS:-69}"
+TOTAL_GROUPS="${TOTAL_GROUPS:-58}"
+# 개정 #10(2026-09-27): 58 = §3.3 기본 셀 57 + W7×R2×heap 1. write 변형 이중 측정은 이제 별도 셀이
+# 아니라 같은 셀의 후보(9후보)라 셀 수에 안 더해진다. 셀↔그룹 대응표:
+#   cargo test -p loom-bench -- --ignored --nocapture print_cell_order
 
 # -----------------------------------------------------------------------------
 # §8 "격리": "성능 측정은 **headed 자동화**(CDP/WebDriver), 정합성 게이트는
@@ -80,7 +83,16 @@ CDP_PORT="${CDP_PORT:-9222}"
 CELLS="${CELLS:-all}"
 CELLS_Q=""
 [ "$CELLS" = "core" ] && CELLS_Q="&cells=core"
-URL="http://localhost:$PORT/demo/list_bench.html?collect=$NAME&group=$FIRST_GROUP$CELLS_Q"
+# §8 GC 통제(M-15)와 스로틀은 CDP 에이전트(`bench/e2e/cdp-agent.mjs`)가 한다(개정 #10).
+# **Chromium 런은 전부** 에이전트를 붙인다 — v21까지는 스로틀 런에만 CDP가 있었고 비스로틀
+# 런에는 연결 자체가 없어 M-15가 원리적으로 이행될 수 없었다. `cdp=1`은 하네스에게 "에이전트가
+# 있어야 한다"를 알린다: 바인딩이 끝내 안 생기면 레코드에 `missing-binding`으로 남는다(조용히
+# "에이전트 없는 런"으로 기록되지 않는다). Firefox는 CDP 수단이 없다 — §8이 스로틀에 대해 이미
+# 명기한 것과 같은 한계이고, 레코드에 `unavailable`로 남는다.
+CDP_Q=""
+case "$BIN" in *firefox*) ;; *) CDP_Q="&cdp=1" ;; esac
+# `end`: 페이지가 이 그룹 이상으로 스스로 이동하지 않는다(구간 수집이 범위 밖 셀을 재지 않게).
+URL="http://localhost:$PORT/demo/list_bench.html?collect=$NAME&group=$FIRST_GROUP$CELLS_Q$CDP_Q&end=$TOTAL_GROUPS"
 
 if [ "$THROTTLE" != "1" ]; then
   case "$BIN" in
@@ -108,10 +120,25 @@ rm -f "$BROWSER_LOG"
 # 닫히면 캠페인이 통째로 죽고, (3) 무엇보다 §8 "격리"(새 프로필, 확장 없음)가
 # 깨진다 — 사용자가 쓰고 있는 컴포지터·다른 창·포커스 변화가 측정에 섞인다.
 # `--ozone-platform=x11`은 그 위에 한 겹 더 못을 박는 것이다.
-LAUNCH=()
+#
+# **`setsid`로 새 세션에서 띄운다 (2026-09-27, 실제로 당했다)**. 전에는 정리가 `kill $PID`
+# 하나였고 `$PID`는 `xvfb-run` 래퍼였다 — 래퍼가 죽어도 그 아래 Xvfb와 브라우저는 고아로 살아남았다.
+# 개정 #10 스모크에서 연속 실행한 네 런 중 셋이 **앞 런의 살아남은 브라우저**가 CDP 포트를 쥔 채
+# 떠 있는 상태에서 시작했고, 새 에이전트가 그 옛 브라우저에 붙어 새 페이지는 GC 통제도 스로틀도
+# 없이 측정됐다(레코드의 `gc.control = missing-binding`이 그것을 증언했다). 세션 하나로 묶으면
+# 정리가 트리 전체(래퍼·Xvfb·브라우저·자식)를 한 번에 죽일 수 있다.
+LAUNCH=(setsid)
 if [ "$HEADED" = "1" ]; then
-  LAUNCH=(xvfb-run -a --server-args="-screen 0 1920x1080x24" env -u WAYLAND_DISPLAY)
+  LAUNCH=(setsid xvfb-run -a --server-args="-screen 0 1920x1080x24" env -u WAYLAND_DISPLAY)
 fi
+
+# CDP 포트가 이미 점유돼 있으면 **시작하지 않는다** — 에이전트가 그 포트의 다른 브라우저에 붙는다.
+case "$BIN" in *firefox*) ;; *)
+  if (exec 3<>"/dev/tcp/127.0.0.1/$CDP_PORT") 2>/dev/null; then
+    echo "[collect-stock] **CDP 포트 $CDP_PORT가 이미 열려 있다** — 앞 수집의 브라우저가 살아 있을 수 있다. 정리 후 다시 실행할 것." >&2
+    exit 1
+  fi ;;
+esac
 
 case "$BIN" in
   *firefox*)
@@ -127,11 +154,15 @@ case "$BIN" in
               --user-data-dir="$PROFILE" --enable-features=SharedArrayBuffer)
     [ "$HEADED" = "1" ] && CR_FLAGS+=(--ozone-platform=x11)
     [ "$HEADED" = "1" ] || CR_FLAGS+=(--headless=new)
-    [ "$THROTTLE" = "1" ] || CR_FLAGS+=(--remote-debugging-port="$CDP_PORT")
+    # 개정 #10: 스로틀 여부와 무관하게 항상 연다(GC 통제 에이전트가 붙는다).
+    CR_FLAGS+=(--remote-debugging-port="$CDP_PORT")
     "${LAUNCH[@]}" "$BIN" "${CR_FLAGS[@]}" "$URL" > "$BROWSER_LOG" 2>&1 &
     ;;
 esac
 PID=$!
+# `setsid`는 (이 스크립트의 백그라운드 작업은 그룹 리더가 아니므로) fork 없이 exec한다 —
+# `$PID`가 곧 새 세션·프로세스 그룹의 리더다.
+PGID="$PID"
 
 # §8 "버전은 실행 시점 기록" + §2.5 "공유 기반 동결" — 무엇으로 어떻게 쟀는지를
 # 데이터 옆에 남긴다. 이게 없으면 다음 사람이 "stock 브라우저"라는 말만 보고
@@ -149,16 +180,24 @@ cat > "$ROOT/bench/collected/$NAME.env.json" <<ENVJSON
   "xvfb": "$([ "$HEADED" = "1" ] && echo "xvfb-run -a -screen 0 1920x1080x24, WAYLAND_DISPLAY unset" || echo "none")",
   "git_commit": "$(cd "$ROOT" && git rev-parse HEAD)",
   "git_dirty": $(cd "$ROOT" && [ -z "$(git status --porcelain)" ] && echo false || echo true),
+  "cdp_agent": $([ -n "$CDP_Q" ] && echo true || echo false),
+  "gc_log": "$([ -n "$CDP_Q" ] && echo "bench/collected/$NAME.gc.jsonl" || echo "")",
   "url": "$URL"
 }
 ENVJSON
 echo "[collect-stock] 환경 기록: bench/collected/$NAME.env.json"
 
+# CDP 에이전트 — 스로틀(배수 1이면 안 건다) + 셀 시작 강제 GC + 측정 중 GC 트레이스.
+# 이전 `apply-throttle.mjs`(v21)는 `framenavigated`에 반응해 페이지와 **경주하며** 걸었다.
+# 에이전트는 페이지가 셀 시작에서 부를 때 걸고, 페이지는 응답까지 멈춰 기다린다.
 THROTTLE_PID=""
-if [ "$THROTTLE" != "1" ]; then
-  (cd "$ROOT/bench/e2e" && node ../../bench/e2e/apply-throttle.mjs "$CDP_PORT" "$THROTTLE") &
+GCLOG="$ROOT/bench/collected/$NAME.gc.jsonl"
+AGENT_LOG="$ROOT/bench/collected/$NAME.agent.log"
+rm -f "$GCLOG" "$AGENT_LOG"
+if [ -n "$CDP_Q" ]; then
+  (cd "$ROOT/bench/e2e" && exec node cdp-agent.mjs "$CDP_PORT" "$THROTTLE" "$GCLOG" "$NAME") > "$AGENT_LOG" 2>&1 &
   THROTTLE_PID=$!
-  echo "4× CPU 스로틀 감시 시작 (pid $THROTTLE_PID, 포트 $CDP_PORT)"
+  echo "CDP 에이전트 시작 (pid $THROTTLE_PID, 포트 $CDP_PORT, 스로틀 ${THROTTLE}x, GC 로그 $GCLOG)"
 fi
 # 정리는 **절대 스크립트를 죽이면 안 된다**. 2026-08-03에 Chrome이 프로필
 # 디렉터리에 아직 쓰는 중이라 `rm -rf`가 실패했고, `set -e` + trap 조합에서
@@ -167,7 +206,13 @@ cleanup() {
   [ -n "$THROTTLE_PID" ] && kill "$THROTTLE_PID" 2>/dev/null || true
   [ -n "${MEM_PID:-}" ] && kill "$MEM_PID" 2>/dev/null || true
   local rc=$?
-  kill "$PID" 2>/dev/null || true
+  # 세션 전체(래퍼·Xvfb·브라우저·자식)를 죽인다. TERM으로 기회를 주고, 남으면 KILL.
+  kill -TERM -- "-$PGID" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 -- "-$PGID" 2>/dev/null || break
+    sleep 1
+  done
+  kill -KILL -- "-$PGID" 2>/dev/null || true
   sleep 1
   rm -rf "$PROFILE" 2>/dev/null || true
   return $rc
@@ -217,6 +262,14 @@ while [ "$(count_parts)" -lt "$(expected_parts)" ]; do
   EXPECTED=$(expected_parts)
   if ! kill -0 $PID 2>/dev/null; then
     echo "[collect-stock] **브라우저가 죽었다** — 결과 없음" >&2
+    exit 1
+  fi
+  # **에이전트가 죽으면 즉시 멈춘다** (개정 #10). 죽은 뒤의 셀은 GC 통제·스로틀 없이 측정되고,
+  # 페이지는 응답을 기다리다 상한(120초)에 걸려 `*-timeout`을 적은 채 계속 간다 — 판정기가
+  # 잡기는 하지만 그 셀들은 쓸 수 없으므로 기계 시간을 버리지 않는다. v21 스로틀 런에서 감시
+  # 프로세스가 죽은 것을 늦게 알아챈 사고가 있었다.
+  if [ -n "$THROTTLE_PID" ] && ! kill -0 "$THROTTLE_PID" 2>/dev/null; then
+    echo "[collect-stock] **CDP 에이전트가 죽었다** — $(tail -3 "$AGENT_LOG" 2>/dev/null | tr '\n' ' ')" >&2
     exit 1
   fi
   # **렌더러만 죽는 경우를 잡는다 (2026-09-26, 실제로 당했다)**: 위 `kill -0`은

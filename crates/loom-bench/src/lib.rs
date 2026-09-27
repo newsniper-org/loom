@@ -119,17 +119,16 @@ fn cell_id(
     row_bindings: usize,
     row_inner: usize,
     row_variants: bool,
-    write_variant: loom_runtime::WriteVariant,
     workload: &str,
 ) -> String {
-    // **`write_variant`를 시드 식별자에 넣지 않는다** (2026-09-24). §8은 "시드 열 전
-    // 후보 공유(paired 분석의 전제)"를 규정하는데, 넣으면 조건부/무조건 두 변형 셀이
+    // **write 변형은 시드 식별자에 넣지 않는다** (2026-09-24). §8은 "시드 열 전
+    // 후보 공유(paired 분석의 전제)"를 규정하는데, 넣으면 조건부/무조건 두 변형이
     // **서로 다른 target 열**을 보게 된다. 그러면 (a) 두 변형의 uncond/cond 비교가
     // 다른 작업끼리의 비교가 되고, (b) §9 서두대로 C가 무조건 변형을 고른 뒤 K
     // (언제나 조건부)와 rep 인덱스로 짝지으면 **서로 다른 target의 표본을 짝짓는다**.
     // 두 변형은 같은 워크로드를 다른 write 정책으로 재는 것이므로 같은 열을 봐야 한다.
-    // 레코드는 `write_variant` 필드로 구별되므로 식별에는 지장이 없다.
-    let _ = write_variant;
+    // 개정 #10(2026-09-27)부터는 두 변형이 아예 **같은 셀의 후보**이므로 이 인자
+    // 자체를 없앴다 — 레코드는 `write_variant` 필드로 구별된다.
     format!("{type_name}|n={n}|R{row_bindings}|inner={row_inner}|variants={row_variants}|{workload}")
 }
 
@@ -382,7 +381,62 @@ struct Candidate<T: Send + Sync + Clone + ToString + 'static> {
     /// 직전 반복의 §7.1 단계 귀속 시간. §9 C 기각 (ii)가 재는 "archetype move
     /// 구간"(= Commands apply sync point)이 여기 들어 있다.
     last_stages: loom_runtime::StageTimings,
+    /// 이 인스턴스의 §10 write 변형. 개정 #10(2026-09-27)부터 **같은 셀 안에** 한
+    /// 후보의 두 변형이 별도 인스턴스로 함께 있으므로 인스턴스가 자기 변형을 안다.
+    write_variant: loom_runtime::WriteVariant,
+    /// 직전 `set_and_tick`의 timed window `[t0, t0 + elapsed]`(performance.now, ms).
+    /// §8 M-15 "측정 중 GC 이벤트 로그 … GC 주석 병기"의 겹침 계산 재료.
+    last_window: (f64, f64),
     _marker: std::marker::PhantomData<T>,
+}
+
+/// §7.1 단계 귀속 시간의 **rep 하나 분량**. `loom_runtime::StageTimings`는 틱 하나의
+/// 값이라 여러 틱(배치 묶음·시퀀스)을 합칠 방법이 없다 — 런타임은 건드리지 않으므로
+/// (개정 #10: G2 재인증이 그대로 재수집 런타임을 인증해야 한다) 하네스 쪽에 둔다.
+#[derive(Clone, Copy, Default)]
+struct StageAcc {
+    systems: f64,
+    sync_point: f64,
+    dom_apply: f64,
+    row_patch: f64,
+    total: f64,
+}
+
+impl StageAcc {
+    fn of(t: &loom_runtime::StageTimings) -> Self {
+        let mut a = StageAcc::default();
+        a.add(t);
+        a
+    }
+    fn add(&mut self, t: &loom_runtime::StageTimings) {
+        self.systems += t.systems_ms;
+        self.sync_point += t.sync_point_ms;
+        self.dom_apply += t.dom_apply_ms;
+        self.row_patch += t.row_patch_ms;
+        self.total += t.total_ms;
+    }
+    fn scaled(self, k: f64) -> Self {
+        StageAcc {
+            systems: self.systems * k,
+            sync_point: self.sync_point * k,
+            dom_apply: self.dom_apply * k,
+            row_patch: self.row_patch * k,
+            total: self.total * k,
+        }
+    }
+}
+
+/// rep별 단계 시간 표본을 레코드의 `stage_samples_ms` 객체로.
+fn stage_samples_json(xs: &[StageAcc]) -> String {
+    let col = |f: fn(&StageAcc) -> f64| xs.iter().map(|a| format!("{:.4}", f(a))).collect::<Vec<_>>().join(", ");
+    format!(
+        "{{\"systems\": [{}], \"sync_point\": [{}], \"dom_apply\": [{}], \"row_patch\": [{}], \"total\": [{}]}}",
+        col(|a| a.systems),
+        col(|a| a.sync_point),
+        col(|a| a.dom_apply),
+        col(|a| a.row_patch),
+        col(|a| a.total),
+    )
 }
 
 /// **1반복**을 실행하고 그 시간을 돌려준다 — §8의 워크로드별 반복 정의를
@@ -392,13 +446,17 @@ struct Candidate<T: Send + Sync + Clone + ToString + 'static> {
 /// 이어 붙여** k회 연속 적용하고 총 시간을 돌려준다(W5의 append 누적이 정확히
 /// 그것이다 — 매번 `initial`에서 새로 유도하면 "1건 추가"를 k번 반복하는 것이
 /// 되어 누적이 없다).
+///
+/// 두 번째 반환값은 그 rep의 단계 시간이다 — 시퀀스면 k스텝의 **합**(표본과 같은
+/// 스케일, 개정 #10). `windows`가 있으면 timed window를 전부 거기 적는다.
 fn run_one_rep<T, F>(
     candidate: &mut Candidate<T>,
     workload: &Workload,
     initial: &[T],
     rng: &mut Pcg64,
     fresh: &F,
-) -> f64
+    mut windows: Option<&mut Vec<(f64, f64)>>,
+) -> (f64, StageAcc)
 where
     T: Send + Sync + Clone + ToString + 'static,
     F: Fn(u64) -> T,
@@ -406,16 +464,25 @@ where
     match workload.shape() {
         Shape::Single => {
             let target = workload.apply(initial, rng, fresh);
-            candidate.set_and_tick(target)
+            let t = candidate.set_and_tick(target);
+            if let Some(w) = windows.as_deref_mut() {
+                w.push(candidate.last_window);
+            }
+            (t, StageAcc::of(&candidate.last_stages))
         }
         Shape::Sequence(k) => {
             let mut cur = initial.to_vec();
             let mut total = 0.0;
+            let mut stages = StageAcc::default();
             for _ in 0..k {
                 cur = workload.apply(&cur, rng, fresh);
                 total += candidate.set_and_tick(cur.clone());
+                stages.add(&candidate.last_stages);
+                if let Some(w) = windows.as_deref_mut() {
+                    w.push(candidate.last_window);
+                }
             }
-            total
+            (total, stages)
         }
     }
 }
@@ -560,6 +627,246 @@ fn median_of(xs: &[f64]) -> f64 {
     if v.len() % 2 == 1 { v[m] } else { (v[m - 1] + v[m]) / 2.0 }
 }
 
+// ---------------------------------------------------------------------------
+// §8 GC 통제(M-15) — "성능·메모리 셀 시작 시 CDP 강제 GC 1회, 측정 중 GC 이벤트 로그
+// (이상치 제거 없이 GC 주석 병기)". 개정 #10(2026-09-27)으로 이행. 그 전에는 하네스·
+// 드라이버·레코드 어디에도 없었다(v21 적대적 검증 4번).
+//
+// CDP 명령은 페이지가 낼 수 없으므로 드라이버 쪽 에이전트(`bench/e2e/cdp-agent.mjs`)가
+// 낸다. 페이지는 CDP 바인딩 `__loomCdp`를 부르고 `window.__loomCdpAck`로 응답이 올 때까지
+// **멈춰 기다린다** — 강제 GC·트레이스 경계가 페이지가 아는 시점("셀 시작", "측정 중")에
+// 정확히 걸리고, 에이전트의 작업(트레이스 전송·파싱)은 전부 측정 괄호 밖에서 일어난다.
+// ---------------------------------------------------------------------------
+
+/// 에이전트 응답 대기 상한. 넘기면 레코드에 `timeout`으로 실린다(조용히 넘어가지 않는다).
+const CDP_TIMEOUT_MS: i32 = 120_000;
+
+/// 이 런에 에이전트가 붙어 있어야 하는가. 드라이버가 Chromium 런에 `?cdp=1`을 붙인다.
+/// Firefox는 CDP 수단이 없다(§8이 스로틀에 대해 이미 명기한 것과 같은 한계).
+fn cdp_expected() -> bool {
+    query_param("cdp").is_some_and(|v| v == "1")
+}
+
+enum CdpReply {
+    /// 에이전트 없이 도는 런(`?cdp=1` 없음) — Firefox 등.
+    Unavailable,
+    /// **있어야 하는데 바인딩이 끝내 안 생겼다.** 드라이버 결함 — 판정기가 잡는다.
+    Missing,
+    Timeout,
+    Ok(JsValue),
+}
+
+async fn sleep_ms(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(w) = web_sys::window() {
+            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+fn js_get(v: &JsValue, key: &str) -> JsValue {
+    js_sys::Reflect::get(v, &JsValue::from_str(key)).unwrap_or(JsValue::UNDEFINED)
+}
+
+fn js_json(v: &JsValue) -> String {
+    js_sys::JSON::stringify(v)
+        .ok()
+        .and_then(|s| s.as_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn perf_mark(name: &str) {
+    if let Some(p) = web_sys::window().and_then(|w| w.performance()) {
+        let _ = p.mark(name);
+    }
+}
+
+async fn cdp_call(cmd: &str, group: usize, cid: &str) -> CdpReply {
+    let Some(win) = web_sys::window() else { return CdpReply::Unavailable };
+    let binding = || {
+        js_sys::Reflect::get(&win, &JsValue::from_str("__loomCdp"))
+            .ok()
+            .filter(|f| f.is_function())
+    };
+    let mut f = binding();
+    if f.is_none() {
+        if !cdp_expected() {
+            return CdpReply::Unavailable;
+        }
+        // 첫 페이지는 에이전트가 타깃에 붙기 전에 뜰 수 있다 — 60초까지 기다린다.
+        for _ in 0..600 {
+            sleep_ms(100).await;
+            f = binding();
+            if f.is_some() {
+                break;
+            }
+        }
+    }
+    let Some(f) = f else { return CdpReply::Missing };
+    let f: js_sys::Function = f.unchecked_into();
+    let payload = format!("{{\"cmd\": \"{cmd}\", \"group\": {group}, \"cid\": \"{cid}\"}}");
+    let mut timer = 0;
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let _ = js_sys::Reflect::set(&win, &JsValue::from_str("__loomCdpAck"), &resolve);
+        let r2 = resolve.clone();
+        let cb = Closure::once_into_js(move || {
+            let _ = r2.call1(&JsValue::NULL, &JsValue::from_str("__timeout"));
+        });
+        timer = win
+            .set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), CDP_TIMEOUT_MS)
+            .unwrap_or(0);
+    });
+    if f.call1(&win, &JsValue::from_str(&payload)).is_err() {
+        win.clear_timeout_with_handle(timer);
+        return CdpReply::Missing;
+    }
+    let v = wasm_bindgen_futures::JsFuture::from(promise).await.unwrap_or(JsValue::NULL);
+    win.clear_timeout_with_handle(timer);
+    if v.as_string().as_deref() == Some("__timeout") { CdpReply::Timeout } else { CdpReply::Ok(v) }
+}
+
+/// 한 셀의 GC 통제 상태 — 레코드의 `gc` 필드가 된다.
+struct GcCtl {
+    group: usize,
+    cid: String,
+    /// `"cdp"`(정상) · `"unavailable"`(에이전트 없는 런) · 그 밖은 **실패 사유**.
+    control: String,
+    /// `cell-start` 응답 — 실제로 걸린 스로틀 배수가 여기 있다(레코드가 스스로 증언).
+    cell_start: String,
+    /// `gc` 응답(강제 GC 1회).
+    forced: String,
+    /// 트레이스 구간마다의 요약(합집합 구간 자체는 빼고) — 유실 여부·시계 흩어짐·이벤트 수·
+    /// 요청~완료 표식 사이 MajorGC 수(강제 GC가 **실제로 일어났는가**의 존재 단언).
+    segments: Vec<String>,
+    /// 페이지 시계(performance.now, ms)의 메인 스레드 GC 구간 합집합, 시작순·서로소.
+    union: Vec<(f64, f64)>,
+}
+
+impl GcCtl {
+    /// §8 "셀 시작 시 … 강제 GC 1회". 후보 마운트 **뒤**(마운트가 남긴 쓰레기까지 치운다),
+    /// 파일럿·워밍업 **앞**에서 부른다.
+    async fn start(group: usize, cid: &str) -> GcCtl {
+        let mut g = GcCtl {
+            group,
+            cid: cid.to_string(),
+            control: "cdp".to_string(),
+            cell_start: "null".to_string(),
+            forced: "null".to_string(),
+            segments: Vec::new(),
+            union: Vec::new(),
+        };
+        match cdp_call("cell-start", group, cid).await {
+            CdpReply::Unavailable => {
+                g.control = "unavailable".to_string();
+                return g;
+            }
+            CdpReply::Missing => {
+                g.control = "missing-binding".to_string();
+                return g;
+            }
+            CdpReply::Timeout => {
+                g.control = "cell-start-timeout".to_string();
+                return g;
+            }
+            CdpReply::Ok(v) => {
+                g.cell_start = js_json(&v);
+                if js_get(&v, "ok").as_bool() != Some(true) {
+                    g.control = "cell-start-failed".to_string();
+                    return g;
+                }
+            }
+        }
+        perf_mark("loom:gc:req");
+        let r = cdp_call("gc", group, cid).await;
+        perf_mark("loom:gc:done");
+        match r {
+            CdpReply::Ok(v) => {
+                g.forced = js_json(&v);
+                if js_get(&v, "ok").as_bool() != Some(true) {
+                    g.control = "gc-failed".to_string();
+                }
+            }
+            _ => g.control = "gc-no-reply".to_string(),
+        }
+        g
+    }
+
+    /// 트레이스 구간을 닫고 GC 구간을 받는다. `trace-flush`는 에이전트가 곧바로 다시 연다.
+    async fn collect(&mut self, cmd: &str) {
+        if self.control == "unavailable" || self.cell_start == "null" {
+            return;
+        }
+        match cdp_call(cmd, self.group, &self.cid).await {
+            CdpReply::Ok(v) if js_get(&v, "ok").as_bool() == Some(true) => {
+                let flat: Vec<f64> = js_sys::Array::from(&js_get(&v, "union"))
+                    .iter()
+                    .filter_map(|x| x.as_f64())
+                    .collect();
+                for p in flat.chunks_exact(2) {
+                    self.union.push((p[0], p[1]));
+                }
+                let _ = js_sys::Reflect::delete_property(v.unchecked_ref::<js_sys::Object>(), &JsValue::from_str("union"));
+                self.segments.push(js_json(&v));
+            }
+            CdpReply::Ok(v) => {
+                self.segments.push(js_json(&v));
+                self.control = format!("{cmd}-failed");
+            }
+            _ => self.control = format!("{cmd}-no-reply"),
+        }
+    }
+
+    /// GC 로그가 **완결**인가 — 모든 구간이 유실 없이 돌아왔는가.
+    fn log_complete(&self) -> bool {
+        self.control == "cdp" && !self.segments.is_empty() && !self.segments.iter().any(|s| s.contains("\"data_loss\":true"))
+    }
+
+    /// 레코드용 `gc` 객체. `overlap`은 표본(또는 W6의 삽입)마다 GC와 겹친 ms.
+    fn record_json(&self, overlap: Option<&[f64]>, unit: &str) -> String {
+        let (with_gc, arr) = match overlap {
+            Some(o) if self.log_complete() => (
+                o.iter().filter(|x| **x > 0.0).count().to_string(),
+                format!("[{}]", o.iter().map(|x| if *x > 0.0 { format!("{x:.4}") } else { "0".into() }).collect::<Vec<_>>().join(", ")),
+            ),
+            _ => ("null".to_string(), "null".to_string()),
+        };
+        format!(
+            "{{\"control\": \"{}\", \"source\": \"cdp-trace v8+cppgc renderer-main\", \"cell_start\": {}, \
+             \"forced\": {}, \"segments\": [{}], \"log_complete\": {}, \"overlap_unit\": \"{unit}\", \
+             \"with_gc\": {with_gc}, \"overlap_ms\": {arr}}}",
+            self.control,
+            self.cell_start,
+            self.forced,
+            self.segments.join(", "),
+            self.log_complete(),
+        )
+    }
+}
+
+/// 표본마다 GC 구간과 겹친 시간(ms). 표본 하나 = 연속한 `wps`개의 timed window
+/// (단발 1 / 배치 묶음 k / 시퀀스 스텝 수). `gc`는 시작순·서로소(에이전트가 합집합으로 접는다).
+///
+/// 주석일 뿐이다 — §8 "이상치 제거 없이 GC 주석 병기". 어떤 표본도 이것 때문에 빠지지 않는다.
+fn gc_overlap_per_sample(windows: &[(f64, f64)], wps: usize, gc: &[(f64, f64)]) -> Vec<f64> {
+    windows
+        .chunks(wps.max(1))
+        .map(|ch| ch.iter().map(|&(s, e)| overlap_with(s, e, gc)).sum())
+        .collect()
+}
+
+fn overlap_with(s: f64, e: f64, gc: &[(f64, f64)]) -> f64 {
+    let first = gc.partition_point(|&(_, ge)| ge <= s);
+    let mut total = 0.0;
+    for &(gs, ge) in &gc[first..] {
+        if gs >= e {
+            break;
+        }
+        total += e.min(ge) - s.max(gs);
+    }
+    total
+}
+
 impl<T: Send + Sync + Clone + ToString + 'static> Candidate<T> {
     fn set_and_tick(&mut self, items: Vec<T>) -> f64 {
         // §8 "각 반복 전 초기 상태 복원"과 같은 지점에서 카운터를 0으로 —
@@ -576,7 +883,10 @@ impl<T: Send + Sync + Clone + ToString + 'static> Candidate<T> {
         let start = measure_now();
         self.app.world.get_mut::<Signal<Vec<T>>>(self.entity).unwrap().0 = items;
         self.app.tick(&mut self.dom);
-        let elapsed = measure_now() - start;
+        let end = measure_now();
+        let elapsed = end - start;
+        // 괄호 밖에서 적는다 — 측정값에 들어가지 않는다.
+        self.last_window = (start, end);
         self.last_counts = self.dom.counts();
         if let Some(t) = self.app.world.get_resource::<loom_runtime::StageTimings>() {
             self.last_stages = *t;
@@ -608,7 +918,7 @@ fn make_k<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
     shape.apply(&mut app);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "K", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "K", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), write_variant: shape.write_variant, last_window: (0.0, 0.0), _marker: std::marker::PhantomData }
 }
 
 fn make_c<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
@@ -625,7 +935,7 @@ fn make_c<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
     shape.apply(&mut app);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "C", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "C", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), write_variant: shape.write_variant, last_window: (0.0, 0.0), _marker: std::marker::PhantomData }
 }
 
 fn make_d<T: Send + Sync + Clone + ToString + 'static>(
@@ -642,7 +952,7 @@ fn make_d<T: Send + Sync + Clone + ToString + 'static>(
     shape.apply(&mut app);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "D", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "D", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), write_variant: shape.write_variant, last_window: (0.0, 0.0), _marker: std::marker::PhantomData }
 }
 
 fn make_e<T: Send + Sync + Clone + ToString + 'static>(
@@ -660,7 +970,7 @@ fn make_e<T: Send + Sync + Clone + ToString + 'static>(
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "E", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "E", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), write_variant: shape.write_variant, last_window: (0.0, 0.0), _marker: std::marker::PhantomData }
 }
 
 /// RQ1's LIS-optimized variant of D — see
@@ -681,7 +991,7 @@ fn make_d_lis<T: Send + Sync + Clone + ToString + 'static>(
     shape.apply(&mut app);
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "D-LIS", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "D-LIS", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), write_variant: shape.write_variant, last_window: (0.0, 0.0), _marker: std::marker::PhantomData }
 }
 
 /// RQ1's LIS-optimized variant of E.
@@ -700,7 +1010,7 @@ fn make_e_lis<T: Send + Sync + Clone + ToString + 'static>(
     let entity =
         app.world.spawn((Signal(initial), OrderKeyMembers::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
-    Candidate { name: "E-LIS", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), _marker: std::marker::PhantomData }
+    Candidate { name: "E-LIS", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), write_variant: shape.write_variant, last_window: (0.0, 0.0), _marker: std::marker::PhantomData }
 }
 
 /// **row 모양 축 전부를 한 덩어리로.** 마운트 **전에** 전부 걸려야 하는 것들이다.
@@ -735,8 +1045,21 @@ type Maker<T> = fn(&web_sys::Document, &web_sys::Node, Vec<T>, RowShape) -> Cand
 
 /// All 6 Track L candidates, measured together every time so every result
 /// set shares the same page load / hardware / JIT-warmup conditions.
-fn all_makers<T: Send + Sync + Clone + ToString + PartialEq + 'static>() -> [Maker<T>; 6] {
-    [make_k, make_c, make_d, make_e, make_d_lis, make_e_lis]
+///
+/// 두 번째 값 = **§10 write 변형 축이 등재된 후보인가**(C·D — 하네스의 D·D-LIS가
+/// 둘 다 D 계열이다). 이중 측정 셀에서는 이 후보들만 무조건 변형 인스턴스가 하나
+/// 더 붙는다(개정 #10). K·E·E-LIS는 이 축을 읽지 않는다 — 축 골든
+/// (`loom-runtime/tests/golden/list-candidate-writes-axes.txt`)에서 셋의 UNCOND 절
+/// write 열이 R1 절과 같고, C·D·D-LIS는 다르다.
+fn all_makers<T: Send + Sync + Clone + ToString + PartialEq + 'static>() -> [(Maker<T>, bool); 6] {
+    [
+        (make_k, false),
+        (make_c, true),
+        (make_d, true),
+        (make_e, false),
+        (make_d_lis, true),
+        (make_e_lis, false),
+    ]
 }
 
 /// Runs the full workload battery for one (item type, size) combination
@@ -764,8 +1087,11 @@ async fn run_combination<T, F>(
     row_bindings: usize,
     // W8(§3.1 "중첩 증폭")의 row별 내부 리스트 크기. 0이면 꺼짐.
     row_inner: usize,
-    // §10 write 변형 축(개정 #9-6).
-    write_variant: loom_runtime::WriteVariant,
+    // §10 write 변형 이중 측정 셀인가(개정 #9-6 → 개정 #10). 참이면 C·D·D-LIS의
+    // 무조건 변형 인스턴스가 **같은 셀의 후보로** 더 붙는다(6 → 9후보).
+    doubled: bool,
+    // 이 셀이 셔플된 셀 목록의 몇 번째인가 — 레코드에 실어 같은 셀 짝을 검증 가능하게 한다.
+    group: usize,
     // RQ1 §3.2의 R3 축(이질 브랜치 row). §3.3이 "R3: W2 × R3 × n=1,000 ×
     // {C, D}(E·K는 참고 측정)"으로 셀을 고정했다.
     row_variants: bool,
@@ -783,16 +1109,57 @@ async fn run_combination<T, F>(
     scratch_parent.append_child(&combo_container).unwrap();
     let combo_node: web_sys::Node = combo_container.clone().into();
 
-    let shape = RowShape { bindings: row_bindings, inner: row_inner, variants: row_variants, write_variant };
-    let mut candidates: Vec<Candidate<T>> = all_makers()
-        .iter()
-        .map(|maker| {
-            // row 모양 축은 **전부** `RowShape`가 마운트 전에 건다. 여기서 뒤늦게
-            // 거는 호출을 두지 않는 것이 요점이다 — 그 자리가 있는 한 같은 순서
-            // 결함이 다시 생길 수 있고, 실제로 개정 #8 수리 뒤에도 다시 생겼다.
-            maker(document, &combo_node, initial.clone(), shape)
-        })
-        .collect();
+    let shape = RowShape {
+        bindings: row_bindings,
+        inner: row_inner,
+        variants: row_variants,
+        write_variant: loom_runtime::WriteVariant::Conditional,
+    };
+    // row 모양 축은 **전부** `RowShape`가 마운트 전에 건다. 여기서 뒤늦게
+    // 거는 호출을 두지 않는 것이 요점이다 — 그 자리가 있는 한 같은 순서
+    // 결함이 다시 생길 수 있고, 실제로 개정 #8 수리 뒤에도 다시 생겼다.
+    let mut candidates: Vec<Candidate<T>> =
+        all_makers().iter().map(|(maker, _)| maker(document, &combo_node, initial.clone(), shape)).collect();
+    // -----------------------------------------------------------------------
+    // **write 변형 이중 측정을 같은 셀 안에서** (개정 #10, 2026-09-27).
+    //
+    // v21까지는 무조건 변형을 **별도 셀**(= 별도 페이지 로드)로 돌렸다. §9 서두가 후보마다
+    // 우세 변형을 고르므로 판정 짝의 두 레코드가 서로 다른 페이지 로드에서 올 수 있었고,
+    // 라운드로빈 보호("같은 시간창")는 셀 안에서만 성립하므로 셀 간 표류가 paired CI 밖에
+    // 있었다 — 4× 스로틀 W2×R2에서 77분 떨어진 두 셀을 짝지어 C 기각 앞 분기 하한이
+    // 2.561로 보였고 같은 셀 짝이면 3.019였다(v21 적대적 검증 3번).
+    //
+    // 이제 C·D·D-LIS의 무조건 변형 인스턴스가 **같은 셀의 후보**로 라운드로빈에 들어간다.
+    // 변형 선택도, 선택된 짝도 같은 시간창이 된다. K·E·E-LIS는 이 축을 안 읽으므로 한 벌뿐이다.
+    // -----------------------------------------------------------------------
+    if doubled {
+        let unc = RowShape { write_variant: loom_runtime::WriteVariant::Unconditional, ..shape };
+        for (maker, write_axis) in all_makers::<T>() {
+            if write_axis {
+                candidates.push(maker(document, &combo_node, initial.clone(), unc));
+            }
+        }
+    }
+    // 각 인스턴스에 **자기 변형이 실제로 걸렸는가** — 축은 리소스이고, 리소스를 안 읽는
+    // 경로가 생기면 두 인스턴스가 같은 것을 재면서 두 변형인 척한다(개정 #8의 R3가 정확히
+    // 그 상태였다). 리소스 값 자체를 대조한다.
+    for c in &candidates {
+        let applied = c.app.world.get_resource::<loom_runtime::WriteVariant>().copied();
+        assert_eq!(
+            applied,
+            Some(c.write_variant),
+            "후보 {}의 write 변형 리소스가 {:?}인데 인스턴스는 {:?}로 만들어졌다",
+            c.name,
+            applied,
+            c.write_variant
+        );
+    }
+    let n_write_axis = all_makers::<T>().iter().filter(|(_, a)| *a).count();
+    assert_eq!(
+        candidates.len(),
+        all_makers::<T>().len() + if doubled { n_write_axis } else { 0 },
+        "셀 후보 수가 설계와 다르다"
+    );
 
     // -----------------------------------------------------------------------
     // **축이 실제로 걸렸는지 수집 전에 확인한다** (개정 #9의 "수집 전 이행 확인
@@ -843,9 +1210,12 @@ async fn run_combination<T, F>(
     };
 
     for workload in &run_set {
-        let cid =
-            cell_id(type_name, n, row_bindings, row_inner, row_variants, write_variant, workload.name());
+        let cid = cell_id(type_name, n, row_bindings, row_inner, row_variants, workload.name());
         let cand_order = shuffled_indices(candidates.len(), &cid, "candidate-order");
+
+        // §8 M-15: 셀 시작 시 강제 GC 1회 + GC 트레이스 시작(에이전트가 있는 런에서만 —
+        // 없으면 `control: "unavailable"`로 레코드에 실린다). 스로틀도 여기서 걸린다.
+        let mut gc = GcCtl::start(group, &cid).await;
 
         // -------------------------------------------------------------------
         // §8 배치 규칙의 판정을 **셀 단위로 한 번** 내린다.
@@ -871,7 +1241,7 @@ async fn run_combination<T, F>(
                 candidates[ci].set_and_tick(initial.clone());
                 double_raf().await;
                 let mut rng = Pcg64::from_seed(derive_seed("pilot", &cid, w));
-                ps.push(run_one_rep(&mut candidates[ci], workload, &initial, &mut rng, &fresh));
+                ps.push(run_one_rep(&mut candidates[ci], workload, &initial, &mut rng, &fresh, None).0);
             }
             pilot_min = pilot_min.min(median_of(&ps));
         }
@@ -966,7 +1336,7 @@ async fn run_combination<T, F>(
                 candidates[ci].set_and_tick(initial.clone());
                 double_raf().await; // §8 복원↔측정 경계
                 let mut rng = Pcg64::from_seed(derive_seed("warmup", &cid, w));
-                run_one_rep(&mut candidates[ci], workload, &initial, &mut rng, &fresh);
+                run_one_rep(&mut candidates[ci], workload, &initial, &mut rng, &fresh, None);
             }
             if measure_now() - cell_started_ms > CELL_CAP_MS {
                 warmup_capped = true;
@@ -988,7 +1358,22 @@ async fn run_combination<T, F>(
         // 길이에서 remove_middle이 돌았다). 추가 tick 없이 첫 rep 값을 붙잡아
         // 마지막 rep 값과 대조하는 것이 전부다.
         let mut first_counts = vec![None::<loom_runtime::DomOpCounts>; candidates.len()];
+        // **rep별 단계 시간** (개정 #10). v21까지 `stage_ms`는 마지막 측정 rep 1 tick의
+        // 점값(n=1)이었다 — §9 C 기각 뒷 분기와 E 기각 (ii)가 그 값으로 판정됐고, §8의 분포
+        // 보고 규정(median/IQR/p95)이 적용되지 않는 단일 표본이었다(v21 적대적 검증 7번).
+        // 스케일은 표본(`samples_ms`)과 같게 맞춘다: 단발 = 그 스텝, 배치 = 정방향 스텝의
+        // 평균, 시퀀스 = 스텝 합.
+        let mut stage_samples: Vec<Vec<StageAcc>> =
+            vec![Vec::with_capacity(reps as usize); candidates.len()];
+        // §8 M-15의 GC 주석 재료 — 표본을 이루는 timed window 전부.
+        let mut windows: Vec<Vec<(f64, f64)>> = vec![Vec::new(); candidates.len()];
+        let wps = match (workload.shape(), batch_mode) {
+            (Shape::Sequence(k), _) => k as usize,
+            (_, "alternate") => BATCH_K as usize,
+            _ => 1,
+        };
         let mut over_cap = warmup_capped;
+        perf_mark("loom:measure:start");
         'measure: for rep in 0..reps {
             if warmup_capped {
                 break 'measure;
@@ -1003,7 +1388,10 @@ async fn run_combination<T, F>(
                 let target = workload.apply(&initial, &mut rng, &fresh);
                 if let Shape::Sequence(_) = workload.shape() {
                     let mut rng2 = Pcg64::from_seed(derive_seed("measure", &cid, rep));
-                    samples[ci].push(run_one_rep(candidate, workload, &initial, &mut rng2, &fresh));
+                    let (t, st) =
+                        run_one_rep(candidate, workload, &initial, &mut rng2, &fresh, Some(&mut windows[ci]));
+                    samples[ci].push(t);
+                    stage_samples[ci].push(st);
                     fwd_counts[ci] = candidate.last_counts;
                     fwd_stages[ci] = candidate.last_stages;
                     first_counts[ci].get_or_insert(candidate.last_counts);
@@ -1024,23 +1412,31 @@ async fn run_combination<T, F>(
                     // 같은 물리량을 10회 재서 평균할 뿐이다. 대가는 벽시계고,
                     // 그건 조항이 요구한 정밀도의 값이다.
                     let mut total = 0.0;
+                    let mut st = StageAcc::default();
+                    let mut n_fwd = 0u32;
                     for j in 0..BATCH_K {
                         if j > 0 {
                             double_raf().await;
                         }
                         let items = if j % 2 == 0 { target.clone() } else { initial.clone() };
                         total += candidate.set_and_tick(items);
+                        windows[ci].push(candidate.last_window);
                         // M2/단계 귀속은 **정방향 전이**의 값이어야 한다 —
                         // 교대 묶음의 마지막(j=K-1, 홀수)은 되돌림이다.
                         if j % 2 == 0 {
                             fwd_counts[ci] = candidate.last_counts;
                             fwd_stages[ci] = candidate.last_stages;
                             first_counts[ci].get_or_insert(candidate.last_counts);
+                            st.add(&candidate.last_stages);
+                            n_fwd += 1;
                         }
                     }
                     samples[ci].push(total / BATCH_K as f64);
+                    stage_samples[ci].push(st.scaled(1.0 / n_fwd as f64));
                 } else {
                     samples[ci].push(candidate.set_and_tick(target));
+                    windows[ci].push(candidate.last_window);
+                    stage_samples[ci].push(StageAcc::of(&candidate.last_stages));
                     fwd_counts[ci] = candidate.last_counts;
                     fwd_stages[ci] = candidate.last_stages;
                     first_counts[ci].get_or_insert(candidate.last_counts);
@@ -1053,6 +1449,9 @@ async fn run_combination<T, F>(
                 break 'measure;
             }
         }
+        perf_mark("loom:measure:end");
+        // 트레이스를 닫고 GC 구간을 받는다 — M1(b)/MO 틱 **앞**이다(그 틱들은 측정이 아니다).
+        gc.collect("measure-end").await;
 
         for &ci in &cand_order {
             let candidate = &mut candidates[ci];
@@ -1175,7 +1574,7 @@ async fn run_combination<T, F>(
                  \"user_agent\": \"{}\", \"cross_origin_isolated\": {}, \
                  \"seq_steps\": {}, \"stage_scope\": \"{}\", \
                  \"stage_ms\": {{\"systems\": {:.4}, \"sync_point\": {:.4}, \
-                 \"dom_apply\": {:.4}, \"row_patch\": {:.4}, \"total\": {:.4}}}}}",
+                 \"dom_apply\": {:.4}, \"row_patch\": {:.4}, \"total\": {:.4}}}",
                 candidate.name,
                 workload.name(),
                 type_name,
@@ -1192,7 +1591,7 @@ async fn run_combination<T, F>(
                 row_variants,
                 row_inner,
                 workload.clause_id(),
-                write_variant,
+                candidate.write_variant,
                 resolution_ms,
                 batched,
                 batch_mode,
@@ -1213,6 +1612,29 @@ async fn run_combination<T, F>(
                 measured_stages.dom_apply_ms,
                 measured_stages.row_patch_ms,
                 measured_stages.total_ms,
+            ));
+            // -------------------------------------------------------------
+            // 개정 #10 필드. `stage_ms`(마지막 정방향 스텝 1회, `stage_scope`)는 v21과의
+            // 대조를 위해 그대로 두고, 판정은 `stage_samples_ms`의 분포로 한다.
+            // -------------------------------------------------------------
+            let stage_samples_scope = match (workload.shape(), batch_mode) {
+                (Shape::Sequence(_), _) => "sum_over_sequence_steps",
+                (_, "alternate") => "mean_of_forward_steps_in_batch",
+                _ => "the_measured_step",
+            };
+            // GC 겹침은 **표본과 같은 스케일**로 적는다: 배치 표본이 k회 총 시간/k이므로 겹침도 /k.
+            let overlap = gc_overlap_per_sample(&windows[ci], wps, &gc.union)
+                .into_iter()
+                .map(|x| if batch_mode == "alternate" { x / BATCH_K as f64 } else { x })
+                .collect::<Vec<_>>();
+            out.push_str(&format!(
+                ", \"group\": {group}, \"cell_id\": \"{cid}\", \"cell_candidates\": {}, \
+                 \"write_axis_in_cell\": {doubled}, \"windows_per_sample\": {wps}, \
+                 \"stage_samples_scope\": \"{stage_samples_scope}\", \"stage_samples_ms\": {}, \
+                 \"gc\": {}}}",
+                candidates.len(),
+                stage_samples_json(&stage_samples[ci]),
+                gc.record_json(Some(&overlap), "ms per sample (same scale as samples_ms)"),
             ));
         }
     }
@@ -1285,8 +1707,9 @@ struct Cell {
     row_inner: usize,
     row_variants: bool,
     workload: Workload,
-    /// §10 write 변형 축. §3.3이 이중 측정을 요구한 셀에서만 두 값이 다 나온다.
-    write_variant: loom_runtime::WriteVariant,
+    /// §10 write 변형 이중 측정 셀인가. 참이면 C·D·D-LIS가 두 변형으로 **같은 셀에** 선다
+    /// (개정 #10 — v21까지는 무조건 변형이 별도 셀이었다).
+    doubled: bool,
     /// W6 전용 좌표 `(후보 인덱스, 시행 번호)`. `Some`이면 이 셀은 스트레스
     /// 러너가 돈다. **(후보 × 시행)마다 셀 하나**인 이유는 아래 세 가지다:
     ///
@@ -1331,7 +1754,7 @@ fn cell_list() -> Vec<Cell> {
         row_inner: ri,
         row_variants: rv,
         workload: w,
-        write_variant: loom_runtime::WriteVariant::Conditional,
+        doubled: false,
         stress: None,
     };
     let mut v = Vec::new();
@@ -1390,46 +1813,39 @@ fn cell_list() -> Vec<Cell> {
     v.push(pod(1000, 1, 0, false, Workload::RemoveMiddle));
 
     // §3.2 "Item 타입 축: ... 기본 POD, **W7과 트랙 R에서 양쪽**."
-    v.push(Cell {
-        item: ItemAxis::Heap,
-        n: 1000,
-        row_bindings: 1,
-        row_inner: 0,
-        row_variants: false,
-        workload: Workload::ValueUpdate,
-        write_variant: loom_runtime::WriteVariant::Conditional,
-        stress: None,
-    });
+    // W7이 핵심 격자에서 {R1,R2}이므로 heap 쪽도 {R1,R2}다. **R2 × heap은 v21까지 없었다**
+    // (v21 적대적 검증 4번 — §10 "W7은 양쪽 × Item 타입 축"의 절반 미이행). 개정 #10.
+    for rb in [1usize, 8] {
+        v.push(Cell { item: ItemAxis::Heap, ..pod(1000, rb, 0, false, Workload::ValueUpdate) });
+    }
 
     // -----------------------------------------------------------------------
     // §3.3 "**write 변형 이중 측정(v1.1)**: §9 판정에 걸린 {W1,W2,W3,W4} × {R1,R2}
     // 및 W10에서 C·D 각각 조건부 PartialEq/무조건 write 양 변형 측정(§10 —
-    // 2배 부담은 이 집합 한정)."
+    // 2배 부담은 이 집합 한정)." + §10 "**W7은 양쪽 × Item 타입 축**(기존 유지)".
     //
-    // 위에서 만든 셀 중 그 집합에 해당하는 것을 **무조건 변형으로 한 벌 더** 만든다.
-    // K·E는 이 축의 대상이 아니지만(§10이 C·D만 등재) 같은 셀을 6후보로 함께
-    // 돌리므로 데이터가 중복 수집된다 — §2.4의 "동일 조건 유지"에 유리하고,
-    // 분석은 `write_variant` 필드로 C·D만 골라 읽는다.
-    const DOUBLED: [Workload; 6] = [
+    // v21까지는 해당 셀을 무조건 변형으로 **한 벌 더**(= 별도 셀) 만들었다. 개정 #10부터는
+    // 같은 셀에 두 변형이 함께 선다(`run_combination`의 `doubled`). W7은 v21에서 빠져
+    // 있었다(무조건 셀 0 — v21 적대적 검증 4번).
+    const DOUBLED: [Workload; 7] = [
         Workload::Swap,
         Workload::Shuffle,
         Workload::Shuffle10,
         Workload::HeadInsert,
         Workload::Replace50,
         Workload::Replace100,
+        Workload::ValueUpdate,
     ];
-    let extra: Vec<Cell> = v
-        .iter()
-        .filter(|c| {
-            c.item == ItemAxis::Pod
-                && c.n == 1000
-                && c.row_inner == 0
-                && !c.row_variants
-                && DOUBLED.contains(&c.workload)
-        })
-        .map(|c| Cell { write_variant: loom_runtime::WriteVariant::Unconditional, ..*c })
-        .collect();
-    v.extend(extra);
+    for c in v.iter_mut() {
+        // W7은 Item 타입 축 양쪽이, 나머지는 기본 POD만 대상이다.
+        let item_ok = c.item == ItemAxis::Pod || c.workload == Workload::ValueUpdate;
+        c.doubled = item_ok
+            && c.n == 1000
+            && c.row_inner == 0
+            && !c.row_variants
+            && c.stress.is_none()
+            && DOUBLED.contains(&c.workload);
+    }
 
     v
 }
@@ -1458,6 +1874,7 @@ async fn run_w6_cell(
     scratch_parent: &web_sys::Node,
     candidate_index: usize,
     trial: u32,
+    group: usize,
     out: &mut String,
     first_entry: &mut bool,
 ) {
@@ -1467,7 +1884,7 @@ async fn run_w6_cell(
     scratch_parent.append_child(&container).unwrap();
     let node: web_sys::Node = container.clone().into();
 
-    let maker = all_makers::<ItemId>()[candidate_index];
+    let (maker, _) = all_makers::<ItemId>()[candidate_index];
     let mut candidate = maker(
         document,
         &node,
@@ -1476,18 +1893,28 @@ async fn run_w6_cell(
     );
     let cid = format!("w6|cand={candidate_index}|trial={trial}");
 
+    // §8 M-15: 셀 시작 시 강제 GC 1회 + GC 트레이스.
+    let mut gc = GcCtl::start(group, &cid).await;
+
     let started = measure_now();
     let mut rng = Pcg64::from_seed(derive_seed("w6", &cid, trial));
     let mut items: Vec<ItemId> = Vec::with_capacity(INSERTS);
     let mut per_insert: Vec<f64> = Vec::with_capacity(INSERTS);
+    let mut windows: Vec<(f64, f64)> = Vec::with_capacity(INSERTS);
     let mut max_flush = 0.0_f64;
+    let mut max_flush_at = 0usize;
     let mut over_cap = false;
+    perf_mark("loom:measure:start");
 
     for i in 0..INSERTS {
         items.insert(0, ItemId(1_000_000 + (rng.next() as u32 % 1_000_000)));
         per_insert.push(candidate.set_and_tick(items.clone()));
+        windows.push(candidate.last_window);
         // (ii) 단발 최대 flush 시간 = sync point 정지시간(§7.1).
-        max_flush = max_flush.max(candidate.last_stages.sync_point_ms);
+        if candidate.last_stages.sync_point_ms > max_flush {
+            max_flush = candidate.last_stages.sync_point_ms;
+            max_flush_at = i;
+        }
         // §8 셀 상한 — 초과는 중단이 아니라 "측정 불가" 프로파일 등재다.
         if measure_now() - started > CELL_CAP_MS {
             over_cap = true;
@@ -1502,12 +1929,28 @@ async fn run_w6_cell(
                 i + 1,
                 (measure_now() - started) / 1000.0
             ));
+            // **트레이스를 500삽입마다 비운다** (개정 #10). K는 삽입마다 전 row를 재스폰하므로
+            // 후반(n≈10⁴)에는 500삽입이 수백만 DOM 노드의 생성·폐기이고, 한 트레이스로 30분을
+            // 담으면 버퍼(200MB)를 넘겨 Chrome이 조용히 버린다. 이 heartbeat는 원래부터 있던
+            // 비측정 경계(double-rAF)이고, 비우는 동안 페이지는 응답을 기다리며 멈춰 있다.
+            // 구간마다 시계 대응 표식이 필요하므로 앞뒤로 찍는다.
+            perf_mark("loom:w6:flush");
+            gc.collect("trace-flush").await;
+            perf_mark("loom:w6:resume");
             double_raf().await;
         }
     }
+    perf_mark("loom:measure:end");
+    gc.collect("measure-end").await;
 
     let total: f64 = per_insert.iter().sum();
     let median = median_of(&per_insert);
+    let overlap = gc_overlap_per_sample(&windows, 1, &gc.union);
+    let max_flush_gc = if gc.log_complete() {
+        format!("{:.4}", overlap.get(max_flush_at).copied().unwrap_or(0.0))
+    } else {
+        "null".to_string()
+    };
     if !*first_entry {
         out.push_str(",\n");
     }
@@ -1519,7 +1962,9 @@ async fn run_w6_cell(
          \"trial\": {}, \"inserts_completed\": {}, \"inserts_target\": {}, \
          \"amortized_total_ms\": {:.3}, \"per_insert_median_ms\": {:.5}, \
          \"max_single_flush_ms\": {:.5}, \"relabel_events\": null, \
-         \"cell_wall_ms\": {:.1}, \"over_cell_cap\": {}, \"user_agent\": \"{}\"}}",
+         \"cell_wall_ms\": {:.1}, \"over_cell_cap\": {}, \"user_agent\": \"{}\", \
+         \"group\": {group}, \"cell_id\": \"{cid}\", \"max_flush_insert_index\": {max_flush_at}, \
+         \"max_flush_insert_gc_overlap_ms\": {max_flush_gc}, \"gc\": {}}}",
         candidate.name,
         trial,
         per_insert.len(),
@@ -1530,6 +1975,7 @@ async fn run_w6_cell(
         measure_now() - started,
         over_cap,
         user_agent(),
+        gc.record_json(Some(&overlap), "ms per insert"),
     ));
     report_progress(&format!(
         "W6 완료 — {} trial {trial}: {}/{INSERTS} inserts, total {total:.0}ms, max flush {max_flush:.3}ms{}",
@@ -1622,19 +2068,29 @@ async fn run_all() -> Result<(), JsValue> {
     // `None` 분기로 빠져 `.done` 파일로 나가 **수집에서 통째로 유실된다**.
     // 그래서 범위 밖 인덱스(`g = len`) 페이지를 한 번 더 돌아 끝낸다 — 그
     // 페이지는 아무 셀도 안 돌므로 빈 결과이고, 그것이 종료 신호가 된다.
+    //
+    // **`end` — 구간 수집의 상한** (2026-09-27, 실제로 당했다). 페이지는 스스로 다음 그룹으로
+    // 이동하므로, 드라이버가 구간(`FIRST_GROUP`/`TOTAL_GROUPS`)을 지정해도 페이지는 그것을 모른 채
+    // 목록 끝까지 간다. 드라이버가 기대 조각을 다 받고 브라우저를 정리하기 전까지 범위 밖 셀이
+    // 측정되고, 정리가 실패하면(개정 #10 스모크: `xvfb-run` 래퍼만 죽고 브라우저가 고아로 남았다)
+    // **다음 수집과 동시에** 계속 측정한다. 이제 `end` 이상의 그룹은 범위 밖 인덱스와 똑같이
+    // 빈 종료 페이지가 된다.
+    let limit = query_param("end").and_then(|v| v.parse::<usize>().ok()).unwrap_or(cells.len()).min(cells.len());
     let next_group = match group {
-        Some(g) if g < cells.len() => Some(g + 1),
+        Some(g) if g < limit => Some(g + 1),
         _ => None,
     };
-    let selected: Vec<&Cell> = match group {
-        Some(g) => cells.get(g).into_iter().collect(),
-        None => cells.iter().collect(),
+    // (셀 목록 인덱스, 셀) — 인덱스가 레코드의 `group`이 된다(개정 #10).
+    let selected: Vec<(usize, &Cell)> = match group {
+        Some(g) if g < limit => cells.get(g).map(|c| (g, c)).into_iter().collect(),
+        Some(_) => Vec::new(),
+        None => cells.iter().enumerate().collect(),
     };
 
-    for cell in selected {
+    for (gi, cell) in selected {
         // W6은 §8이 "반복 개념 없음"으로 따로 정의했으므로 전용 러너를 탄다.
         if let Some((ci, trial)) = cell.stress {
-            run_w6_cell(&document, &container_node, ci, trial, &mut report, &mut first_entry).await;
+            run_w6_cell(&document, &container_node, ci, trial, gi, &mut report, &mut first_entry).await;
             continue;
         }
         match cell.item {
@@ -1650,7 +2106,8 @@ async fn run_all() -> Result<(), JsValue> {
                     |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)),
                     cell.row_bindings,
                     cell.row_inner,
-                    cell.write_variant,
+                    cell.doubled,
+                    gi,
                     cell.row_variants,
                     Some(cell.workload),
                     &mut report,
@@ -1674,7 +2131,8 @@ async fn run_all() -> Result<(), JsValue> {
                     |seed| heap_item(1_000_000 + (seed as usize % 1_000_000)),
                     cell.row_bindings,
                     cell.row_inner,
-                    cell.write_variant,
+                    cell.doubled,
+                    gi,
                     cell.row_variants,
                     Some(cell.workload),
                     &mut report,
@@ -1744,11 +2202,19 @@ async fn run_all() -> Result<(), JsValue> {
                 // POST가 서버에 닿은 뒤에 이동해야 조각이 유실되지 않는다.
                 // `cells=core`가 붙어 있으면 **이동 후에도 유지**해야 한다 —
                 // 안 그러면 두 번째 셀부터 전체 목록으로 돌아가 인덱스가 어긋난다.
-                let href = if core_only {
-                    format!("?collect={name}&group={g}&cells=core")
-                } else {
-                    format!("?collect={name}&group={g}")
-                };
+                // `cdp=1`도 같다(개정 #10) — 빠지면 두 번째 셀부터 에이전트 부재가
+                // "missing"이 아니라 "unavailable"(에이전트 없는 정상 런)로 기록된다.
+                let mut carry = String::new();
+                if core_only {
+                    carry.push_str("&cells=core");
+                }
+                if cdp_expected() {
+                    carry.push_str("&cdp=1");
+                }
+                if let Some(e) = query_param("end") {
+                    carry.push_str(&format!("&end={e}"));
+                }
+                let href = format!("?collect={name}&group={g}{carry}");
                 wasm_bindgen_futures::spawn_local(async move {
                     let _ = wasm_bindgen_futures::JsFuture::from(req).await;
                     if let Some(w) = web_sys::window() {
@@ -2634,5 +3100,143 @@ impl CatchUpCell {
             self.dom.counts().to_json(),
             loom_runtime::DomOps::live_node_count(&self.dom).unwrap_or(0),
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 하네스 순수 함수 테스트 (개정 #10). 브라우저가 필요 없는 부분만 — 셀 목록이 §3.3·§10을
+// 옮긴 것인가, GC 겹침 계산이 맞는가. 둘 다 **수집 전에** 틀리면 재수집이 통째로 무효가 된다.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// §3.3 기본 셀 + 개정 #10의 W7×R2×heap. 이중 측정은 이제 별도 셀이 아니므로 셀 수에 안 더해진다.
+    #[test]
+    fn cell_list_is_section_3_3_plus_w7_heap_r2() {
+        let v = cell_list();
+        // 핵심 격자 12 + W10 4 + 스케일링 6 + R3 1 + W6 30 + W8 1 + W9 1 + W11 1 + W7 heap {R1,R2} 2
+        assert_eq!(v.len(), 58);
+        assert_eq!(v.iter().filter(|c| c.stress.is_some()).count(), 30);
+        assert!(
+            v.iter().any(|c| c.item == ItemAxis::Heap && c.row_bindings == 8 && c.workload == Workload::ValueUpdate),
+            "W7 × R2 × heap이 없다 — §10 'W7은 양쪽 × Item 타입 축'의 절반"
+        );
+    }
+
+    /// 이중 측정 셀 = §3.3 {W1..W4}×{R1,R2} + W10(×2율)×{R1,R2} + §10 W7×{R1,R2}×{POD,heap}. 정확히 그 20셀.
+    #[test]
+    fn doubled_cells_are_exactly_the_registered_set() {
+        let v = cell_list();
+        let doubled: Vec<&Cell> = v.iter().filter(|c| c.doubled).collect();
+        assert_eq!(doubled.len(), 8 + 4 + 4, "이중 측정 셀 수");
+        for c in &doubled {
+            assert_eq!((c.n, c.row_inner, c.row_variants), (1000, 0, false));
+            assert!(c.stress.is_none());
+            match c.workload {
+                Workload::Swap | Workload::Shuffle | Workload::Shuffle10 | Workload::HeadInsert
+                | Workload::Replace50 | Workload::Replace100 => assert!(c.item == ItemAxis::Pod),
+                Workload::ValueUpdate => {}
+                _ => panic!("등재되지 않은 워크로드가 이중 측정 셀이다: {}", c.workload.name()),
+            }
+        }
+        // 존재 단언(음성 단언 앞) — W7은 네 조합이 다 있어야 한다.
+        for item in [ItemAxis::Pod, ItemAxis::Heap] {
+            for rb in [1usize, 8] {
+                assert!(
+                    doubled.iter().any(|c| c.workload == Workload::ValueUpdate && c.item == item && c.row_bindings == rb),
+                    "W7 이중 측정 셀 누락"
+                );
+            }
+        }
+        // 스케일링·R3·W8·W9·W11·W5는 이중 측정 대상이 아니다.
+        assert!(v.iter().filter(|c| c.n != 1000 || c.row_variants || c.row_inner > 0).all(|c| !c.doubled));
+        assert!(v.iter().filter(|c| matches!(c.workload, Workload::Append | Workload::Clear | Workload::RemoveMiddle)).all(|c| !c.doubled));
+    }
+
+    /// 스로틀 범위(§8 "트랙 L 핵심 격자")는 POD {W1,W2,W3,W4,W5,W7}×{R1,R2} × n=1,000 = 12셀.
+    #[test]
+    fn core_grid_for_throttle_is_twelve_pod_cells() {
+        let core: Vec<Cell> = cell_list().into_iter().filter(is_core_grid).collect();
+        assert_eq!(core.len(), 12);
+        assert!(core.iter().all(|c| c.item == ItemAxis::Pod));
+        // 그중 이중 측정은 W5만 빼고 10셀.
+        assert_eq!(core.iter().filter(|c| c.doubled).count(), 10);
+    }
+
+    /// 그룹 번호 ↔ 셀 대응표(운용용 — 판정과 무관). 셀 목록은 시드 셔플되므로 드라이버의
+    /// `FIRST_GROUP`/`TOTAL_GROUPS`나 Firefox 부분집합의 그룹 목록을 정하려면 이것이 필요하다.
+    ///   cargo test -p loom-bench -- --ignored --nocapture print_cell_order
+    #[test]
+    #[ignore]
+    fn print_cell_order() {
+        for (mode, core_only) in [("all", false), ("core", true)] {
+            let mut base = cell_list();
+            if core_only {
+                base.retain(is_core_grid);
+            }
+            let order = shuffled_indices(base.len(), "track-l-cells", "cell-order");
+            for (g, i) in order.into_iter().enumerate() {
+                let c = base[i];
+                let item = if c.item == ItemAxis::Pod { "POD" } else { "heap" };
+                let stress = c.stress.map(|(ci, t)| format!(" W6 cand={ci} trial={t}")).unwrap_or_default();
+                println!(
+                    "{mode}\t{g}\t{}\t{}\tR{}\tn={}\tinner={}\tvariants={}\t{item}\tcore={}\tdoubled={}{stress}",
+                    c.workload.clause_id(), c.workload.name(), if c.row_bindings == 1 { 1 } else { 2 },
+                    c.n, c.row_inner, c.row_variants, is_core_grid(&c), c.doubled,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn write_axis_marks_exactly_c_and_the_d_family() {
+        let m = all_makers::<ItemId>();
+        let axis: Vec<bool> = m.iter().map(|(_, a)| *a).collect();
+        // all_makers 순서: K, C, D, E, D-LIS, E-LIS
+        assert_eq!(axis, vec![false, true, true, false, true, false]);
+    }
+
+    #[test]
+    fn overlap_counts_only_the_timed_parts() {
+        let gc = [(1.0, 2.0), (5.0, 7.0), (9.0, 9.5)];
+        // 창 [0,1.5]는 0.5, [4,6]은 1.0, [2,5]는 GC 경계에만 닿는다(0), [8,10]은 0.5.
+        assert_eq!(overlap_with(0.0, 1.5, &gc), 0.5);
+        assert_eq!(overlap_with(4.0, 6.0, &gc), 1.0);
+        assert_eq!(overlap_with(2.0, 5.0, &gc), 0.0);
+        assert_eq!(overlap_with(8.0, 10.0, &gc), 0.5);
+        // **창 시작 전에 시작해 창 안에서 끝나는 GC**(걸침) — 이분 탐색이 시작점으로 고르면
+        // 이 구간을 건너뛴다(반사실로 확인: 이 단언 없이는 그 변이가 통과했다).
+        assert_eq!(overlap_with(1.5, 3.0, &gc), 0.5);
+        assert!((overlap_with(6.0, 9.2, &gc) - 1.2).abs() < 1e-12);
+        // 한 창이 두 GC 구간을 덮는다.
+        assert_eq!(overlap_with(0.0, 10.0, &gc), 1.0 + 2.0 + 0.5);
+        assert_eq!(overlap_with(0.0, 10.0, &[]), 0.0);
+    }
+
+    #[test]
+    fn per_sample_sums_its_windows_and_keeps_sample_order() {
+        let gc = [(1.0, 2.0), (5.0, 7.0)];
+        // wps=2: 표본0 = [0,1.5]+[4,6] = 0.5+1.0, 표본1 = [8,9]+[10,11] = 0
+        let w = [(0.0, 1.5), (4.0, 6.0), (8.0, 9.0), (10.0, 11.0)];
+        assert_eq!(gc_overlap_per_sample(&w, 2, &gc), vec![1.5, 0.0]);
+        // wps=1이면 창마다.
+        assert_eq!(gc_overlap_per_sample(&w, 1, &gc), vec![0.5, 1.0, 0.0, 0.0]);
+        // 창 사이(비측정 구간)의 GC는 어느 표본에도 안 들어간다.
+        assert_eq!(gc_overlap_per_sample(&[(0.0, 0.9), (2.1, 3.0)], 2, &gc), vec![0.0]);
+    }
+
+    #[test]
+    fn stage_samples_keep_the_sample_scale() {
+        let mut t = loom_runtime::StageTimings::default();
+        (t.systems_ms, t.sync_point_ms, t.dom_apply_ms, t.row_patch_ms, t.total_ms) = (1.0, 2.0, 3.0, 4.0, 10.0);
+        let mut a = StageAcc::default();
+        for _ in 0..5 {
+            a.add(&t);
+        }
+        let m = a.scaled(1.0 / 5.0);
+        assert_eq!((m.systems, m.sync_point, m.dom_apply, m.row_patch, m.total), (1.0, 2.0, 3.0, 4.0, 10.0));
+        let j = stage_samples_json(&[StageAcc::of(&t), m]);
+        assert!(j.contains("\"systems\": [1.0000, 1.0000]") && j.contains("\"total\": [10.0000, 10.0000]"), "{j}");
     }
 }

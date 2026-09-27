@@ -16,7 +16,18 @@
 
 `selfcheck.py`가 세 모드를 다 돌려 기대 문구를 단언한다.
 
+**형식 (2026-09-27, 개정 #10)**: 기본은 v22 형식이다 — 셀 소속(`group`·`cell_id`), 이중 측정 셀에서
+C·D·D-LIS 두 변형이 **같은 셀**(9후보), rep별 단계 시간(`stage_samples_ms`), GC 통제(`gc`). `legacy_v21`과
+`batch_mix`는 v21 형식(변형마다 별도 셀, 새 필드 없음)으로 쓴다 — 옛 수집분도 판정기가 계속 읽어야 하고,
+배치 모드 혼용은 옛 형식에서만 생길 수 있기 때문이다.
+
 모드:
+  legacy_v21   — v21 형식 그대로. 판정기가 새 필드 없이도 완주하고, 옛 경로임을 줄마다 밝히는가.
+  cross_cell   — v22 형식인데 C의 무조건 변형이 **다른 셀(그룹)**에 있다(옛 하네스처럼). 셀 구성 점검과
+                 같은 셀 짝 보고가 그것을 잡는가.
+  gc_missing   — Chromium인데 GC 통제가 안 된 셀(바인딩 없음)·강제 GC 미관측 셀·로그 유실 셀이 섞였다.
+  stage_median — C의 W2×R3에서 마지막 rep 점값은 sync_point 60%(v21 방식이면 기각 뒷 분기 발동)인데
+                 rep별 median은 30%. 판정이 rep별 median을 읽는가.
   throttle_threshold — 비스로틀 C/D 2.5 → 스로틀 3.5. 어휘는 "열세→열세"로 그대로인데
                  C 기각 앞 분기(하한 ≥ 3)만 스로틀에서 발동한다. 어휘 대조는 침묵하고
                  게이트 구성 요소 대조만 울려야 한다(2026-09-27 등재한 구멍).
@@ -45,6 +56,8 @@ import json, random, sys, os
 out_dir = sys.argv[1]
 mode = sys.argv[2] if len(sys.argv) > 2 else "base"
 random.seed(1)
+LEGACY = mode in ("legacy_v21", "batch_mix")
+VERSION = "v21" if LEGACY else "v22"
 
 POD, STR = "ItemId(POD u32)", "String(heap 128B)"
 CANDS = ["K", "C", "D", "D-LIS", "E", "E-LIS"]
@@ -91,11 +104,22 @@ for rb in (1, 8):
         for c in CANDS:
             rows.append(rec(c, wl, POD, 1000, rb, 0, False, "Conditional"))
 # doubled Unconditional
-for r in list(rows):
-    if r["workload"] in ("swap", "shuffle", "shuffle10", "head_insert", "replace50", "replace100"):
-        rr = json.loads(json.dumps(r))
-        rr["write_variant"] = "Unconditional"
-        rows.append(rr)
+if LEGACY:
+    # v21: 무조건 변형이 **별도 셀** — 6후보 전부가 한 벌 더.
+    for r in list(rows):
+        if r["workload"] in ("swap", "shuffle", "shuffle10", "head_insert", "replace50", "replace100"):
+            rr = json.loads(json.dumps(r))
+            rr["write_variant"] = "Unconditional"
+            rows.append(rr)
+else:
+    # v22(개정 #10): **같은 셀**에 C·D·D-LIS의 무조건 변형만 더해진다. W7도 이중 측정(§10).
+    for r in list(rows):
+        if (r["workload"] in ("swap", "shuffle", "shuffle10", "head_insert", "replace50",
+                              "replace100", "value_update")
+                and r["candidate"] in ("C", "D", "D-LIS")):
+            rr = json.loads(json.dumps(r))
+            rr["write_variant"] = "Unconditional"
+            rows.append(rr)
 # scaling, R3, W8, W9, W11, heap
 for n in (100, 10000):
     for c in CANDS:
@@ -108,6 +132,12 @@ for c in CANDS:
     rows.append(rec(c, "clear", POD, 1000, 1, 0, False, "Conditional"))
     rows.append(rec(c, "remove_middle", POD, 1000, 1, 0, False, "Conditional"))
     rows.append(rec(c, "value_update", STR, 1000, 1, 0, False, "Conditional"))
+    if not LEGACY:
+        # 개정 #10: W7 × R2 × heap 신설 + heap W7도 C·D 양 변형.
+        rows.append(rec(c, "value_update", STR, 1000, 8, 0, False, "Conditional"))
+        if c in ("C", "D", "D-LIS"):
+            rows.append(rec(c, "value_update", STR, 1000, 1, 0, False, "Unconditional"))
+            rows.append(rec(c, "value_update", STR, 1000, 8, 0, False, "Unconditional"))
 
 if mode == "partial_cap":
     # W2 x R2 judgment cell hit the §8 cap after 3 reps for every candidate (round-robin).
@@ -131,9 +161,11 @@ if mode == "stalled_cell":
     # 한 셀의 벽시계만 기대치의 수십 배로 만든다(표본은 그대로) — 스왑 스래싱·
     # GC·OS 스케줄링으로 측정 중 멈춰 있던 셀의 형태. 표본이 정상인데 벽시계만
     # 크므로 §8 상한 항목으로는 안 잡히고, 정지 흔적 검사만 잡을 수 있다.
+    # v22 형식에서는 두 변형이 한 셀이므로 **셀 전체**(9후보)가 같은 벽시계를 싣는다.
     for r in rows:
         if (r["workload"] == "swap" and r["row_bindings"] == 1 and r["n"] == 1000
-                and r["write_variant"] == "Conditional" and not r["row_variants"]):
+                and (not LEGACY or r["write_variant"] == "Conditional") and not r["row_variants"]
+                and r["item_type"] == POD):
             r["cell_wall_ms"] = 900_000.0
 if mode == "scaling_nonmono":
     # C/K 비율이 n에 따라 **비단조**가 되게 만든다(0.30 → 0.25 → 0.28). 끝점만
@@ -211,10 +243,80 @@ if mode == "throttle_threshold":
         if w2r2(t, "C"):
             t["samples_ms"] = [v * 3.5 for v in tdl[t["write_variant"]]]
 
+
+
+def modernize(rows, throttle_rate=1):
+    """v22(개정 #10) 필드를 붙인다 — 모드별 변형이 끝난 **뒤에** 부른다(표본 수가 바뀌었을 수 있다)."""
+    keyf = lambda r: (r["item_type"], r["n"], r["row_bindings"], r.get("row_inner", 0),
+                      r["row_variants"], r["workload"])
+    groups = {}
+    for r in rows:
+        groups.setdefault(keyf(r), len(groups))
+    members = {}
+    for r in rows:
+        members.setdefault(keyf(r), []).append(r)
+    rng = random.Random(99)
+    for r in rows:
+        k = keyf(r)
+        g = groups[k]
+        r["group"] = g
+        r["cell_id"] = f"{r['item_type']}|n={r['n']}|R{r['row_bindings']}|inner={r.get('row_inner', 0)}|variants={r['row_variants']}|{r['workload']}"
+        r["cell_candidates"] = len(members[k])
+        r["write_axis_in_cell"] = any(x["write_variant"] == "Unconditional" for x in members[k])
+        r["windows_per_sample"] = 1
+        r["stage_samples_scope"] = "sum_over_sequence_steps" if r["workload"] == "append" else "the_measured_step"
+        m = len(r["samples_ms"])
+        r["stage_samples_ms"] = {key: [round(v * (1 + rng.gauss(0, 0.02)), 5) for _ in range(m)]
+                                 for key, v in r["stage_ms"].items()}
+        ov = [0.0] * m
+        for j in range(0, m, 17):
+            ov[j] = 0.01
+        r["gc"] = {"control": "cdp", "source": "cdp-trace v8+cppgc renderer-main",
+                   "cell_start": {"ok": True, "throttle_rate": throttle_rate, "tracing": "v8,cppgc"},
+                   "forced": {"ok": True, "method": "HeapProfiler.collectGarbage"},
+                   "segments": [{"ok": True, "data_loss": False, "sync_spread_ms": 0.01,
+                                 "n_events": 120, "forced_majorgc_events": 2}],
+                   "log_complete": True, "overlap_unit": "ms per sample (same scale as samples_ms)",
+                   "with_gc": sum(1 for x in ov if x > 0), "overlap_ms": ov}
+
+
+if not LEGACY:
+    modernize(rows)
+    if THROTTLE_ROWS is not None:
+        modernize(THROTTLE_ROWS, throttle_rate=4)
+
+if mode == "cross_cell":
+    # 옛 하네스처럼 C의 무조건 변형이 **다른 셀**에서 온 상태 — W2×R1 셀의 C/Uncond만 새 그룹으로 옮긴다.
+    # C가 W2에서 무조건 변형을 고르도록 더 빠르게 만들어 판정 짝(C/D, C/K)이 실제로 셀을 건너게 한다.
+    newg = max(r["group"] for r in rows) + 1
+    for r in rows:
+        if (r["candidate"] == "C" and r["workload"] == "shuffle" and r["row_bindings"] == 1
+                and r["n"] == 1000 and not r["row_variants"] and r["write_variant"] == "Unconditional"):
+            r["group"] = newg
+            r["samples_ms"] = [v * 0.5 for v in r["samples_ms"]]
+if mode == "gc_missing":
+    gs = sorted({r["group"] for r in rows if r["workload"] != "stress"})
+    for r in rows:
+        if r["group"] in gs[:3]:
+            r["gc"] = dict(r["gc"], control="missing-binding", cell_start=None, forced=None,
+                           segments=[], log_complete=False, with_gc=None, overlap_ms=None)
+        elif r["group"] == gs[3]:
+            r["gc"] = dict(r["gc"], segments=[dict(r["gc"]["segments"][0], forced_majorgc_events=0)])
+        elif r["group"] == gs[4]:
+            r["gc"] = dict(r["gc"], segments=[dict(r["gc"]["segments"][0], data_loss=True)],
+                           log_complete=False, with_gc=None, overlap_ms=None)
+if mode == "stage_median":
+    for r in rows:
+        if r["candidate"] == "C" and r["row_variants"] and r["workload"] == "shuffle":
+            m = len(r["samples_ms"])
+            r["stage_ms"] = dict(r["stage_ms"], sync_point=0.6, total=1.0)       # 마지막 rep: 60%
+            r["stage_samples_ms"]["total"] = [1.0] * m
+            r["stage_samples_ms"]["sync_point"] = [0.3] * (m - 1) + [0.6]      # rep별 median: 30%
+
 os.makedirs(out_dir, exist_ok=True)
 if THROTTLE_ROWS is not None:
-    with open(os.path.join(out_dir, "rq1-phase1-track-l-core-grid-v21-chromium-throttle4.json"), "w") as f:
+    with open(os.path.join(out_dir, f"rq1-phase1-track-l-core-grid-{VERSION}-chromium-throttle4.json"), "w") as f:
         json.dump({"track_l": THROTTLE_ROWS, "track_t": []}, f)
-with open(os.path.join(out_dir, "rq1-phase1-track-l-core-grid-v21-chromium.json"), "w") as f:
+with open(os.path.join(out_dir, f"rq1-phase1-track-l-core-grid-{VERSION}-chromium.json"), "w") as f:
     json.dump({"track_l": rows, "track_t": []}, f)
-print(len(rows), "rows ->", out_dir)
+print(len(rows), "rows ->", out_dir, VERSION)
