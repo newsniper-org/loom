@@ -43,9 +43,20 @@ DATA = os.environ.get("RQ1_DATA_DIR",
 # (채택 a)과 R2 셀(기각)을 한 판정식 안에서 만나게 하기 때문이다.
 VERSION = "v21"
 # §8 "저사양 프록시" 통과의 수집 파일. 있으면 강건성 확인을 돌린다(판정은 불변).
+# **판정 데이터와 같은 디렉터리에서 찾는다.** 처음엔 `bench/collected/`의 드라이버
+# 산출물을 가리켰는데, 그러면 합성 픽스처로 돌릴 때(`RQ1_DATA_DIR`)도 **실측 스로틀
+# 파일**을 읽어 픽스처 비스로틀과 실측 스로틀을 대조하는 무의미한 출력이 나온다.
 THROTTLE_FILE = os.environ.get(
     "RQ1_THROTTLE_FILE",
-    "/home/ybi/loom-research/bench/collected/v21-chromium-throttle4.json")
+    f"{DATA}/rq1-phase1-track-l-core-grid-{VERSION}-chromium-throttle4.json")
+# 강건성 확인 모드에서는 게이트의 `▶ 판정` 줄을 판정이 아닌 것으로 표시한다 — 스로틀
+# 출력의 "▶ C 판정"이 grep되어 판정으로 읽히면 §8 "판정은 1차 열에서만"이 깨진다.
+ROBUSTNESS = {"on": False}
+
+
+def verdict_head(cand):
+    return (f"▷ {cand} (강건성 확인 — 판정 아님)" if ROBUSTNESS["on"]
+            else f"▶ {cand} 판정")
 # 옛 오버레이 기제는 남기지 않는다 — 전면 재수집이라 섞을 기반이 없다.
 # (개정 #8의 R3 오버레이 주석은 git 이력에 남아 있다.)
 INVALIDATED = [f"v{i}" for i in range(1, 19)] + ["v19-r3", "v20-chromium-headed"]
@@ -540,8 +551,10 @@ def gate_c(idx, browser):
     else:
         c_line = ("채택 조건 (a)(b) 충족 — (c)는 설계 판단" if adopt_ab
                   else "기각 미발동, 채택 조건 불충족 → 채택 불가")
-    print(f"\n  ▶ C 판정: {c_line}")
-    return {"adopt_a": ok_a, "adopt_b": ok_b, "reject": rejected}
+    print(f"\n  {verdict_head('C')}: {c_line}")
+    return {"adopt_a": ok_a, "adopt_b": ok_b, "reject": rejected,
+            # 스로틀 강건성 대조는 분기별로 한다 — 뒷 분기(W2×R3)는 스로틀 범위 밖이다.
+            "reject_front": fired_front, "reject_back": fired_back}
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +610,7 @@ def gate_d(idx, browser):
     print("    ※ §5 FV 계류(D·E 공통)는 이 스크립트 범위 밖 — 채택은 그것까지 통과해야 한다.")
 
     front_txt = say(k_all, "앞항 성립 — 그러나 뒷항 미계측이라 기각 불성립", "불성립(앞항 불성립)")
-    print(f"\n  ▶ D 판정: 기각 (iii) {front_txt}"
+    print(f"\n  {verdict_head('D')}: 기각 (iii) {front_txt}"
           f" / 양성 조건 {say(ok_pos, '충족', '불충족')}"
           f" / W5 부속 {say(w5_rider, '발동', '미발동')}")
     return {"reject_iii_front": k_all, "adopt_positive": ok_pos, "w5_rider": w5_rider}
@@ -673,7 +686,7 @@ def gate_e(idx, browser):
     # ▶ 줄도 `None`을 접지 않는다 — 어느 한쪽이 발동이면 기각(결정적), 둘 다
     # 미발동이면 미발동, 그 외(한쪽이 판정 불가)는 판정 불가.
     e_reject = resolve_any([fired_i, fired_ii], lambda x: x is True)
-    print(f"\n  ▶ E 판정: {say(e_reject, '**기각**', '기각 미발동')}")
+    print(f"\n  {verdict_head('E')}: {say(e_reject, '**기각**', '기각 미발동')}")
     return {"reject_i": fired_i, "reject_ii": fired_ii}
 
 
@@ -1340,16 +1353,7 @@ def main():
             trows = None
             print(f"\n[스로틀] 파일 없음 — 건너뜀: {THROTTLE_FILE}")
         if trows:
-            print(f"\n\n{'#' * 78}\n# CHROMIUM 4× CPU 스로틀 (강건성 확인 — 판정 아님)"
-                  f"   (레코드 {len(trows)})\n{'#' * 78}")
-            set_ctx(browser="CHROMIUM 4× 스로틀", clause="강건성 확인(판정 아님)")
-            check_labels(trows, "chromium-throttle4")
-            tidx = build_index(trows)
-            print(f"\n{'-' * 78}\n비스로틀 ↔ 4× 스로틀 우세 방향 대조\n{'-' * 78}")
-            direction_diff(c["_idx"], tidx, "비스로틀", "4×스로틀",
-                           "§8은 스로틀을 격자에 '추가'만 하고 §9는 참조하지 않는다 — "
-                           "판정 대체가 아니라 강건성 확인이다(2026-09-27 등재)")
-            report_throttle_multipliers(c["_idx"], tidx)
+            robustness_throttle(c, trows)
 
     f = results.get("firefox")
     if f:
@@ -1390,38 +1394,129 @@ def cross_browser_consistency(results):
     return set(mode_diff)
 
 
+# 스로틀 강건성 대조에서 게이트 구성 요소별 범위. §8은 스로틀을 "(i) 트랙 L 핵심
+# 격자"에만 요구했다 — C 기각 뒷 분기의 셀(W2 × R3)은 핵심 격자 밖이므로 스로틀 쪽에서
+# 그것은 "미계측"이 아니라 "범위 밖"이다. 대조에 넣으면 거짓 불일치가 난다.
+THROTTLE_SCOPE = {
+    "C": [("adopt_a", "채택 (a)"), ("adopt_b", "채택 (b)"), ("reject_front", "기각 앞 분기")],
+    "D": [("reject_iii_front", "기각 (iii) 앞항"), ("adopt_positive", "양성 조건"),
+          ("w5_rider", "W5 부속")],
+    "E": [("reject_i", "기각 (i)"), ("reject_ii", "기각 (ii)")],
+}
+THROTTLE_OUT_OF_SCOPE = [("C", "reject_back", "기각 뒷 분기 (W2 × R3 — 핵심 격자 밖)")]
+
+
+def robustness_throttle(c, trows):
+    """§8 저사양 프록시(4× CPU 스로틀) — **강건성 확인, 판정 아님**.
+
+    등재(2026-09-27, 수신 전): 판정은 비스로틀 1차 열에서만. 스로틀에서 (a) 판정 셀의
+    우세 방향이 뒤집히거나 (b) §9 게이트 구성 요소의 결론이 달라지면 §11-1(b) 검토 대상.
+    (b)가 필요한 이유: §9에는 어휘가 아니라 임계값으로 발동하는 조건이 있고(C 기각 앞
+    분기 하한 ≥ 3 등), 두 조건이 다 "열세"여도 임계 발동은 갈릴 수 있다.
+    """
+    print(f"\n\n{'#' * 78}\n# CHROMIUM 4× CPU 스로틀 — 강건성 확인 (판정 아님)"
+          f"   (레코드 {len(trows)})\n{'#' * 78}")
+    tidx = build_index(trows)
+    scope = sorted({(r["clause"], r["row_bindings"], r.get("write_variant", "Conditional"))
+                    for r in trows if r.get("clause") != "W6"})
+    print(f"  범위: §8 '트랙 L 핵심 격자' — {len(scope)}셀 "
+          f"(그 밖의 셀은 범위 밖이지 미계측이 아니다)")
+    report_throttle_multipliers(c["_idx"], tidx)
+
+    print(f"\n{'-' * 78}\n(a) 판정 셀 우세 방향 — 비스로틀 ↔ 4× 스로틀\n{'-' * 78}")
+    direction_diff(c["_idx"], tidx, "비스로틀", "4×스로틀",
+                   "§8은 스로틀을 격자에 '추가'만 하고 §9는 참조하지 않는다 — "
+                   "판정 대체가 아니라 강건성 확인이다(2026-09-27 등재)")
+
+    print(f"\n{'-' * 78}\n(b) §9 게이트 전부를 스로틀 데이터에 — 구성 요소별 대조\n{'-' * 78}")
+    print("  아래 게이트 출력은 **판정이 아니다**(§8: 판정은 비스로틀 1차 열에서만).")
+    ROBUSTNESS["on"] = True
+    label = "CHROMIUM 4× 스로틀 (강건성)"
+    try:
+        t = {"C": gate_c(tidx, label), "D": gate_d(tidx, label), "E": gate_e(tidx, label)}
+    finally:
+        ROBUSTNESS["on"] = False
+
+    print(f"\n{'-' * 78}\n게이트 구성 요소 대조 (비스로틀 → 4× 스로틀)\n{'-' * 78}")
+    diff = unresolved_n = 0
+    fmt = lambda x: say(x, "발동/충족", "미발동/불충족")
+    for cand, comps in THROTTLE_SCOPE.items():
+        for key, name in comps:
+            u, v = c[cand].get(key), t[cand].get(key)
+            # 한쪽이라도 판정 불가(None)면 "결론이 다르다"가 아니라 "비교 불가"다 —
+            # ⚠️로 찍으면 데이터 부재를 결론 차이로 읽게 된다(2026-09-24에 판정기
+            # 전체에서 고친 바로 그 접힘을 여기서 다시 만들지 않는다).
+            if u is None or v is None:
+                mark = " ?"
+                unresolved_n += 1
+            elif u == v:
+                mark = "  "
+            else:
+                mark = "⚠️"
+                diff += 1
+            print(f"  {mark} {cand} {name:18s} 비스로틀={fmt(u):20s} 4×스로틀={fmt(v)}")
+    for cand, key, name in THROTTLE_OUT_OF_SCOPE:
+        print(f"     {cand} {name} — 범위 밖, 대조하지 않음")
+    if unresolved_n:
+        print(f"\n  ※ 한쪽이 판정 불가라 비교하지 못한 요소 {unresolved_n}개 (?) — 결론 차이로 세지 않는다.")
+    if diff:
+        print(f"\n  ⇒ **게이트 결론이 갈린 요소 {diff}개** — §11-1(b) 검토 대상 등재 사유. "
+              "판정은 비스로틀 그대로다.")
+    elif unresolved_n:
+        print("\n  ⇒ 비교 가능한 요소는 전부 결론 동일 — 단 비교 불가 요소가 있어 '전부 유지'로는 말할 수 없다.")
+    else:
+        # 갈리지 않았다는 사실도 적는다 — 안 적으면 "확인 안 함"과 구별되지 않는다.
+        print("\n  ⇒ 범위 안의 게이트 구성 요소 전부 결론 동일 — 저사양 프록시에서도 판정이 유지된다.")
+
+
 def report_throttle_multipliers(iu, it):
-    """후보별 **실효 스로틀 배수**를 판정 셀에서 보고한다.
+    """실효 스로틀 배수 — **셀 단위 표류와 후보 간 차이를 분리해** 보고한다.
 
     "스로틀 명령이 성공했다"와 "측정이 실제로 느려졌다"는 다르다 — 감시자가 죽어
     조용히 비스로틀이 되는 경로가 실재한다(2026-09-27에 실제로 당했다). 배수가
-    1.0 근처면 그 수집분은 스로틀이 안 걸린 것이고, 라벨만 스로틀인 데이터다.
+    1.0 근처면 라벨만 스로틀인 데이터다.
+
+    **절대 배수 하나로 요약하지 않는다** (2026-09-27 수정). 두 조건은 다른 날 다른
+    런에서 측정되므로 셀마다 머신 상태가 달라 절대 배수가 **셀 단위로** 흔들린다
+    (실측: 셀 내 중앙 3.45×~5.68×). 첫 판은 처음 본 셀 하나(3.45× — 20셀 중 최저)를
+    일반화해 "4배에 못 미치는 것은 정상"을 고정 문구로 박았고, 전체 중앙 4.29×와
+    모순된 채 출력됐다. 판정에 중요한 것은 **셀 안에서 후보들이 같이 움직였는가**
+    (= 비율 보존)이고, 그것을 따로 센다.
     """
-    print(f"\n  실효 스로틀 배수 (판정 셀, 스로틀 median / 비스로틀 median):")
-    per = defaultdict(list)
-    for w in JUDGE_WORKLOADS:
+    print(f"\n  실효 스로틀 배수 (스로틀 median / 비스로틀 median, 셀 단위 분해):")
+    by_cell = defaultdict(dict)
+    for w in JUDGE_WORKLOADS + ["W5", "W7"]:
         for b in (1, 8):
-            for cand in (C, D, E, K):
+            for cand in (C, D, D_NOLIS, E, "E-LIS", K):
                 a, t = cell(iu, w, b, cand), cell(it, w, b, cand)
                 if not a or not t or not a.get("samples_ms") or not t.get("samples_ms"):
                     continue
                 ma = statistics.median(a["samples_ms"])
                 if ma > 0:
-                    per[cand].append(statistics.median(t["samples_ms"]) / ma)
-    if not per:
+                    by_cell[(w, b)][cand] = statistics.median(t["samples_ms"]) / ma
+    if not by_cell:
         print("    비교 가능한 셀 없음")
         return
-    for cand in sorted(per, key=lambda c_: -statistics.median(per[c_])):
-        v = per[cand]
-        print(f"    {cand:6s} 중앙 {statistics.median(v):.2f}×  (셀 {len(v)}개, "
-              f"{min(v):.2f}~{max(v):.2f})")
-    allv = [x for v in per.values() for x in v]
+    cell_meds = {k: statistics.median(v.values()) for k, v in by_cell.items()}
+    spreads = {k: max(v.values()) / min(v.values()) for k, v in by_cell.items() if len(v) > 1}
+    allv = [x for v in by_cell.values() for x in v.values()]
     med = statistics.median(allv)
-    print(f"    ⇒ 전체 중앙 {med:.2f}× — "
-          f"{'**스로틀이 안 걸렸다**(라벨만 스로틀인 데이터다)' if med < 1.5 else '스로틀 적용 확인'}")
-    print("    ※ 4배에 못 미치는 것은 정상이다 — CDP CPU 스로틀은 **스크립트 실행**만")
-    print("      늦추고 컴포지터·브라우저 프로세스 작업은 늦추지 않는다. 후보마다 배수가")
-    print("      다른 것도 예고돼 있다(개정 #9 공평성 진술 7).")
+    lo_k, hi_k = min(cell_meds, key=cell_meds.get), max(cell_meds, key=cell_meds.get)
+    print(f"    전체 중앙 {med:.2f}× (셀 {len(by_cell)}개)")
+    print(f"    셀 간 표류: 셀 내 중앙 {cell_meds[lo_k]:.2f}× ({lo_k[0]}×R{1 if lo_k[1] == 1 else 2}) "
+          f"~ {cell_meds[hi_k]:.2f}× ({hi_k[0]}×R{1 if hi_k[1] == 1 else 2})"
+          f" — 두 조건이 다른 런이라 셀마다 머신 상태가 다르다")
+    if spreads:
+        sm = statistics.median(spreads.values())
+        print(f"    셀 내 후보 간: 최대/최소의 중앙 {sm:.2f}× — "
+              f"{'후보들이 같이 움직였다(비율 보존 — 판정 대조의 전제 성립)' if sm < 1.5 else '**후보별로 다르게 움직였다** — 비율 대조 전에 원인 확인 필요'}")
+    if med < 1.5:
+        print("    ⇒ **스로틀이 안 걸렸다** — 라벨만 스로틀인 데이터다")
+    else:
+        rel = "아래" if med < 4 else "위"
+        print(f"    ⇒ 스로틀 적용 확인. 명목 4×의 {rel}인 것은 CDP CPU 스로틀이 스크립트 실행만")
+        print("      늦추는 것과(→ 4× 미만 쪽) 런 간 표류(→ 양쪽)가 겹친 결과다. 절대 배수는")
+        print("      판정에 쓰지 않는다 — 판정 대조는 각 조건 **안에서의** 비율로 한다.")
 
 
 def cross_browser_direction_check(results, incomparable=frozenset()):

@@ -17,6 +17,9 @@
 `selfcheck.py`가 세 모드를 다 돌려 기대 문구를 단언한다.
 
 모드:
+  throttle_threshold — 비스로틀 C/D 2.5 → 스로틀 3.5. 어휘는 "열세→열세"로 그대로인데
+                 C 기각 앞 분기(하한 ≥ 3)만 스로틀에서 발동한다. 어휘 대조는 침묵하고
+                 게이트 구성 요소 대조만 울려야 한다(2026-09-27 등재한 구멍).
   noise_not_neutral — K만 스톨을 맞아 상대 꼬리가 두꺼운 상태. 머신 소음의
                  후보 중립성 검사가 그것을 잡는지 본다.
   stalled_cell — 한 셀의 벽시계만 기대치의 수십 배(표본은 정상). 측정 중 머신
@@ -179,7 +182,39 @@ if mode == "missing_cell":
     rows = [r for r in rows if not (r["candidate"] == "D-LIS" and r["workload"] == "swap"
                                     and r["row_bindings"] == 1 and r["n"] == 1000)]
 
+THROTTLE_ROWS = None
+if mode == "throttle_threshold":
+    # **어휘는 안 바뀌는데 임계 발동만 갈리는** 상태 — 2026-09-27 등재한 구멍 그 자체.
+    # 비스로틀: W2×R2 C/D-LIS = 2.5 (열세, C 기각 앞 분기 임계 3 미만 → 미발동)
+    # 스로틀:   W2×R2 C/D-LIS = 3.5 (열세, 임계 3 이상 → 발동)
+    # 어휘 대조는 "열세 → 열세"라 침묵하고, 게이트 구성 요소 대조만 울려야 한다.
+    # C는 이중 측정 후보라 **두 write 변형을 모두** 바꿔야 한다 — 한쪽만 바꾸면
+    # §9 서두의 셀별 우세 변형 선택이 안 바꾼 쪽(더 빠른 쪽)을 고른다.
+    def w2r2(r, cand):
+        return (r["candidate"] == cand and r["workload"] == "shuffle"
+                and r["row_bindings"] == 8 and r["n"] == 1000 and not r["row_variants"])
+    dl = {r["write_variant"]: r["samples_ms"] for r in rows if w2r2(r, "D-LIS")}
+    for r in rows:
+        if w2r2(r, "C"):
+            r["samples_ms"] = [v * 2.5 for v in dl[r["write_variant"]]]
+    # 스로틀 파일: §8 범위(핵심 격자)만, 전 표본 ×3.45 — 비율이 그대로 보존된다.
+    CORE = {"swap", "shuffle", "shuffle10", "head_insert", "append", "value_update"}
+    THROTTLE_ROWS = []
+    for r in rows:
+        if (r["n"] == 1000 and r["item_type"] == POD and not r["row_variants"]
+                and r.get("row_inner", 0) == 0 and r["workload"] in CORE):
+            t = json.loads(json.dumps(r))
+            t["samples_ms"] = [v * 3.45 for v in t["samples_ms"]]
+            THROTTLE_ROWS.append(t)
+    tdl = {r["write_variant"]: r["samples_ms"] for r in THROTTLE_ROWS if w2r2(r, "D-LIS")}
+    for t in THROTTLE_ROWS:
+        if w2r2(t, "C"):
+            t["samples_ms"] = [v * 3.5 for v in tdl[t["write_variant"]]]
+
 os.makedirs(out_dir, exist_ok=True)
+if THROTTLE_ROWS is not None:
+    with open(os.path.join(out_dir, "rq1-phase1-track-l-core-grid-v21-chromium-throttle4.json"), "w") as f:
+        json.dump({"track_l": THROTTLE_ROWS, "track_t": []}, f)
 with open(os.path.join(out_dir, "rq1-phase1-track-l-core-grid-v21-chromium.json"), "w") as f:
     json.dump({"track_l": rows, "track_t": []}, f)
 print(len(rows), "rows ->", out_dir)
