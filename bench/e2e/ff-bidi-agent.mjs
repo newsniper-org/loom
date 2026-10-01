@@ -1,0 +1,301 @@
+// **트랙 L Firefox 수집의 GC 통제 에이전트 — WebDriver BiDi** (개정 #10 후속 3, 2026-10-01)
+//
+// §8 격리(M-15): "성능·메모리 셀 시작 시 CDP 강제 GC 1회, 측정 중 GC 이벤트 로그(이상치 제거 없이 GC 주석 병기)".
+// Firefox는 CDP를 지원하지 않아 개정 #10에서 "unavailable"(§8 스로틀 한계와 같은 성격)로 등재했다. 병익님 제안으로
+// WebDriver BiDi를 확인한 결과(2026-10-01 프로브, Firefox 155.0.1) Firefox의 원격 에이전트가 `--remote-allow-system-access`
+// 아래에서 **chrome(특권) 컨텍스트**를 BiDi로 열어 주고, 그 안에서 다음이 된다:
+//   - 콘텐츠 프로세스 강제 GC: `child-gc-request` + `child-cc-request` 알림(about:memory의 GC 버튼이 쓰는 경로) —
+//     프로브에서 콘텐츠 프로세스마다 GCMajor 1회 + CC가 실제로 관측됐다.
+//   - GC 로그: Gecko 프로파일러(스택 샘플링 끔, 마커만, 메인 스레드)의 GCMajor/GCSlice/GCMinor/CC/CCSlice 마커.
+//     하네스의 `performance.mark("loom:…")`가 같은 스레드에 UserTiming 마커로 찍히므로, 페이지의
+//     `performance.getEntriesByType("mark")`와 짝지어 프로파일러 시계 ↔ 페이지 시계(performance.now)를 맞춘다.
+// **CPU 스로틀은 여전히 불가**다 — Firefox에 해당 기능 자체가 없다(§8 한계 그대로). 배수 1만 받는다.
+//
+// 하네스(wasm)는 **바꾸지 않는다**: 하네스는 `window.__loomCdp(payload)`를 부르고 `window.__loomCdpAck(응답)`을
+// 기다린다. 여기서는 BiDi 프리로드 스크립트의 **채널**로 `__loomCdp`를 만들어 같은 핸드셰이크를 흉내 낸다.
+// 그래서 Firefox 레코드의 `gc.control = "cdp"`는 "에이전트 핸드셰이크 정상"이라는 하네스의 상태 이름일 뿐이고,
+// 실제 출처는 `gc.cell_start.tracing`에 실린다(개정 #10 후속 3 등재).
+//
+// 응답 형식은 `cdp-agent.mjs`와 같다(ok, throttle_rate, data_loss, sync_spread_ms, n_events, forced_majorgc_events, union).
+//
+// 사용:
+//   node bench/e2e/ff-bidi-agent.mjs <원격 포트> <스로틀 배수(1만)> <GC 로그 jsonl 경로> <수집 이름>
+
+import { appendFileSync } from "node:fs";
+
+const port = Number(process.argv[2] ?? 9222);
+const rate = Number(process.argv[3] ?? 1);
+const gcLog = process.argv[4];
+const collectName = process.argv[5];
+if (rate !== 1) throw new Error("Firefox에는 CPU 스로틀 수단이 없다(§8) — 배수 1만 받는다");
+if (!gcLog || !collectName) throw new Error("GC 로그 경로와 수집 이름이 필요하다");
+
+// 프로파일러 버퍼(엔트리 수). 원형 버퍼라 넘치면 **앞쪽**이 버려진다 — 구간의 페이지 표식이 프로파일에 다 있는지로
+// 유실을 판정한다(존재 단언).
+const PROFILER_ENTRIES = 8 * 1024 * 1024;
+const GC_MARKER = /^(GCMajor|GCSlice|GCMinor|CC|CCSlice|GC Interrupt)$/;
+const FORCED_GC_WAIT_MS = 1500;
+
+const log = (...a) => console.log(`[ff-agent ${new Date().toISOString().slice(11, 19)}]`, ...a);
+
+// ---------------------------------------------------------------------------
+// BiDi 연결 (Firefox 원격 에이전트의 /session 웹소켓)
+// ---------------------------------------------------------------------------
+let ws = null;
+for (let i = 0; i < 120 && !ws; i++) {
+  try {
+    const w = new WebSocket(`ws://127.0.0.1:${port}/session`);
+    await new Promise((res, rej) => { w.onopen = res; w.onerror = rej; });
+    ws = w;
+  } catch {
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+if (!ws) throw new Error(`BiDi 포트 ${port}에 붙지 못했다`);
+let nextId = 1;
+const pending = new Map();
+const listeners = new Map();
+function send(method, params = {}) {
+  const id = nextId++;
+  ws.send(JSON.stringify({ id, method, params }));
+  return new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
+}
+ws.onmessage = (ev) => {
+  const msg = JSON.parse(ev.data);
+  if (msg.id !== undefined && pending.has(msg.id)) {
+    const p = pending.get(msg.id);
+    pending.delete(msg.id);
+    if (msg.type === "error") p.reject(new Error(`${p.method}: ${msg.error} ${msg.message ?? ""}`));
+    else p.resolve(msg.result);
+    return;
+  }
+  for (const fn of listeners.get(msg.method) ?? []) fn(msg.params);
+};
+ws.onclose = () => {
+  log(`브라우저 연결 종료 — 강제 GC ${stats.gc}회, 프로파일 구간 ${stats.traces}개`);
+  process.exit(0);
+};
+function on(method, fn) {
+  if (!listeners.has(method)) listeners.set(method, []);
+  listeners.get(method).push(fn);
+}
+const stats = { gc: 0, traces: 0 };
+
+const sess = await send("session.new", { capabilities: { alwaysMatch: {} } });
+log(`BiDi 세션 — ${sess.capabilities?.browserName} ${sess.capabilities?.browserVersion}`);
+await send("session.subscribe", { events: ["script.message", "browsingContext.load"] });
+
+// chrome(특권) 컨텍스트 — `--remote-allow-system-access`가 있어야 열린다.
+const chromeTree = await send("browsingContext.getTree", { "moz:scope": "chrome" });
+const chromeCtx = chromeTree.contexts?.[0]?.context;
+if (!chromeCtx) throw new Error("chrome 컨텍스트가 없다 — Firefox를 --remote-allow-system-access로 띄웠는가");
+
+async function evalIn(ctx, expression) {
+  const r = await send("script.evaluate", { expression, target: { context: ctx }, awaitPromise: true });
+  if (r.type === "exception") throw new Error(`평가 예외: ${r.exceptionDetails?.text}`);
+  return r.result?.value;
+}
+
+// 하네스의 `__loomCdp` 바인딩 — 이후 생기는 문서마다(프리로드) + 이미 떠 있는 문서에(callFunction).
+const BIND = "(ch) => { window.__loomCdp = (p) => ch(p); }";
+await send("script.addPreloadScript", { functionDeclaration: BIND, arguments: [{ type: "channel", value: { channel: "loom" } }] });
+const contextUrl = new Map();
+async function bindExisting() {
+  const tree = await send("browsingContext.getTree", {});
+  for (const c of tree.contexts) {
+    contextUrl.set(c.context, c.url);
+    if (!matches(c.url)) continue;
+    await send("script.callFunction", {
+      functionDeclaration: BIND, awaitPromise: false, target: { context: c.context },
+      arguments: [{ type: "channel", value: { channel: "loom" } }],
+    }).catch((e) => log(`기존 문서 바인딩 실패: ${e.message}`));
+    log(`페이지 타깃에 붙음 ${c.context.slice(0, 8)} — ${c.url}`);
+  }
+}
+function matches(url) {
+  return url.includes(`collect=${collectName}&`) || url.endsWith(`collect=${collectName}`);
+}
+on("browsingContext.load", (p) => {
+  contextUrl.set(p.context, p.url);
+});
+await bindExisting();
+
+// ---------------------------------------------------------------------------
+// 프로파일 구간
+// ---------------------------------------------------------------------------
+const seg = new Map(); // context → { pageStart }
+
+async function profilerStart(ctx) {
+  await evalIn(chromeCtx, `(async () => { await Services.profiler.StartProfiler(${PROFILER_ENTRIES}, 10, ["nostacksampling"], ["GeckoMain"]); return Services.profiler.IsActive(); })()`);
+  // 구간 시작의 페이지 시각 — 유실 판정(이 시각 이후의 페이지 표식이 프로파일에 다 있어야 한다)에 쓴다.
+  const pageStart = await evalIn(ctx, "performance.now()");
+  seg.set(ctx, { pageStart });
+}
+
+/** 프로파일을 거두고 멈춘다. 측정 페이지의 메인 스레드에서 loom: UserTiming 마커와 GC 마커를 뽑는다. */
+async function profilerCollect(ctx) {
+  const raw = await evalIn(chromeCtx, `(async () => {
+    const p = await Services.profiler.getProfileDataAsync();
+    Services.profiler.StopProfiler();
+    const out = [];
+    const visit = (proc) => {
+      for (const t of proc.threads || []) {
+        const m = t.markers; if (!m || !m.data) continue;
+        const strs = t.stringTable || []; const s = m.schema;
+        const ut = [], gc = [];
+        for (const r of m.data) {
+          const nm = strs[r[s.name]];
+          if (nm === "UserTiming") {
+            const d = r[s.data];
+            if (d && typeof d.name === "string" && d.name.startsWith("loom:")) ut.push([d.name, r[s.startTime]]);
+          } else if (${GC_MARKER}.test(nm)) {
+            gc.push([nm, r[s.startTime], r[s.endTime], r[s.phase]]);
+          }
+        }
+        if (ut.length) out.push({ pid: t.pid, tid: t.tid, ut, gc });
+      }
+      for (const c of proc.processes || []) visit(c);
+    };
+    visit(p);
+    return JSON.stringify(out);
+  })()`);
+  const threads = JSON.parse(raw);
+  const page = JSON.parse(await evalIn(ctx, `JSON.stringify(performance.getEntriesByType("mark").filter(m => m.name.startsWith("loom:")).map(m => [m.name, m.startTime]))`));
+  return { threads, page, pageStart: seg.get(ctx)?.pageStart ?? 0 };
+}
+
+const median = (xs) => { const v = xs.slice().sort((a, b) => a - b); return v.length ? v[v.length >> 1] : NaN; };
+
+function extract({ threads, page, pageStart }) {
+  // 이 구간에 찍혔어야 할 페이지 표식(구간 시작 이후).
+  const expected = page.filter(([, t]) => t >= pageStart);
+  if (!expected.length) return { ok: false, why: "이 구간에 페이지 loom: 표식이 없다 — 시계 대응 불가", data_loss: false };
+  // 측정 페이지의 메인 스레드 = 그 표식들이 찍힌 스레드. 표식 이름이 가장 많이 겹치는 스레드를 고른다.
+  const names = new Set(expected.map(([n]) => n));
+  let best = null, bestHits = 0;
+  for (const th of threads) {
+    const hits = th.ut.filter(([n]) => names.has(n)).length;
+    if (hits > bestHits) { best = th; bestHits = hits; }
+  }
+  if (!best) return { ok: false, why: "프로파일에 이 페이지의 loom: 표식이 없다", data_loss: true };
+  // 짝짓기: 같은 이름의 표식은 시간 순서대로 대응시킨다(W6 flush 표식이 반복된다).
+  const byName = (arr) => { const m = new Map(); for (const [n, t] of arr) { if (!m.has(n)) m.set(n, []); m.get(n).push(t); } for (const v of m.values()) v.sort((a, b) => a - b); return m; };
+  const pm = byName(expected), um = byName(best.ut);
+  const offs = [];
+  let missing = 0;
+  for (const [n, pts] of pm) {
+    const uts = um.get(n) || [];
+    // 프로파일 쪽이 모자라면 앞쪽이 버려진 것(원형 버퍼) — 뒤에서부터 짝짓는다.
+    const k = Math.min(pts.length, uts.length);
+    missing += pts.length - k;
+    for (let i = 1; i <= k; i++) offs.push(uts[uts.length - i] - pts[pts.length - i]);
+  }
+  if (!offs.length) return { ok: false, why: "짝지을 표식이 없다", data_loss: true };
+  const off = median(offs);
+  const spread = Math.max(...offs) - Math.min(...offs);
+  // GC 구간: phase 1 = 구간(start, end), 2 = 시작, 3 = 끝(같은 이름끼리 짝), 0 = 순간(길이 0 — 버린다).
+  const raw = [], counts = {}, open = new Map();
+  for (const [nm, s, e, ph] of best.gc) {
+    counts[nm] = (counts[nm] || 0) + 1;
+    if (ph === 1) raw.push([s - off, e - off, nm]);
+    else if (ph === 2) open.set(nm, s);
+    else if (ph === 3 && open.has(nm)) { raw.push([open.get(nm) - off, e - off, nm]); open.delete(nm); }
+  }
+  raw.sort((a, b) => a[0] - b[0]);
+  const union = [];
+  for (const [s, e] of raw) {
+    const last = union[union.length - 1];
+    if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+    else union.push([s, e]);
+  }
+  const markTimes = Object.fromEntries(expected.map(([n, t]) => [n, t]));
+  const req = markTimes["loom:gc:req"], fin = markTimes["loom:gc:done"];
+  const forced = req === undefined || fin === undefined ? null
+    : raw.filter(([s, e, n]) => n === "GCMajor" && e >= req && s <= fin).length;
+  return { ok: true, data_loss: missing > 0, missing_marks: missing, sync_spread_ms: spread, n_events: best.gc.length, counts, union, markTimes, forced };
+}
+
+const r4 = (x) => Math.round(x * 1e4) / 1e4;
+
+async function handle(ctx, req) {
+  const base = { group: req.group, cid: req.cid, cmd: req.cmd };
+  switch (req.cmd) {
+    case "cell-start": {
+      if (await evalIn(chromeCtx, "Services.profiler.IsActive()")) {
+        log(`group=${req.group}: 앞 구간의 프로파일러가 켜진 채였다 — 멈추고 버린다`);
+        await evalIn(chromeCtx, "Services.profiler.StopProfiler()");
+      }
+      await profilerStart(ctx);
+      return { ok: true, throttle_rate: 1, tracing: "gecko-profiler markers GeckoMain (GCMajor/GCSlice/GCMinor/CC/CCSlice) via WebDriver BiDi" };
+    }
+    case "gc": {
+      // 콘텐츠 프로세스 GC + CC 요청(about:memory GC 버튼과 같은 경로). 비동기라 처리될 시간을 준 뒤 응답한다 —
+      // 실제로 일어났는지는 프로파일의 GCMajor(요청~완료 표식 사이)로 사후 단언한다.
+      await evalIn(chromeCtx, `Services.obs.notifyObservers(null, "child-gc-request"); Services.obs.notifyObservers(null, "child-cc-request"); true`);
+      await new Promise((r) => setTimeout(r, FORCED_GC_WAIT_MS));
+      stats.gc++;
+      return { ok: true, method: "child-gc-request + child-cc-request" };
+    }
+    case "trace-flush":
+    case "measure-end": {
+      const col = await profilerCollect(ctx);
+      stats.traces++;
+      const x = extract(col);
+      if (req.cmd === "trace-flush") await profilerStart(ctx);
+      if (!x.ok) {
+        appendFileSync(gcLog, JSON.stringify({ ...base, ok: false, why: x.why, data_loss: x.data_loss }) + "\n");
+        return { ok: false, why: x.why, data_loss: x.data_loss };
+      }
+      appendFileSync(gcLog, JSON.stringify({
+        ...base, ok: true, data_loss: x.data_loss, missing_marks: x.missing_marks, sync_spread_ms: r4(x.sync_spread_ms),
+        n_events: x.n_events, counts: x.counts, forced_majorgc_events: x.forced, marks: x.markTimes,
+        union_ms: x.union.map(([s, e]) => [r4(s), r4(e)]),
+      }) + "\n");
+      return {
+        ok: true, data_loss: x.data_loss, sync_spread_ms: r4(x.sync_spread_ms), n_events: x.n_events,
+        forced_majorgc_events: x.forced, union: x.union.flatMap(([s, e]) => [r4(s), r4(e)]),
+      };
+    }
+    default:
+      return { ok: false, why: `모르는 명령 ${req.cmd}` };
+  }
+}
+
+// 페이지 → 에이전트(채널 메시지). 문맥마다 직렬로 처리하고(cdp-agent와 같은 이유), 응답에 요청 id를 싣는다.
+const chains = new Map();
+on("script.message", (p) => {
+  if (p.channel !== "loom") return;
+  const ctx = p.source?.context;
+  const prev = chains.get(ctx) ?? Promise.resolve();
+  chains.set(ctx, prev.then(async () => {
+    // 이동 직후면 load 이벤트보다 메시지가 먼저 올 수 있다 — URL을 다시 조회한다.
+    let url = contextUrl.get(ctx) ?? "";
+    if (!matches(url)) {
+      const t = await send("browsingContext.getTree", { root: ctx }).catch(() => null);
+      url = t?.contexts?.[0]?.url ?? url;
+      contextUrl.set(ctx, url);
+    }
+    if (!matches(url)) { log(`다른 수집의 페이지 메시지 — 무시: ${url}`); return; }
+    await onMessage(ctx, p);
+  }).catch((e) => log(`핸들러 오류: ${e.message}`)));
+});
+async function onMessage(ctx, p) {
+  let req;
+  try { req = JSON.parse(p.data?.value ?? "{}"); } catch { req = { cmd: "?" }; }
+  let reply;
+  try { reply = await handle(ctx, req); } catch (e) { reply = { ok: false, why: String(e.message ?? e) }; }
+  reply.req_id = req.req_id ?? null;
+  if (!reply.ok) log(`명령 실패 group=${req.group} ${req.cmd}: ${reply.why}`);
+  else if (req.cmd === "measure-end" || req.cmd === "cell-start")
+    log(`group=${req.group} ${req.cmd}${reply.n_events !== undefined ? ` GC 마커 ${reply.n_events}, 유실=${reply.data_loss}, 강제GC GCMajor=${reply.forced_majorgc_events}` : ""}`);
+  try {
+    await send("script.callFunction", {
+      functionDeclaration: "(s) => { if (window.__loomCdpAck) window.__loomCdpAck(JSON.parse(s)); }",
+      awaitPromise: false, target: { context: ctx }, arguments: [{ type: "string", value: JSON.stringify(reply) }],
+    });
+  } catch (e) {
+    log(`응답 전달 실패(페이지가 이미 이동했을 수 있다): ${e.message}`);
+  }
+}
+
+log(`감시 시작 — 포트 ${port}, 수집 ${collectName}, GC 로그 ${gcLog} (스로틀 없음 — Firefox 수단 부재)`);

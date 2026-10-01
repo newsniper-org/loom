@@ -89,8 +89,10 @@ CELLS_Q=""
 # 있어야 한다"를 알린다: 바인딩이 끝내 안 생기면 레코드에 `missing-binding`으로 남는다(조용히
 # "에이전트 없는 런"으로 기록되지 않는다). Firefox는 CDP 수단이 없다 — §8이 스로틀에 대해 이미
 # 명기한 것과 같은 한계이고, 레코드에 `unavailable`로 남는다.
-CDP_Q=""
-case "$BIN" in *firefox*) ;; *) CDP_Q="&cdp=1" ;; esac
+# **개정 #10 후속 3(2026-10-01)**: Firefox도 에이전트를 붙인다 — CDP가 아니라 WebDriver BiDi(`ff-bidi-agent.mjs`,
+# chrome 컨텍스트의 child-gc-request + Gecko 프로파일러 GC 마커). 하네스에게는 같은 `cdp=1`이다(같은 핸드셰이크).
+# Firefox의 CPU 스로틀은 여전히 수단이 없다(아래 THROTTLE 검사 그대로).
+CDP_Q="&cdp=1"
 # `end`: 페이지가 이 그룹 이상으로 스스로 이동하지 않는다(구간 수집이 범위 밖 셀을 재지 않게).
 URL="http://localhost:$PORT/demo/list_bench.html?collect=$NAME&group=$FIRST_GROUP$CELLS_Q$CDP_Q&end=$TOTAL_GROUPS"
 
@@ -133,7 +135,7 @@ if [ "$HEADED" = "1" ]; then
 fi
 
 # CDP 포트가 이미 점유돼 있으면 **시작하지 않는다** — 에이전트가 그 포트의 다른 브라우저에 붙는다.
-case "$BIN" in *firefox*) ;; *)
+case "$BIN" in *) # 개정 #10 후속 3: Firefox도 원격 포트를 쓴다
   if (exec 3<>"/dev/tcp/127.0.0.1/$CDP_PORT") 2>/dev/null; then
     echo "[collect-stock] **CDP 포트 $CDP_PORT가 이미 열려 있다** — 앞 수집의 브라우저가 살아 있을 수 있다. 정리 후 다시 실행할 것." >&2
     exit 1
@@ -144,6 +146,8 @@ case "$BIN" in
   *firefox*)
     # `--no-remote` + 빈 프로필: 이미 떠 있는 사용자 세션에 붙지 않게.
     FF_FLAGS=(--no-remote --profile "$PROFILE")
+    # WebDriver BiDi 원격 에이전트 + chrome(특권) 컨텍스트 허용 — 강제 GC·GC 마커용(개정 #10 후속 3).
+    FF_FLAGS+=(--remote-debugging-port "$CDP_PORT" --remote-allow-system-access)
     # Firefox도 같은 이유로 X11을 강제한다.
     [ "$HEADED" = "1" ] && export MOZ_ENABLE_WAYLAND=0
     [ "$HEADED" = "1" ] || FF_FLAGS+=(--headless)
@@ -195,7 +199,11 @@ GCLOG="$ROOT/bench/collected/$NAME.gc.jsonl"
 AGENT_LOG="$ROOT/bench/collected/$NAME.agent.log"
 rm -f "$GCLOG" "$AGENT_LOG"
 if [ -n "$CDP_Q" ]; then
-  (cd "$ROOT/bench/e2e" && exec node cdp-agent.mjs "$CDP_PORT" "$THROTTLE" "$GCLOG" "$NAME") > "$AGENT_LOG" 2>&1 &
+  case "$BIN" in
+    *firefox*) AGENT_JS=ff-bidi-agent.mjs ;;
+    *) AGENT_JS=cdp-agent.mjs ;;
+  esac
+  (cd "$ROOT/bench/e2e" && exec node "$AGENT_JS" "$CDP_PORT" "$THROTTLE" "$GCLOG" "$NAME") > "$AGENT_LOG" 2>&1 &
   THROTTLE_PID=$!
   echo "CDP 에이전트 시작 (pid $THROTTLE_PID, 포트 $CDP_PORT, 스로틀 ${THROTTLE}x, GC 로그 $GCLOG)"
 fi

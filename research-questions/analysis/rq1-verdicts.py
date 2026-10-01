@@ -1238,7 +1238,10 @@ def gc_integrity(rows, browser):
     for g in cells.values():
         ctl[g.get("control", "?")] += 1
     print(f"  GC 통제(M-15): 셀 {len(cells)}개 — control 분포 {dict(ctl)}")
-    if chromium:
+    # **Firefox도 에이전트가 붙으면(개정 #10 후속 3 — WebDriver BiDi) 같은 점검을 한다.** 옛 Firefox 수집분은
+    # 전 셀 "unavailable"(등재 한계)이고, BiDi 수집분은 "cdp"(하네스의 상태 이름 — 실제 출처는 cell_start.tracing).
+    agent_run = chromium or "cdp" in ctl
+    if agent_run:
         bad = {k: v for k, v in ctl.items() if k != "cdp"}
         if bad:
             problems.append(f"Chromium인데 GC 통제가 이행되지 않은 셀 {sum(bad.values())}개 {bad}")
@@ -1268,8 +1271,12 @@ def gc_integrity(rows, browser):
               f"· 시계 대응 흩어짐 최대 {max(spreads) if spreads else float('nan'):.4f}ms · 셀 시작 시 걸린 스로틀 배수 {dict(rates)}")
     else:
         if set(ctl) != {"unavailable"}:
-            problems.append(f"Firefox인데 control이 unavailable 아닌 셀 {dict(ctl)}")
-        print("    Firefox: CDP 수단 부재 — 강제 GC·GC 로그 없음(개정 #10 등재 한계, §8 스로틀 한계와 같은 성격)")
+            problems.append(f"Firefox인데 에이전트 없는 셀과 실패 셀이 섞였다 {dict(ctl)}")
+        print("    Firefox(에이전트 없는 수집분): 강제 GC·GC 로그 없음 — 개정 #10의 등재 한계. "
+              "개정 #10 후속 3부터는 WebDriver BiDi 에이전트로 이행한다")
+    if agent_run and not chromium:
+        srcs = {(g.get("cell_start") or {}).get("tracing", "?") for g in cells.values() if isinstance(g.get("cell_start"), dict)}
+        print(f"    Firefox GC 로그 출처: {sorted(srcs)}")
     return problems
 
 
@@ -1835,9 +1842,15 @@ def cross_browser_consistency(results):
     common = set(ci) & set(fi)
     mode_diff = [k for k in common
                  if ci[k].get("batch_mode") != fi[k].get("batch_mode")]
+    # §8 상한 초과 셀은 뺀다 — `m2_dom_ops`는 **마지막 측정 rep**의 값이고 상한에 걸린 쪽은 그 rep 번호가 다르다
+    # (rep마다 표적이 다르므로 M2가 다른 것이 정상). 2026-10-01 v22 Firefox에서 그룹 34 다섯 행이 이것으로 거짓 경보였다.
+    capped = [k for k in common if ci[k].get("over_cell_cap") or fi[k].get("over_cell_cap")]
     m2_diff = [k for k in common
-               if ci[k].get("batch_mode") == fi[k].get("batch_mode")
+               if k not in capped
+               and ci[k].get("batch_mode") == fi[k].get("batch_mode")
                and ci[k]["m2_dom_ops"]["total_mutations"] != fi[k]["m2_dom_ops"]["total_mutations"]]
+    if capped:
+        print(f"  (상한 초과 셀 {len(capped)}행은 M2 대조에서 뺀다 — 마지막 rep 번호가 브라우저마다 다르다)")
     print(f"  배치 모드가 브라우저 간에 다른 셀: {len(mode_diff)}/{len(common)}")
     if mode_diff:
         print("    ⇒ 그 셀들의 방향 대조는 **같은 조건의 비교가 아니다**")
