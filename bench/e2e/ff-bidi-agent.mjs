@@ -34,6 +34,12 @@ if (!gcLog || !collectName) throw new Error("GC 로그 경로와 수집 이름�
 // 유실을 판정한다(존재 단언).
 const PROFILER_ENTRIES = 8 * 1024 * 1024;
 const GC_MARKER = /^(GCMajor|GCSlice|GCMinor|CC|CCSlice|GC Interrupt)$/;
+// **합집합에 넣는 것은 메인 스레드 일시정지 수준 마커뿐이다** (개정 #10 후속 3 수집 전 검토 지적, 검증자 실재 확인).
+// `GCMajor`·`CC`는 증분 사이클 **전체**(첫 슬라이스 ~ 마지막 슬라이스)를 덮는 구간이라 슬라이스 사이의 일반 실행
+// 시간까지 포함한다 — 그것을 넣으면 모든 후보가 표본 시간의 ~10%를 "GC"로 받는 공허한 주석이 됐다(스모크 g7: D-LIS
+// 10.4%·C 10.1%·K 9.2%). 실제 일시정지는 `GCSlice`·`GCMinor`·`CCSlice`다(Chromium 쪽도 일시정지 수준 이벤트만 쓴다).
+// 사이클 구간은 개수·길이만 로그에 따로 남긴다.
+const PAUSE_MARKER = /^(GCSlice|GCMinor|CCSlice)$/;
 const FORCED_GC_WAIT_MS = 1500;
 
 const log = (...a) => console.log(`[ff-agent ${new Date().toISOString().slice(11, 19)}]`, ...a);
@@ -134,6 +140,7 @@ async function profilerStart(ctx) {
 
 /** 프로파일을 거두고 멈춘다. 측정 페이지의 메인 스레드에서 loom: UserTiming 마커와 GC 마커를 뽑는다. */
 async function profilerCollect(ctx) {
+  const t0 = Date.now();
   const raw = await evalIn(chromeCtx, `(async () => {
     const p = await Services.profiler.getProfileDataAsync();
     Services.profiler.StopProfiler();
@@ -149,10 +156,12 @@ async function profilerCollect(ctx) {
             const d = r[s.data];
             if (d && typeof d.name === "string" && d.name.startsWith("loom:")) ut.push([d.name, r[s.startTime]]);
           } else if (${GC_MARKER}.test(nm)) {
-            gc.push([nm, r[s.startTime], r[s.endTime], r[s.phase]]);
+            const d = r[s.data] || {}; const tm = d.timings || {};
+            // GCMajor의 reason — 강제 GC(child-gc-request = DOM_IPC)와 자연 GC를 가른다.
+            gc.push([nm, r[s.startTime], r[s.endTime], r[s.phase], nm === "GCMajor" ? (tm.reason ?? null) : null]);
           }
         }
-        if (ut.length) out.push({ pid: t.pid, tid: t.tid, ut, gc });
+        if (ut.length) out.push({ pid: t.pid, tid: t.tid, ut, gc, markerRows: m.data.length });
       }
       for (const c of proc.processes || []) visit(c);
     };
@@ -160,8 +169,9 @@ async function profilerCollect(ctx) {
     return JSON.stringify(out);
   })()`);
   const threads = JSON.parse(raw);
+  const collectMs = Date.now() - t0;
   const page = JSON.parse(await evalIn(ctx, `JSON.stringify(performance.getEntriesByType("mark").filter(m => m.name.startsWith("loom:")).map(m => [m.name, m.startTime]))`));
-  return { threads, page, pageStart: seg.get(ctx)?.pageStart ?? 0 };
+  return { threads, page, pageStart: seg.get(ctx)?.pageStart ?? 0, collectMs };
 }
 
 const median = (xs) => { const v = xs.slice().sort((a, b) => a - b); return v.length ? v[v.length >> 1] : NaN; };
@@ -194,12 +204,14 @@ function extract({ threads, page, pageStart }) {
   const off = median(offs);
   const spread = Math.max(...offs) - Math.min(...offs);
   // GC 구간: phase 1 = 구간(start, end), 2 = 시작, 3 = 끝(같은 이름끼리 짝), 0 = 순간(길이 0 — 버린다).
-  const raw = [], counts = {}, open = new Map();
-  for (const [nm, s, e, ph] of best.gc) {
+  // 구간을 만든 뒤 일시정지 마커(raw → 합집합)와 사이클 구간(cycles — 로그만)으로 나눈다.
+  const raw = [], cycles = [], counts = {}, open = new Map();
+  const put = (seg) => (PAUSE_MARKER.test(seg[2]) ? raw : cycles).push(seg);
+  for (const [nm, s, e, ph, reason] of best.gc) {
     counts[nm] = (counts[nm] || 0) + 1;
-    if (ph === 1) raw.push([s - off, e - off, nm]);
-    else if (ph === 2) open.set(nm, s);
-    else if (ph === 3 && open.has(nm)) { raw.push([open.get(nm) - off, e - off, nm]); open.delete(nm); }
+    if (ph === 1) put([s - off, e - off, nm, reason]);
+    else if (ph === 2) open.set(nm, [s, reason]);
+    else if (ph === 3 && open.has(nm)) { const [s0, r0] = open.get(nm); put([s0 - off, e - off, nm, r0]); open.delete(nm); }
   }
   raw.sort((a, b) => a[0] - b[0]);
   const union = [];
@@ -210,9 +222,15 @@ function extract({ threads, page, pageStart }) {
   }
   const markTimes = Object.fromEntries(expected.map(([n, t]) => [n, t]));
   const req = markTimes["loom:gc:req"], fin = markTimes["loom:gc:done"];
+  // 강제 GC 존재 단언: 요청~완료 표식 사이의 GCMajor 중 **reason이 DOM_IPC**(child-gc-request가 만든 것)만 센다 —
+  // 자연 증분 GCMajor 구간이 그 창에 걸쳐도 세지 않는다(수집 전 검토 지적: 그러면 기제가 안 돌아도 통과한다).
   const forced = req === undefined || fin === undefined ? null
-    : raw.filter(([s, e, n]) => n === "GCMajor" && e >= req && s <= fin).length;
-  return { ok: true, data_loss: missing > 0, missing_marks: missing, sync_spread_ms: spread, n_events: best.gc.length, counts, union, markTimes, forced };
+    : cycles.filter(([s, e, n, r]) => n === "GCMajor" && r === "DOM_IPC" && e >= req && s <= fin).length;
+  const cycleSummary = {};
+  for (const [s, e, n] of cycles) { const c = (cycleSummary[n] ||= { n: 0, total_ms: 0 }); c.n++; c.total_ms += e - s; }
+  // n_events = 합집합에 들어간 구간 수(Chromium 에이전트와 같은 정의) — 하네스의 bad-union 판정이 이것을 쓴다.
+  return { ok: true, data_loss: missing > 0, missing_marks: missing, sync_spread_ms: spread, n_events: raw.length,
+    counts, cycles: cycleSummary, marker_rows: best.markerRows, union, markTimes, forced };
 }
 
 const r4 = (x) => Math.round(x * 1e4) / 1e4;
@@ -248,7 +266,8 @@ async function handle(ctx, req) {
       }
       appendFileSync(gcLog, JSON.stringify({
         ...base, ok: true, data_loss: x.data_loss, missing_marks: x.missing_marks, sync_spread_ms: r4(x.sync_spread_ms),
-        n_events: x.n_events, counts: x.counts, forced_majorgc_events: x.forced, marks: x.markTimes,
+        n_events: x.n_events, counts: x.counts, cycles: x.cycles, marker_rows: x.marker_rows, collect_ms: col.collectMs,
+        forced_majorgc_events: x.forced, marks: x.markTimes,
         union_ms: x.union.map(([s, e]) => [r4(s), r4(e)]),
       }) + "\n");
       return {

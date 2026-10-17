@@ -18,14 +18,17 @@
 # (둘 다 2026-09-27 스모크에서 드러난 결함의 수리 — 전에는 구간 수집 뒤 브라우저가 살아남아
 # 다음 그룹을 계속 쟀다).
 set -u
+# 출력 이름 접두어(개정 #10 후속 3): 1d85c4f 수집분(v22-firefox, 에이전트 없음)을 덮어쓰지 않게 BiDi 재수집은
+# PREFIX=v22-firefox-bidi로 돈다. 기존 파일이 있으면 collect-stock.sh가 지우므로 접두어가 곧 보존 수단이다.
+PREFIX="${PREFIX:-v22-firefox}"
 cd "$(dirname "$0")/.."
 JOB=/home/ybi/.claude/jobs/fcb33b66/tmp
 for g in 6 7 9 11 24 26 30 31 34 36 38 39 48 52 55 57; do
   echo "=== $(date +%H:%M:%S) 그룹 $g 시작 ==="
   FIRST_GROUP=$g TOTAL_GROUPS=$((g+1)) PORT=${PORT:-8931} \
-    bash bench/collect-stock.sh /usr/bin/firefox v22-firefox-g$g 2400 > $JOB/ff-g$g.log 2>&1
+    bash bench/collect-stock.sh /usr/bin/firefox ${PREFIX}-g$g ${PER_GROUP_SEC:-2400} > $JOB/${PREFIX}-g$g.log 2>&1
   rc=$?
-  echo "=== $(date +%H:%M:%S) 그룹 $g rc=$rc $(tail -1 $JOB/ff-g$g.log) ==="
+  echo "=== $(date +%H:%M:%S) 그룹 $g rc=$rc $(tail -1 $JOB/${PREFIX}-g$g.log) ==="
   # 한 그룹의 실패로 전체를 멈추지 않는다 — 실패는 병합 단계의 --groups 검사가 잡는다.
 done
 echo "=== $(date +%H:%M:%S) Firefox 부분 집합 수집 종료 ==="
