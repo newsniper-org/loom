@@ -2174,4 +2174,159 @@ mod tests {
             accepted(Api::Root, two_returns);
         }
     }
+
+    /// 7a C5(2026-10-17, design-7a §1.1·§4): 인자 묶음 R03·R04·R18·R19·R26.
+    /// 거부 하나당 부정 스니펫 하나 이상. 행마다 다음을 단언한다.
+    /// - lower 진단이 정확히 1건이고 코드·문구·**강조 토큰**·렌더 `파일:줄:열`이 맞다.
+    /// - 공개 API(Flatten 그래프)도 패닉 없이 같은 코드의 진단 1건을 돌려준다.
+    /// - 최소 차이 양성 짝(문제 인자만 다른 스니펫)이 끝까지 컴파일된다.
+    mod c5_argument_rejections {
+        use super::*;
+
+        /// App 본문(선언 + return JSX)만 바꿔 끼우는 틀.
+        fn app(body: &str) -> String {
+            format!("export function App() {{\n{body}\n}}\n")
+        }
+        /// 위젯 참조 줄만 바꿔 끼우는 틀(디렉티브·prop 검사용).
+        fn with_widget(r#ref: &str) -> String {
+            format!(
+                "function Widget() {{\n  const n = signal(0);\n  return <button onClick={{() => n.increment()}}>{{n()}}</button>;\n}}\n\
+                 export function App() {{\n  return <div>{ref}</div>;\n}}\n",
+                r#ref = r#ref
+            )
+        }
+
+        const COUNTER: &str = "  const c = signal(0);\n  return <button onClick={() => c.increment(@)}>{c()}</button>;";
+        const ROTATE: &str = "  const xs = signal([\"a\", \"b\"]);\n  return <div><button onClick={() => xs.rotate(@)}>r</button><ul>{xs().map((x) => <li>{x}</li>)}</ul></div>;";
+        const TOGGLE: &str = "  const o = signal(false);\n  return <div><button onClick={() => o.toggle(@)}>t</button>{o() && <p>x</p>}</div>;";
+        const SIGNAL: &str = "  const c = signal(@);\n  return <button onClick={() => c.increment()}>{c()}</button>;";
+        const SHARED_SIGNAL: &str = "  const c = sharedSignal(\"k\", @);\n  return <button onClick={() => c.increment()}>{c()}</button>;";
+        const SHARED_VALUE: &str = "  return <p>{sharedValue(\"k\", @)}</p>;";
+        const LEN_GT: &str = "  const xs = signal([\"a\", \"bb\"]);\n  const o = signal(false);\n  return <div><button onClick={() => o.toggle()}>t</button><ul>{xs().map((it) => <li>{it}{o() && it.length > @ && <b>w</b>}</li>)}</ul></div>;";
+        const APPEND: &str = "  const xs = signal([\"a\"]);\n  return <div><button onClick={() => xs.append(@)}>+</button><ul>{xs().map((x) => <li>{x}</li>)}</ul></div>;";
+        const INPUT_SET: &str = "  const t = signal(\"\");\n  return <div><input value={t()} onInput={(e) => t.set(@)} /></div>;";
+        const MAP: &str = "  const xs = signal([\"a\"]);\n  return <ul>{xs().map(@)}</ul>;";
+        const INPUT_CHILD: &str = "  const t = signal(\"\");\n  return <div>@</div>;";
+
+        /// (코드, 부정 소스, 문구 부분 문자열, 강조 토큰, 양성 짝 소스)
+        fn cases() -> Vec<(&'static str, String, &'static str, &'static str, Option<String>)> {
+            let a = |tpl: &str, arg: &str| app(&tpl.replace('@', arg));
+            vec![
+                // R03
+                ("LOOM-R03", a(COUNTER, "5"), "`c.increment(…)`는 지금 +1로 컴파일됩니다", "5", Some(a(COUNTER, ""))),
+                ("LOOM-R03", a(ROTATE, "1"), "`.rotate()`는 인자를 받지 않습니다", "1", Some(a(ROTATE, ""))),
+                // R04
+                ("LOOM-R04", a(TOGGLE, "true"), "`o.toggle(…)`는 지금 반전으로 컴파일됩니다", "true", Some(a(TOGGLE, ""))),
+                // R18
+                (
+                    "LOOM-R18",
+                    with_widget("<Widget client:load={false} />"),
+                    "`client:load`는 값을 받지 않습니다",
+                    "{false}",
+                    Some(with_widget("<Widget client:load />")),
+                ),
+                (
+                    "LOOM-R18",
+                    with_widget("<Widget client:load client:visible />"),
+                    "디렉티브가 둘입니다(`client:load` + `client:visible`)",
+                    "client:visible",
+                    Some(with_widget("<Widget client:visible />")),
+                ),
+                // R19 — 잘림/포화
+                ("LOOM-R19", a(SIGNAL, "1.7"), "`1.7`는 i32 정수가 아닙니다(지금은 1로", "1.7", Some(a(SIGNAL, "2"))),
+                ("LOOM-R19", a(SIGNAL, "3e10"), "`3e10`는 i32 정수가 아닙니다(지금은 2147483647로", "3e10", Some(a(SIGNAL, "3e5"))),
+                ("LOOM-R19", a(SHARED_SIGNAL, "1.5"), "`1.5`는 i32 정수가 아닙니다", "1.5", Some(a(SHARED_SIGNAL, "1"))),
+                ("LOOM-R19", a(SHARED_VALUE, "1.5"), "`1.5`는 i32 정수가 아닙니다", "1.5", Some(a(SHARED_VALUE, "1"))),
+                // prop 리터럴도 같은 `lit_i32`를 지난다. 양성 짝(`n={2}`)은 R01(C6, props
+                // 거부) 대상이 되므로 두지 않는다 — 같은 헬퍼의 양성은 위 signal 행이 덮는다.
+                ("LOOM-R19", with_widget("<Widget client:load n={2.5} />"), "`2.5`는 i32 정수가 아닙니다", "2.5", None),
+                // R19 — 길이 비교: 표기 정규화(오컴파일 아님) 문구
+                ("LOOM-R19", a(LEN_GT, "1.5"), "길이 비교에는 0 이상의 정수 리터럴을 쓰십시오(`1.5`)", "1.5", Some(a(LEN_GT, "1"))),
+                // R26 — 인자 개수
+                ("LOOM-R26", a(SIGNAL, "4, 9"), "`signal()`는 인자 1개를 받습니다(받은 것 2개", "9", Some(a(SIGNAL, "4"))),
+                ("LOOM-R26", a(APPEND, "\"a\", \"b\""), "`.append()`는 인자 1개를 받습니다(받은 것 2개", "\"b\"", Some(a(APPEND, "\"a\""))),
+                (
+                    "LOOM-R26",
+                    a(INPUT_SET, "e.target.value, 1"),
+                    "`.set()`는 인자 1개를 받습니다(받은 것 2개",
+                    "1",
+                    Some(a(INPUT_SET, "e.target.value")),
+                ),
+                (
+                    "LOOM-R26",
+                    a(MAP, "(x) => <li>{x}</li>, this"),
+                    "`.map()`는 인자 1개를 받습니다(받은 것 2개",
+                    "this",
+                    Some(a(MAP, "(x) => <li>{x}</li>")),
+                ),
+                // R26 — <input> 자식(공백 아닌 텍스트, 주석 식 모두; R02와 같은 경계)
+                (
+                    "LOOM-R26",
+                    a(INPUT_CHILD, "<input value={t()} onInput={(e) => t.set(e.target.value)}>x</input>"),
+                    "<input>은 자식을 가질 수 없습니다",
+                    "x",
+                    Some(a(INPUT_CHILD, "<input value={t()} onInput={(e) => t.set(e.target.value)} />")),
+                ),
+                (
+                    "LOOM-R26",
+                    a(INPUT_CHILD, "<input value={t()} onInput={(e) => t.set(e.target.value)}>{/* c */}</input>"),
+                    "<input>은 자식을 가질 수 없습니다",
+                    "{/* c */}",
+                    Some(a(INPUT_CHILD, "<input value={t()} onInput={(e) => t.set(e.target.value)}> </input>")),
+                ),
+            ]
+        }
+
+        #[test]
+        fn each_argument_rejection_points_at_the_offending_argument_and_has_a_compiling_positive_pair() {
+            let cases = cases();
+            // 개수 단언(행이 조용히 빠지지 않게): R03 2, R04 1, R18 2, R19 6, R26 6.
+            assert_eq!(cases.len(), 17);
+            for (code, neg, needle, token, pos) in &cases {
+                assert_lower_diag(neg, code, needle, token);
+                let e = super::super::compile_tsx_to_rust_graph(TEST_FILE, neg, GraphMode::Flatten)
+                    .err()
+                    .unwrap_or_else(|| panic!("공개 API가 받아 버림:\n{neg}"));
+                assert_diag(e, code, needle, Some(token));
+                if let Some(pos) = pos {
+                    let ok = super::super::compile_tsx_to_rust_graph(TEST_FILE, pos, GraphMode::Flatten)
+                        .unwrap_or_else(|d| panic!("양성 짝이 실패:\n{pos}\n{d}"));
+                    assert!(ok.warnings.is_empty());
+                }
+            }
+        }
+
+        #[test]
+        fn second_directive_carries_a_label_on_the_first() {
+            let d = assert_lower_diag(
+                &with_widget("<Widget client:visible client:load />"),
+                "LOOM-R18",
+                "디렉티브가 둘입니다(`client:visible` + `client:load`)",
+                "client:load",
+            );
+            let labels = &d.items()[0].labels;
+            assert_eq!(labels.len(), 1, "{d}");
+            assert_eq!(d.source_text(labels[0].0).as_deref(), Some("client:visible"), "{d}");
+        }
+
+        #[test]
+        fn length_comparison_wording_is_normalisation_not_truncation() {
+            // design-7a §1.1 R19: LenGt는 오컴파일이 아니므로 "잘림" 문구를 쓰지 않는다.
+            let d = lower_diag(&app(&LEN_GT.replace('@', "1.5")));
+            assert!(!d.items()[0].message.contains("잘리"), "{d}");
+        }
+
+        #[test]
+        fn accepted_integer_literals_lower_to_the_same_values_as_before() {
+            // 받는 입력의 IR은 C5 이전(`*value as i32`/`as usize`)과 같다: 정수 표기·지수 표기.
+            let m = parse_tsx(&app(&SIGNAL.replace('@', "3e5")));
+            let g = lower::lower_module(&m).unwrap().0;
+            assert!(matches!(g.components[0].signals[0].init, ir::SignalInit::I32(300000)));
+            let max = app(&SIGNAL.replace('@', "2147483647"));
+            let g = lower::lower_module(&parse_tsx(&max)).unwrap().0;
+            assert!(matches!(g.components[0].signals[0].init, ir::SignalInit::I32(i32::MAX)));
+            let over = app(&SIGNAL.replace('@', "2147483648"));
+            assert_lower_diag(&over, "LOOM-R19", "(지금은 2147483647로", "2147483648");
+        }
+    }
 }

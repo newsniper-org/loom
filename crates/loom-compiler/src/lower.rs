@@ -52,6 +52,12 @@
 //! `unreachable!` 2곳(매치 가드가 이미 보장한 모양을 다시 벗기는 곳)만 남겼다.
 //! 성공 경로의 IR은 C1과 같다 — 산출물 바이트는 게이트 A가 확인한다.
 //!
+//! **Phase 7a C5 (2026-10-17)**: 인자 묶음 거부를 더했다 — `LOOM-R03`
+//! (`.increment()`/`.rotate()` 인자), `LOOM-R04`(`.toggle()` 인자), `LOOM-R18`
+//! (`client:*` 값·중복), `LOOM-R19`(i32가 아닌 숫자 리터럴, 길이 비교의 비정수),
+//! `LOOM-R26`(인자 개수 초과, `<input>` 자식). 모두 지금까지 **조용히 다른 뜻으로**
+//! 컴파일되던 모양이고, 받아 주는 입력의 IR은 그대로다.
+//!
 //! 함께 `SpanTable`을 돌려준다. IR(`ir.rs`)에 span을 넣지 않는 이유는 IR의
 //! `derive(PartialEq)`와 codegen의 구조체 생성을 건드리지 않기 위해서다
 //! (design-7a §3.3). 그래프 검사(single-writer, 이후 커밋의 R07/R44 등)는 이
@@ -71,10 +77,79 @@ pub(crate) const L00: &str = "LOOM-L00";
 /// signal당 액션 1개(single-writer, Task #28-f) 위반.
 pub(crate) const L01: &str = "LOOM-L01";
 
+// 7a C5(2026-10-17, design-7a §1.1): 인자 묶음 — 지금까지 조용히 다른 뜻으로
+// 컴파일되던 인자 모양을 거부한다.
+/// `.increment()`/`.rotate()`에 인자(지금은 무시되고 +1/한 칸 회전).
+pub(crate) const R03: &str = "LOOM-R03";
+/// `.toggle()`에 인자(지금은 무시되고 반전).
+pub(crate) const R04: &str = "LOOM-R04";
+/// `client:*` 디렉티브에 값, 또는 디렉티브가 둘.
+pub(crate) const R18: &str = "LOOM-R18";
+/// i32 정수가 아닌 숫자 리터럴(지금은 `as i32`로 잘리거나 포화), 길이 비교의 비정수.
+pub(crate) const R19: &str = "LOOM-R19";
+/// 인자 개수 초과(초과분은 지금 무시), `<input>`의 자식(지금은 사라짐).
+pub(crate) const R26: &str = "LOOM-R26";
+
 type LResult<T> = Result<T, Diagnostic>;
 
 fn unsupported(span: Span, message: impl Into<String>) -> Diagnostic {
     Diagnostic::error(L00, span, message)
+}
+
+/// 숫자 리터럴의 원문(없으면 값). 진단 문구용.
+fn num_raw(n: &Number) -> String {
+    n.raw.as_ref().map(|r| r.to_string()).unwrap_or_else(|| n.value.to_string())
+}
+
+/// R19: i32로 **정확히** 표현되는 정수 리터럴만 받는다. 받는 값에 대해서는
+/// 옛 `*value as i32`와 같은 값을 돌려준다(그 범위에서 `as`는 정확하다).
+fn lit_i32(n: &Number) -> LResult<i32> {
+    let v = n.value;
+    if v.fract() == 0.0 && v >= i32::MIN as f64 && v <= i32::MAX as f64 {
+        Ok(v as i32)
+    } else {
+        Err(Diagnostic::error(
+            R19,
+            n.span,
+            format!(
+                "정수 리터럴만 받습니다. `{}`는 i32 정수가 아닙니다(지금은 {}로 잘리거나 포화됩니다)",
+                num_raw(n),
+                v as i32
+            ),
+        ))
+    }
+}
+
+/// R19(길이 비교): 오컴파일이 아니라 **표기 정규화**다 — 길이는 정수라
+/// `len > 1.5`와 `len > 1`은 같은 뜻이고 포화도 같은 결과를 낸다. 그래서
+/// "잘림" 문구를 쓰지 않는다(design-7a §1.1 R19).
+fn lit_usize(n: &Number) -> LResult<usize> {
+    let v = n.value;
+    // `usize::MAX as f64`는 2^64로 반올림되므로 `<`로 비교한다.
+    if v.fract() == 0.0 && v >= 0.0 && v < usize::MAX as f64 {
+        Ok(v as usize)
+    } else {
+        Err(Diagnostic::error(
+            R19,
+            n.span,
+            format!("길이 비교에는 0 이상의 정수 리터럴을 쓰십시오(`{}`)", num_raw(n)),
+        ))
+    }
+}
+
+/// R26: 인자가 `n`개보다 많으면 첫 초과 인자를 가리켜 거부한다.
+fn check_arity(callee: &str, args: &[ExprOrSpread], n: usize) -> LResult<()> {
+    match args.get(n) {
+        None => Ok(()),
+        Some(extra) => Err(Diagnostic::error(
+            R26,
+            extra.span(),
+            format!(
+                "`{callee}`는 인자 {n}개를 받습니다(받은 것 {}개, 초과분은 지금 무시됩니다)",
+                args.len()
+            ),
+        )),
+    }
 }
 
 /// lower가 IR 밖에 따로 돌려주는 소스 위치 표(design-7a §3.3). 모든 목록은
@@ -440,18 +515,19 @@ fn try_lower_shared_signal_decl(decl: &VarDeclarator) -> LResult<Option<(SignalD
             "sharedSignal() requires a string key and an integer initial value, e.g. sharedSignal(\"cartCount\", 0)",
         ));
     };
-    let Expr::Lit(Lit::Num(Number { value, .. })) = unwrap_paren(&initial_arg.expr) else {
+    let Expr::Lit(Lit::Num(initial)) = unwrap_paren(&initial_arg.expr) else {
         return Err(unsupported(
             initial_arg.expr.span(),
             "sharedSignal() requires a string key and an integer initial value, e.g. sharedSignal(\"cartCount\", 0)",
         ));
     };
+    let initial = lit_i32(initial)?;
     let name = id.sym.to_string();
     let key = key.value.to_string_lossy().into_owned();
     Ok(Some((
         SignalDecl {
             name: name.clone(),
-            init: SignalInit::I32(*value as i32),
+            init: SignalInit::I32(initial),
         },
         SharedBinding { signal: name, key },
     )))
@@ -505,8 +581,9 @@ fn try_lower_signal_decl(decl: &VarDeclarator) -> LResult<Option<SignalDecl>> {
     let arg = args
         .first()
         .ok_or_else(|| unsupported(*call_span, "signal() requires one argument"))?;
+    check_arity("signal()", args, 1)?;
     let init = match unwrap_paren(&arg.expr) {
-        Expr::Lit(Lit::Num(Number { value, .. })) => SignalInit::I32(*value as i32),
+        Expr::Lit(Lit::Num(n)) => SignalInit::I32(lit_i32(n)?),
         Expr::Lit(Lit::Bool(b)) => SignalInit::Bool(b.value),
         Expr::Lit(Lit::Str(s)) => SignalInit::Str(s.value.to_string_lossy().into_owned()),
         Expr::Array(ArrayLit { elems, span }) => {
@@ -616,6 +693,8 @@ fn lower_element(el: &JSXElement, cx: &mut Cx<'_>, row_var: Option<&str>) -> LRe
 /// untouched by this function).
 fn lower_component_ref(el: &JSXElement, name: &str) -> LResult<JsxNode> {
     let mut activation = None;
+    // R18: 첫 디렉티브의 (원문 이름, attr 이름 span) — 둘째 디렉티브 진단의 label용.
+    let mut first_directive: Option<(String, Span)> = None;
     let mut props = Vec::new();
     for attr in &el.opening.attrs {
         let JSXAttrOrSpread::JSXAttr(attr) = attr else {
@@ -634,7 +713,7 @@ fn lower_component_ref(el: &JSXElement, name: &str) -> LResult<JsxNode> {
                         ),
                     ));
                 }
-                activation = Some(match attr_name.sym.as_ref() {
+                let parsed = match attr_name.sym.as_ref() {
                     "load" => IslandActivation::Load,
                     "visible" => IslandActivation::Visible,
                     other => {
@@ -645,7 +724,25 @@ fn lower_component_ref(el: &JSXElement, name: &str) -> LResult<JsxNode> {
                             ),
                         ))
                     }
-                });
+                };
+                let directive = format!("client:{}", attr_name.sym);
+                if let Some(value) = &attr.value {
+                    return Err(Diagnostic::error(
+                        R18,
+                        value.span(),
+                        format!("`{directive}`는 값을 받지 않습니다(지금은 값이 무시됩니다)"),
+                    ));
+                }
+                if let Some((first, first_span)) = &first_directive {
+                    return Err(Diagnostic::error(
+                        R18,
+                        attr.name.span(),
+                        format!("<{name}>에 디렉티브가 둘입니다(`{first}` + `{directive}`). 지금은 뒤의 것만 쓰입니다"),
+                    )
+                    .with_label(*first_span, format!("첫 디렉티브 `{first}`")));
+                }
+                first_directive = Some((directive, attr.name.span()));
+                activation = Some(parsed);
             }
             JSXAttrName::Ident(IdentName { sym: prop_name, .. }) => {
                 let value = attr.value.as_ref().ok_or_else(|| {
@@ -681,7 +778,7 @@ fn lower_prop_literal(value: &JSXAttrValue) -> LResult<PropLiteral> {
             expr: JSXExpr::Expr(expr),
             ..
         }) => match unwrap_paren(expr) {
-            Expr::Lit(Lit::Num(Number { value, .. })) => Ok(PropLiteral::I32(*value as i32)),
+            Expr::Lit(Lit::Num(n)) => Ok(PropLiteral::I32(lit_i32(n)?)),
             Expr::Lit(Lit::Bool(b)) => Ok(PropLiteral::Bool(b.value)),
             Expr::Lit(Lit::Str(s)) => Ok(PropLiteral::Str(s.value.to_string_lossy().into_owned())),
             Expr::Array(ArrayLit { elems, span }) => {
@@ -738,6 +835,11 @@ fn lower_input_binding(el: &JSXElement, cx: &mut Cx<'_>) -> LResult<JsxNode> {
             ),
         )
         .with_label(value_span, format!("`value`는 `{value_signal}`")));
+    }
+    // R26: `<input …>x</input>`의 자식은 지금 조용히 사라진다. 공백뿐인 JSXText
+    // 말고는(`{/* 주석 */}` 포함) 모두 거부한다 — R02와 같은 경계.
+    if let Some(child) = el.children.iter().find(|c| !matches!(c, JSXElementChild::JSXText(t) if t.value.trim().is_empty())) {
+        return Err(Diagnostic::error(R26, child.span(), "<input>은 자식을 가질 수 없습니다(지금은 자식이 조용히 사라집니다)"));
     }
     cx.event(&oninput_signal, "onInput", oninput_span);
     Ok(JsxNode::InputBinding { signal: value_signal })
@@ -836,6 +938,7 @@ fn lower_input_oninput_attr(attr: &JSXAttr, cx: &Cx<'_>) -> LResult<String> {
     let arg = args
         .first()
         .ok_or_else(|| unsupported(*call_span, "`.set(...)` requires one argument, `e.target.value`"))?;
+    check_arity(".set()", args, 1)?;
     let wrong_arg = || format!("<input>'s `.set(...)` argument must be `{event_name}.target.value`");
     let Expr::Member(MemberExpr {
         obj: target_obj,
@@ -897,6 +1000,14 @@ fn lower_input_oninput_attr(attr: &JSXAttr, cx: &Cx<'_>) -> LResult<String> {
         ));
     }
     Ok(signal_name)
+}
+
+/// R03/R04: 인자를 받지 않는 액션 메서드에 인자가 있으면 첫 인자를 가리켜 거부한다.
+fn no_action_args(code: &'static str, args: &[ExprOrSpread], message: impl FnOnce() -> String) -> LResult<()> {
+    match args.first() {
+        None => Ok(()),
+        Some(first) => Err(Diagnostic::error(code, first.span(), message())),
+    }
 }
 
 fn lower_click_action(attr: &JSXAttr, cx: &Cx<'_>) -> LResult<ClickAction> {
@@ -961,6 +1072,9 @@ fn lower_click_action(attr: &JSXAttr, cx: &Cx<'_>) -> LResult<ClickAction> {
                 matches!(signal.init, SignalInit::I32(_)),
                 format!("`.increment()` requires an I32 signal, `{signal_name}` is not one"),
             )?;
+            no_action_args(R03, args, || {
+                format!("`.increment()`는 인자를 받지 않습니다. `{signal_name}.increment(…)`는 지금 +1로 컴파일됩니다(액션 인자는 7b)")
+            })?;
             Ok(ClickAction::Increment { signal: signal_name })
         }
         "rotate" => {
@@ -968,6 +1082,9 @@ fn lower_click_action(attr: &JSXAttr, cx: &Cx<'_>) -> LResult<ClickAction> {
                 matches!(signal.init, SignalInit::StringList(_)),
                 format!("`.rotate()` requires a string-list signal, `{signal_name}` is not one"),
             )?;
+            no_action_args(R03, args, || {
+                format!("`.rotate()`는 인자를 받지 않습니다. `{signal_name}.rotate(…)`는 지금 한 칸 회전으로 컴파일됩니다(액션 인자는 7b)")
+            })?;
             Ok(ClickAction::Rotate { signal: signal_name })
         }
         "append" => {
@@ -978,6 +1095,7 @@ fn lower_click_action(attr: &JSXAttr, cx: &Cx<'_>) -> LResult<ClickAction> {
             let arg = args
                 .first()
                 .ok_or_else(|| unsupported(*call_span, "`.append(...)` requires one string-literal argument"))?;
+            check_arity(".append()", args, 1)?;
             let Expr::Lit(Lit::Str(s)) = unwrap_paren(&arg.expr) else {
                 return Err(unsupported(
                     arg.expr.span(),
@@ -994,6 +1112,9 @@ fn lower_click_action(attr: &JSXAttr, cx: &Cx<'_>) -> LResult<ClickAction> {
                 matches!(signal.init, SignalInit::Bool(_)),
                 format!("`.toggle()` requires a Bool signal, `{signal_name}` is not one"),
             )?;
+            no_action_args(R04, args, || {
+                format!("`.toggle()`은 인자를 받지 않습니다. `{signal_name}.toggle(…)`는 지금 반전으로 컴파일됩니다")
+            })?;
             Ok(ClickAction::Toggle { signal: signal_name })
         }
         other => Err(unsupported(
@@ -1056,16 +1177,17 @@ fn lower_expr_container(expr: &Expr, cx: &mut Cx<'_>, row_var: Option<&str>) -> 
                     "sharedValue() requires a string key and an integer initial value, e.g. sharedValue(\"cartCount\", 0)",
                 ));
             };
-            let Expr::Lit(Lit::Num(Number { value, .. })) = unwrap_paren(&initial_arg.expr) else {
+            let Expr::Lit(Lit::Num(initial)) = unwrap_paren(&initial_arg.expr) else {
                 return Err(unsupported(
                     initial_arg.expr.span(),
                     "sharedValue() requires a string key and an integer initial value, e.g. sharedValue(\"cartCount\", 0)",
                 ));
             };
+            let initial = lit_i32(initial)?;
             cx.node(*call_span);
             Ok(JsxNode::SharedValueBinding {
                 key: key.value.to_string_lossy().into_owned(),
-                initial: *value as i32,
+                initial,
             })
         }
 
@@ -1278,6 +1400,7 @@ fn lower_expr_container(expr: &Expr, cx: &mut Cx<'_>, row_var: Option<&str>) -> 
             let map_arg = args
                 .first()
                 .ok_or_else(|| unsupported(*map_call_span, "`.map(...)` requires one arrow-function argument"))?;
+            check_arity(".map()", args, 1)?;
             let Expr::Arrow(ArrowExpr {
                 params,
                 body: row_body,
@@ -1359,10 +1482,10 @@ fn parse_row_predicate(expr: &Expr, row_var: &str) -> LResult<RowPredicate> {
             format!("row 술어는 이 row의 변수(`{row_var}`)를 써야 한다 — `{obj_name}` 받음"),
         ));
     }
-    let Expr::Lit(Lit::Num(Number { value, .. })) = unwrap_paren(right) else {
+    let Expr::Lit(Lit::Num(n)) = unwrap_paren(right) else {
         return Err(unsupported(right.span(), "row 술어의 오른쪽은 정수 리터럴이어야 한다"));
     };
-    Ok(RowPredicate::LenGt(*value as usize))
+    Ok(RowPredicate::LenGt(lit_usize(n)?))
 }
 
 /// `.slice(0, item.length)` 한 형태만. 인자 모양을 실제로 검사한다 —
