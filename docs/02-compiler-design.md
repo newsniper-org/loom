@@ -267,3 +267,5 @@ pass만 새로 작성하는 게 맞음.
     `specialize_component_refs`는 `ir.rs` 주석에만 이름이 나오고 함수로 존재하지 않는다.
   - 이 항목 전체의 전제("Island = 컴파일러가 반드시 지원할 단위")는 RQ6 확정으로 바뀌었다.
     `GraphMode::Islands`는 폐기되지 않고 세분화를 선택할 때 쓰는 경로로 남는다(docs/04).
+
+*(2026-10-17 부기) 이 안전성 논증에는 세 번째 전제가 숨어 있었다: (3) 페이지당 resume이 SSR 직후 한 번뿐이라는 것. `demo/resume/bootstrap.js`는 lref 요소마다 resume하므로(docs/09 R13) 실행 중 바뀐 값을 리터럴로 덮어쓴다. `bootstrap-flat.js`는 인스턴스를 공유해 이 전제를 지킨다.*

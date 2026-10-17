@@ -69,6 +69,7 @@ Component에 저장하지 않는다(CLAUDE.md "절대 하지 말 것" 4).
 | 4 | 백엔드 어댑터: 두 언어 이상에서 같은 컴포넌트를 임베드 | 완료 2026-07-24. Python ctypes, Node sidecar, Python wasmtime. 잔여 FIC payload 2026-07-28 |
 | 5 | 공식 검증 | RQ5 후보 #1–#4 이행. 아래 "공식 검증" |
 | 6 | RQ6 최종 검증 | **H-Qwik 확정(강한 형태)** 2026-07-28 |
+| 7 | 저작 표면 완성 (2026-10-17 신설, 옵션 3) | 계획 확정. 7a(위험 수리) 착수 가능, 7c는 G0 수리 캠페인에 합류 |
 
 PHASES.md는 2026-08-13 이후 갱신되지 않았다. 그래서 두 가지가 반영돼 있지 않다.
 - RQ1의 이후 진행(개정 #10, v22). 이 내용은 `research-questions/RQ1-benchmark-protocol.md`에만 있다.

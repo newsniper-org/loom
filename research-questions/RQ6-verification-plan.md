@@ -1539,3 +1539,25 @@ docs/07 용어 정리, PHASES.md Phase 3 프레이밍 갱신, RQ2/formal-verific
 (§8 환경 명세·통계 관행의 준용 대상, §10 개정 절차의 구조적 선례), PHASES.md
 (Phase 0/2/3/6 지위 헤더), formal-verification/README.md(§3.3 Phase 5 정성 입력의
 근거).
+
+### §3.10 컴파일러 위험 재검토 (2026-10-17, docs/09 §3.6 규칙 발동)
+
+docs/09(저작 표면 감사)의 조용한 오컴파일 위험을 컴파일러 소비 픽스처 전부와 대조했다. 실제 산출물에서 확인된 히트는
+widget-embed의 R20, counter-list(resume 데모)의 R13·R14, nested-list의 R11·R32다. **§3.9 판정(H-Qwik 확정, 강한 형태)은
+유지한다** — 판정을 무효로 하는 히트는 없다. 다음 셋을 기록한다.
+
+1. **M8 범위 정정(R20).** §3.9의 "M8 양쪽 통과"는 `data-loom-id`·subscriber 요소의 내용과 상호작용 결과에 대한 통과다.
+   정적 텍스트는 어느 팔에서도 단언하지 않았다(`bench/e2e/specs/m8-m9-gate-application.spec.ts`에 "cart:" 0건,
+   `crates/loom-widget-embed/src/lib.rs` 테스트의 needle 목록에도 없음). 실제 SSR은 두 팔 모두 `cart: {…}`의 공백을 잃어
+   `<span>cart:<span …>`다(원인 lower.rs:709 `trim()`). 결함이 lower 단계라 두 팔에 대칭이므로 가설 판별에는 중립이다.
+   §6 M8의 두 탈락 유형(아키텍처 결함형·RQ3 약점 기인형) 어디에도 속하지 않는 **공통 도구 결함**이다. R20을 고친 뒤
+   정적 텍스트 단언을 넣어 M8을 다시 돌리고, 바뀐 바이트로 M1–M3을 재측정한다(RQ1 개정 #11의 바이트 동일 면제는 적용되지 않는다).
+2. **M1 Layer 0 정정(§3.6).** H-Qwik 값 6,085/2,754 B는 `demo/resume/bootstrap.js@16c7e10`(정확히 6,085 B)을 잰 것이다. 이 파일은
+   widget-embed Flatten 팔의 로더가 아니고, R13(lref 요소마다 인스턴스) 결함도 있다. 실제 로더 `bootstrap-flat.js` +
+   `shared-store.js`는 9b409dc 기준 3,064 + 1,579 = 4,643 B raw다(gzip 미측정). 왜곡 방향은 **H-Qwik에 불리**했고 판정을 바꾸지
+   않는다. 표는 소급 수정하지 않는다.
+3. **§3.1의 "+1/append/rotate 독립 동작"은 공허한 확인이었다.** 매 클릭이 그 요소의 첫 클릭이라 R13을 원리적으로 잡지 못한다.
+   cold/warm 수치는 같은 요소에 대한 측정이라 영향이 없다. §3.9 한계에 덧붙인다: 위젯-임베드 픽스처는 `<input>`을 포함하지
+   않는다(widget-embed.tsx:13-15) — Flatten input 결함(docs/09 R38/R14)은 판정 범위 밖이다.
+
+**공평성 영향 진술**: (1)은 대칭이라 중립, (2)는 H-Qwik에 불리했던 오차를 바로잡는 것, (3)은 판정에 쓰이지 않은 등록분이다.

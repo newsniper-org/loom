@@ -415,3 +415,18 @@
   하나다 — RQ6 위젯-임베드 픽스처의 `cart: {…}`가 공백을 잃은 채 SSR된다(widget-embed.tsx:85 → flat/index.html:20).
   같은 소스를 두 팔(Islands/Flatten)이 공유하므로 팔 간 비교에는 대칭이지만, 픽스처 HTML 바이트가 저작 의도와 다르다.
 
+## 2026-10-17 갱신 — §3.6 전수 판정 결과 (연구 산출물 재검토)
+
+- **히트(실제 산출물에서 확인)**: R20(widget-embed, 두 팔), R13·R14(counter-list → resume 데모), R11·R32(nested-list →
+  loom-nested-fixture resume 테스트). R29는 바이트만 해당(`</input>`, 의미 영향 없음).
+- **잠복(패턴은 있으나 산출물이 정답과 같음)**: R31(R13과 결합하면 확정), R17(설계상 의도), R25, R39, R28(트랙 N 오라클이 같은
+  의미를 복제해 검출력 없음).
+- **재검토 결론**: 무효가 되는 판정은 없다. RQ6 §3.9 유지 + 주석(RQ6-verification-plan §3.10), RQ1 트랙 N G2·트랙 L/T 영향 없음
+  (프로토콜 말미 재검토 기록). 공허한 확인 4건을 표시했다(RQ6 M8 정적 텍스트 미단언, Phase 2 resume 순서가 R13을 못 잡음,
+  Phase 2 input 클릭 미검증, nested_list resume 테스트).
+- **행 갱신**: R13 영향 "—" → "RQ6 §3.1·§3.6 M1 Layer 0, Phase 2 검증, CAP (2)". R14 영향 "—" → "Phase 2 input 검증".
+  R11 확인 수준 "추론" → "산출물 실측", N-G2 영향 → "없음(G2는 resume 미사용)". R20의 N-G2 영향 → "트랙 N 픽스처에는 히트 없음".
+- **§0 정정**: "직접 입력 TSX 7개"는 TSX 6개 + build.rs 합성 소스 1종(largeapp 두 크레이트)이다(nested-list-derived가 두 번
+  세어졌다). §3 항목 6의 "정독으로는 widget-embed.tsx에 해당 패턴이 없습니다"는 R20 히트와 모순된다 — 정정한다.
+- 부분 확인: `demo/islands/product-card.tsx`와 합성 소스는 R20만 확인했다. 확인 수준 한계: 고부하로 빌드·브라우저 실행 없이
+  커밋 산출물과 OUT_DIR 생성 소스를 읽어 판정했다.
