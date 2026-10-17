@@ -244,6 +244,7 @@ pub trait DomOps {
     fn live_node_count(&self) -> Option<usize> {
         None
     }
+    /// (2026-10-17 note: "candidate F" is the Phase 1 label. `cond_reconcile_f_system` is the CSS-hide preserve variant, i.e. the protocol's CSS 은닉 (v-show) control arm — not the F family F-i/ii/iii added 2026-07-31. See cond.rs header.)
     /// RQ1 Track T candidate F (CSS-hide preserve variant): toggles an
     /// element's visibility without touching its existence, children, or
     /// any internal state — the DOM/backend counterpart of "don't despawn,
@@ -387,6 +388,7 @@ pub enum DomWrite {
     /// longer be resolved to a handle then — the emitting System must read
     /// its `DomTarget` up front, while the entity still exists.
     RemoveNode { node: NodeHandle },
+    /// (2026-10-17 note: "candidate F" is the Phase 1 label. `cond_reconcile_f_system` is the CSS-hide preserve variant, i.e. the protocol's CSS 은닉 (v-show) control arm — not the F family F-i/ii/iii added 2026-07-31. See cond.rs header.)
     /// RQ1 Track T candidate F: show/hide without despawn (see
     /// `DomOps::set_visible`).
     SetVisible { node: NodeHandle, visible: bool },

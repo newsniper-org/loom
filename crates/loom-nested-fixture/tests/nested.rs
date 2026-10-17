@@ -118,6 +118,29 @@ fn reclosing_hides_the_subtree_without_rebuilding_it() {
     assert!(!html.contains(" hidden>"), "{html}");
 }
 
+#[test]
+fn hidden_subtree_keeps_being_patched_without_gating() {
+    // 2026-10-17: 컴파일러 조건부가 트랙 T의 **CSS 은닉 arm**(§10 — "은닉 중 패치 파이프라인은
+    // 게이팅 없이 계속 동작")과 같은 정상 상태를 갖는다는 문서 주장의 직접 단언. 그 전까지는
+    // 코드 구조(숨길 때 `DomTarget`을 떼거나 `Frozen`을 붙이는 경로가 없다)로만 뒷받침됐다.
+    // 한 번 연 뒤 닫고, **닫힌 동안** 값을 바꾸면 숨겨진 노드의 텍스트가 이미 바뀌어 있어야
+    // 한다 — F 계열(동결·필터)이었다면 여기서는 옛 값이 남는다.
+    let (mut app, mut dom, signals, mount) = boot();
+    act(&mut app, &mut dom, &signals, TOGGLE); // 열림 — 내용 생성
+    act(&mut app, &mut dom, &signals, TOGGLE); // 닫힘
+    let html = dom.html(mount);
+    // 존재 단언 먼저: 노드가 숨겨진 채 **있다**(없어서 바뀌지 않은 것과 구별).
+    assert!(html.contains("<section class=\"panel\" data-loom-id=\"open\" hidden>"), "{html}");
+    assert!(html.contains(r#"<p class="count" data-loom-id="count">0</p>"#), "{html}");
+    act(&mut app, &mut dom, &signals, INCREMENT); // 닫힌 동안 변경
+    let html = dom.html(mount);
+    assert!(html.contains(" hidden>"), "아직 닫혀 있어야 한다: {html}");
+    assert!(
+        html.contains(r#"<p class="count" data-loom-id="count">1</p>"#),
+        "숨겨진 동안 patch가 멈췄다(게이팅) — CSS 은닉 arm이 아니다: {html}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // resume — SSR된 DOM에 다시 붙는 경로. 조건부 안의 binding은 **SSR 시점에
 // 보였는지**에 따라 두 갈래로 갈린다(codegen의 `gate` 처리). 문자열 단언만

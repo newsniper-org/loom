@@ -363,8 +363,8 @@ Phase 1 프로토타입에서 가장 먼저 부딪힐 문제라는 판단은 유
 >   양성 조건을 충족했으며 W5 부속이 발동했다. E(= E-LIS)는 기각 (i)·(ii)가 발동하지 않았다.
 >   **v21과 게이트 결론이 같다.** 상세와 "채택까지 남은 것"은 맨 끝 "v22" 절.
 > - **트랙 T (조건부, B/F)**: v2 캠페인(2026-08-07)의 결과는 **B 유지, F-i/ii/iii 기각**이다.
->   단 컴파일러가 실제로 내는 조건부 코드젠은 B가 아니라 lazy-spawn-then-hide다(트랙 T 절 끝의
->   2026-10-17 부기). 트랙 T에는 GC 통제(M-15)가 아직 적용되지 않았다(트랙 T 재수집 때 할 항목).
+>   단 컴파일러가 실제로 내는 조건부 코드젠은 B가 아니라 "첫 spawn 지연 + CSS 은닉"이다(CSS 은닉
+>   대조 arm과 정상 상태가 같은 알고리즘, F 계열 아님 — 트랙 T 절 끝의 2026-10-17 부기). 트랙 T에는 GC 통제(M-15)가 아직 적용되지 않았다(트랙 T 재수집 때 할 항목).
 > - **트랙 N (G2)**: 사이클 1(2026-08-08, 기반 528e991)과 v21 기반 재인증 R1·R2(2026-09-27,
 >   실행 시점 HEAD 98f2d3d)에서 6 arm이 전부 통과했다. v22 하네스(a55ba87)와 현 HEAD의
 >   `crates/loom-runtime`·`crates/loom-flush-core`는 98f2d3d와 차이가 0줄이다(2026-10-17
@@ -1657,11 +1657,16 @@ B 0.41~0.48ms)을 곡선으로 남겼다 — §4.1 M6이 요구한 교차점이�
 
 **2026-10-17 부기 — 판정이 컴파일러 출력에 반영되지 않았다.** 위 판정은 "B 유지"인데,
 `loom-compiler`가 실제 `{cond() && …}` 사이트에 내는 코드는 B(매 토글 despawn/spawn)가
-아니다. 2026-07-24부터 lazy-spawn-then-hide 제어 흐름을 낸다. 이 흐름은 첫 true에 spawn하고,
-그 뒤 숨길 때는 `DomWrite::SetVisible`을 쓴다. 근거는 `crates/loom-compiler/src/codegen.rs`
-모듈 문서의 "Conditionals (2026-07-24)" 절이다. 거기 적힌 대로 이 코드는 `cond.rs`의
-`cond_reconcile_f_system` 알고리즘을 재사용한다. 프로토콜 §10은 lazy-spawn-then-hide를 "이후
-토글은 F-i 명세 전액 상속"으로 정의하므로, 정상 상태에서 이것은 기각된 F-i의 동작이다. 반면
+아니다. 2026-07-24부터 "첫 spawn 지연 + CSS 은닉" 제어 흐름을 낸다. 이 흐름은 첫 true에 spawn하고,
+그 뒤 토글은(켜고 끌 때 모두) 래퍼에 `DomWrite::SetVisible` 하나만 쓰며, 숨긴 동안에도 patch System이 게이팅 없이
+돈다. 근거는 `crates/loom-compiler/src/codegen.rs` 모듈 문서의 "Conditionals (2026-07-24)" 절이다.
+거기 적힌 대로 이 코드는 `cond.rs`의 `cond_reconcile_f_system` 알고리즘을 재사용하는데, 그 System은
+이름만 "F"이고 스스로 "CSS-hide preserve variant"이자 프로토콜의 "CSS 은닉(v-show형)" 대조 arm을 겸한다고
+밝힌다(cond.rs 헤더). 컴파일러 코드젠에는 F 계열의 장치(fragment 분리, `CondEffective`, `Frozen` 게이팅,
+catch-up)가 하나도 없다. 프로토콜 §10의 lazy-spawn-then-hide arm은 첫 spawn 뒤 "F-i 명세 전액 상속"이므로
+그것도 아니다. 즉 컴파일러는 기각된 F를 쓰는 것이 아니라 **판정이 채택하지 않은 CSS 은닉 대조 arm**을 쓴다. 정확히는 정상 상태 토글이 CSS 은닉 arm과 같고, SSR 초기값이 false인 사이트의 첫 spawn 지연은 lazy arm의 앞 절반이다(벤치의 CSS 은닉 arm은 측정 창 전에 서브트리를 미리 실체화한다 — `crates/loom-bench/src/lib.rs` prematerialize, 2026-08-02). 숨긴 동안 patch가 계속 도는 것은 `crates/loom-nested-fixture/tests/nested.rs`의 `hidden_subtree_keeps_being_patched_without_gating`(2026-10-17)으로 직접 단언했다.
+CSS 은닉은 대조군이라(원칙 5) 판정이 채택하지 않았다 — §9 K-3은 "CSS가 F를 지배하더라도 자동 채택은 아니다"라는 보강 조항이고, v2에서는 그 지배도 깨졌다(K-3 (1) 미발동). 채택하려면 형제 셀렉터 참여·SSR HTML 바이트 반박에 대한 답을
+RQ1에 기록해야 한다. (2026-10-17 재정정: 같은 날 첫 판은 이것을 "F 계열/F 기반"이라 적었다. 코드젠에는 F 계열의 장치 — fragment 분리, `CondEffective`, `Frozen` 게이팅, catch-up — 가 하나도 없고, `cond.rs`가 "F"라고 부르는 `cond_reconcile_f_system`은 스스로 "CSS-hide preserve variant"이자 프로토콜의 CSS 은닉 대조 arm이라고 밝힌다. Phase 1(07-24) 시절의 이름표를 그대로 옮긴 오류였다.) 반면
 트랙 L 하네스의 R2 중첩 조건부는 이 판정을 따라 B arm을 쓴다(`crates/loom-runtime/src/lib.rs`
 "arm은 B — 트랙 T 판정(2026-08-07)…" 주석). 코드젠을 B로 바꿀지, 바꾸지 않는다면 그 근거가
 무엇인지(예: 위 의미론 축의 상태 보존 요건)에 대한 결정 기록은 찾지 못했다. **미결정 상태로

@@ -280,6 +280,7 @@ pub fn ssr_render() -> String {
 /// (이 문장과 그 구현은 같은 커밋 fbb7d65에 함께 들어갔다 — 커밋 안에서 문서가
 /// 구현을 따라가지 못한 것으로 보인다. 아래 "static-only" 문장도 같은 커밋.)
 ///
+/// (2026-10-17 note: "candidate F" is the Phase 1 label. `cond_reconcile_f_system` is the CSS-hide preserve variant, i.e. the protocol's CSS 은닉 (v-show) control arm — not the F family F-i/ii/iii added 2026-07-31. See cond.rs header.)
 /// Conditional (RQ1 Track T candidate F) resume with **existing internal
 /// state** — a **runtime-only** proof, hand-written like the original
 /// counter kickoff was, because compiled conditionals are static-only

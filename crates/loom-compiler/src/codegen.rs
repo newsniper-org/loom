@@ -81,6 +81,19 @@
 //! (`cond_reconcile_site_N`) replicating F's control flow with that site's
 //! real `StaticText` children inlined as `DomWrite::AppendStaticText` calls
 //! — registered via `app.add_systems` in both `setup()` and `resume()`.
+//! **2026-10-17 note**: "candidate F" above is the Phase 1 label. What this
+//! emits is "lazy first spawn + CSS hide": `SetVisible` on the wrapper, and
+//! hidden content keeps being patched with no gating — the defining trait of
+//! the protocol's CSS 은닉 (v-show) *control* arm (§10). None of the F
+//! family's machinery (F-i/ii/iii, 2026-07-31: fragment detach,
+//! `CondEffective`, `Frozen`, catch-up) is emitted. Track T's verdict is
+//! "B 유지"; CSS hide was a control arm (principle 5), not a candidate, so it
+//! was not adopted (§9 K-3 only adds that even dominating F would not auto-
+//! adopt it). Equality with the CSS arm holds for steady-state toggles; the
+//! first spawn at SSR-false sites is the lazy arm's front half. The
+//! parenthetical "lazy-spawn-then-hide" above is likewise a Phase 1 label —
+//! the protocol's lazy-spawn-then-hide arm inherits F-i after the first spawn.
+//! See docs/02.
 //! Resume recovers shown/hidden from the DOM (`adopt_children` on the
 //! wrapper — empty means never shown, matching `SignalInit::Bool`'s doc
 //! comment on `generate_resume` for why that's a *complete* read of every
@@ -3011,6 +3024,8 @@ fn lower_node(
         // `StaticText` children inlined as `DomWrite::AppendStaticText`
         // calls, instead of parameterizing `cond_reconcile_f_system` itself
         // — keeps that already-tested/benchmarked System untouched.
+        // (2026-10-17: "candidate F" = Phase 1 label; this is the CSS-hide
+        // control arm's algorithm, not F-i/ii/iii — see module doc.)
         JsxNode::CondBinding { cond, then_branch, .. } => {
             let JsxNode::Element {
                 tag,

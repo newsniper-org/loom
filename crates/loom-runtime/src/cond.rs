@@ -19,11 +19,16 @@
 //!   `{cond() && <X/>}` lowering은 **2026-07-24**에 들어갔다(commit fbb7d65,
 //!   codegen.rs 모듈 문서 "Conditionals (2026-07-24)"). 조건부 *안의* 중첩
 //!   binding(`{signal()}`/`{signal().map(...)}`)과 row 템플릿 안의 조건부는
-//!   **2026-08-07**(f0eaf6f, 1071c47). 컴파일러가 내는 조건부는 이 파일의 F
-//!   *알고리즘*(lazy-spawn-then-hide, `SetVisible`)을 사이트별 함수로 복제한
-//!   것이지 이 System 자체를 쓰지 않는다. 트랙 T 판정(B 유지, F-i/ii/iii 기각)과
-//!   어긋나는데, 어느 쪽으로 맞출지 결정 기록은 2026-10-17 현재 없다
-//!   (roadmap/PHASES.md).
+//!   **2026-08-07**(f0eaf6f, 1071c47). 컴파일러가 내는 조건부는 아래
+//!   `cond_reconcile_f_system`의 *알고리즘*("첫 spawn 지연 + CSS 은닉", `SetVisible`,
+//!   숨긴 동안 patch 게이팅 없음)을 사이트별 함수로 복제한 것이지 이 System 자체를
+//!   쓰지 않는다. 그 System은 이름만 "F"이고 프로토콜의 **CSS 은닉 대조 arm**이다 —
+//!   F 계열(F-i/ii/iii)의 장치는 컴파일러 산출물에 없다. 트랙 T 판정은 B 유지이고 CSS
+//!   은닉은 대조군이라(원칙 5) 채택되지 않았는데(정상 상태 기준 동일 — SSR-false 사이트의
+//!   첫 spawn 지연만 lazy arm식), 어느 쪽으로 맞출지 결정 기록은 2026-10-17
+//!   현재 없다(roadmap/PHASES.md). (같은 날 첫 판은 이것을 "F 알고리즘(lazy-spawn-
+//!   then-hide)"이라 적었다 — 프로토콜의 lazy-spawn-then-hide arm은 첫 spawn 뒤 F-i를
+//!   상속하므로 그것도 아니다. 재정정.)
 //! - "implements only the simplest one": 2026-07-31(4c633c6)에 fragment 분리
 //!   공통 코어 위의 F-i/F-ii/F-iii 3변형과, 2026-08-02(d798687)에 파생 체인
 //!   깊이 3 축이 아래 "F 계열 3변형" 절에 추가됐다. 위의
@@ -127,6 +132,9 @@ pub fn cond_reconcile_b_system(
 
 /// RQ1 candidate **F**, CSS-hide preserve variant: all `size` children are
 /// spawned **once**, on the first `true` (RQ1's "lazy-spawn-then-hide" —
+/// [2026-10-17 note: only the *first-spawn* half matches the protocol's
+/// lazy-spawn-then-hide arm, whose later toggles inherit F-i; this System's
+/// later toggles are CSS hide, i.e. the protocol's CSS 은닉 control arm] —
 /// the initial wake-up payload stays identical to B's), and every
 /// subsequent toggle only flips `DomOps::set_visible` **on the block's
 /// shared anchor** — never per-child. Hiding a parent hides every DOM

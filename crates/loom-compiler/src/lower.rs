@@ -757,6 +757,7 @@ fn lower_expr_container(
         }
 
         // `{cond() && <tag>...</tag>}` — compiles to RQ1 Track T candidate F.
+        // (2026-10-17 note: "candidate F" is the Phase 1 label. `cond_reconcile_f_system` is the CSS-hide preserve variant, i.e. the protocol's CSS 은닉 (v-show) control arm — not the F family F-i/ii/iii added 2026-07-31. See cond.rs header.)
         Expr::Bin(BinExpr {
             op: BinaryOp::LogicalAnd,
             left,

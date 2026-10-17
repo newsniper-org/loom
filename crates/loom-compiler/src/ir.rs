@@ -11,6 +11,7 @@ pub enum SignalInit {
     /// `signal(true)`/`signal(false)` — drives a `{cond() && <X/>}` binding
     /// (compiles to RQ1 Track T candidate F, `cond_reconcile_f_system` —
     /// see codegen.rs's module doc comment).
+    /// (2026-10-17 note: "candidate F" is the Phase 1 label. `cond_reconcile_f_system` is the CSS-hide preserve variant, i.e. the protocol's CSS 은닉 (v-show) control arm — not the F family F-i/ii/iii added 2026-07-31. See cond.rs header.)
     Bool(bool),
     /// `signal("...")` — a plain string, driving a two-way
     /// `<input value={s()} onInput={(e) => s.set(e.target.value)}/>`
@@ -75,6 +76,7 @@ pub enum JsxNode {
     /// see codegen.rs's module doc comment for why this reuses it rather
     /// than deriving a new mechanism). `cond` must name a declared `Bool`
     /// signal. `then_branch` must be a single root `Element`.
+    /// (2026-10-17 note: "candidate F" is the Phase 1 label. `cond_reconcile_f_system` is the CSS-hide preserve variant, i.e. the protocol's CSS 은닉 (v-show) control arm — not the F family F-i/ii/iii added 2026-07-31. See cond.rs header.)
     ///
     /// **2026-08-07**: 그 아래로 정적 마크업 / `{signal()}` /
     /// `{signal().map(...)}` / 그것들을 감싸는 엘리먼트를 넣을 수 있게 됐다
