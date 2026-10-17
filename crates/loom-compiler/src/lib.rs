@@ -44,6 +44,16 @@ pub fn parse_tsx(file_name: &str, source: &str) -> Result<(Lrc<SourceMap>, Modul
     }
 }
 
+/// lower 단계(7a C2부터 `Result`)를 공개 API의 `Diagnostics`로 감싼다.
+/// `SpanTable`은 그래프 검사가 쓰고, 여기서는 IR만 넘긴다.
+fn lower_graph(cm: &Lrc<SourceMap>, module: &Module) -> Result<ir::ComponentGraph, Diagnostics> {
+    lower::lower_module(module).map(|(graph, _spans)| graph).map_err(|d| {
+        let mut ds = Diagnostics::new(cm.clone());
+        ds.push(d);
+        ds
+    })
+}
+
 /// docs/02's whole compile pipeline in one call: real SWC parse → IR lower
 /// → Rust codegen. Single-component only (compiles just the module's one
 /// exported root component, ignoring any Island-referenced helper
@@ -60,7 +70,7 @@ pub fn parse_tsx(file_name: &str, source: &str) -> Result<(Lrc<SourceMap>, Modul
 /// `Compiled::rust`는 이전 `String` 반환값과 바이트 단위로 같다.
 pub fn compile_tsx_to_rust(file_name: &str, source: &str) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let graph = lower::lower_module(&module);
+    let graph = lower_graph(&cm, &module)?;
     let rust = codegen::generate(graph.root_component());
     Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
@@ -82,7 +92,7 @@ pub fn compile_tsx_to_rust_with_candidate(
     candidate: ListCandidate,
 ) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let graph = lower::lower_module(&module);
+    let graph = lower_graph(&cm, &module)?;
     let rust = codegen::generate_with_candidate(graph.root_component(), candidate);
     Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
@@ -97,7 +107,7 @@ pub fn compile_tsx_to_rust_graph(
     mode: GraphMode,
 ) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let graph = lower::lower_module(&module);
+    let graph = lower_graph(&cm, &module)?;
     let rust = codegen::generate_graph(&graph, mode);
     Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
@@ -117,7 +127,7 @@ pub fn compile_tsx_to_single_island_rust(
     island_component_name: &str,
 ) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let graph = lower::lower_module(&module);
+    let graph = lower_graph(&cm, &module)?;
     let rust = codegen::generate_single_island_client(&graph, island_component_name);
     Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
@@ -130,9 +140,41 @@ mod tests {
     // Result<Compiled, Diagnostics>`로 바뀌었다. 아래 기존 테스트들은 옛
     // 시그니처로 쓰여 있으므로, 같은 이름의 얇은 래퍼로 가린다(glob import보다
     // 지역 정의가 우선). 성공 경로만 감싸며, 실패는 렌더된 진단으로 unwrap
-    // 패닉한다. lower의 거부는 C2 전까지 여전히 `panic!`이라 `should_panic`
-    // 테스트의 관측 메커니즘은 그대로다.
+    // 패닉한다.
+    //
+    // 7a C2(2026-10-17): lower의 거부가 `Err(Diagnostic)`이 되어, lower 거부를
+    // 보던 `should_panic` 테스트 13개는 `assert_lower_diag`로 바꿨다. 기대
+    // 부분 문자열은 그대로 두고, 진단 코드와 **강조되는 소스 토큰**(진단이
+    // 문제 구문을 정확히 가리키는지)을 함께 단언한다. codegen이 거부하는
+    // `should_panic` 3개(mixes a dynamic binding / may not carry its own /
+    // globally unique)는 C3(check.rs 사전 검사)에서 다룬다.
     const TEST_FILE: &str = "test.tsx";
+
+    /// parse + lower만 돌려 lower 진단을 받는다(성공하면 테스트 실패).
+    fn lower_diag(source: &str) -> Diagnostics {
+        let (cm, module) = super::parse_tsx(TEST_FILE, source).unwrap();
+        match super::lower_graph(&cm, &module) {
+            Ok(_) => panic!("expected a lower diagnostic, but lowering succeeded"),
+            Err(d) => d,
+        }
+    }
+
+    /// 진단이 정확히 1건이고, 코드·문구(부분 문자열)·강조 토큰이 기대와 같으며,
+    /// 렌더 결과의 `파일:줄:열`이 그 span의 위치인지 단언한다.
+    fn assert_lower_diag(source: &str, code: &str, needle: &str, token: &str) -> Diagnostics {
+        let d = lower_diag(source);
+        assert_eq!(d.items().len(), 1, "{d}");
+        let item = &d.items()[0];
+        assert_eq!(item.code, code, "{d}");
+        assert_eq!(item.severity, Severity::Error, "{d}");
+        assert!(item.message.contains(needle), "message {:?} lacks {needle:?}", item.message);
+        assert_eq!(d.source_text(item.span).as_deref(), Some(token), "{d}");
+        let (line, col) = d.line_col(item.span);
+        let r = d.render();
+        assert!(r.contains(&format!("error[{code}]: ")), "{r}");
+        assert!(r.contains(&format!("--> {TEST_FILE}:{line}:{col}")), "{r}");
+        d
+    }
     fn parse_tsx(source: &str) -> Module {
         super::parse_tsx(TEST_FILE, source).unwrap().1
     }
@@ -224,7 +266,7 @@ mod tests {
     #[test]
     fn lowers_demo_source_without_panicking() {
         let module = parse_tsx(DEMO_SOURCE);
-        let graph = lower::lower_module(&module);
+        let graph = lower::lower_module(&module).unwrap().0;
         let component = graph.root_component();
         assert_eq!(component.name, "App");
         assert_eq!(component.signals.len(), 2);
@@ -367,7 +409,7 @@ mod tests {
             }
         "#;
         let module = parse_tsx(source);
-        let graph = lower::lower_module(&module);
+        let graph = lower::lower_module(&module).unwrap().0;
         codegen::generate(graph.root_component());
     }
 
@@ -445,8 +487,7 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "row 템플릿 안에서만")]
-        fn rejects_a_row_predicate_outside_a_row_template() {
+                fn rejects_a_row_predicate_outside_a_row_template() {
             let source = r#"
                 export function App() {
                   const open = signal(false);
@@ -454,8 +495,7 @@ mod tests {
                   return <div>{open() && n() > 1 && <p>x</p>}</div>;
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            assert_lower_diag(source, lower::L00, "row 템플릿 안에서만", "n() > 1");
         }
     }
 
@@ -562,29 +602,25 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "requires a Bool signal")]
-        fn rejects_toggle_on_a_non_bool_signal() {
+                fn rejects_toggle_on_a_non_bool_signal() {
             let source = r#"
                 export function App() {
                   const count = signal(0);
                   return <button onClick={() => count.toggle()}>toggle</button>;
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            assert_lower_diag(source, lower::L00, "requires a Bool signal", "count");
         }
 
         #[test]
-        #[should_panic(expected = "conditional's left side must be a bare")]
-        fn rejects_a_non_bare_signal_call_on_the_left_of_and() {
+                fn rejects_a_non_bare_signal_call_on_the_left_of_and() {
             let source = r#"
                 export function App() {
                   const details = signal(false);
                   return <div>{details.get() && <p>shown!</p>}</div>;
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            assert_lower_diag(source, lower::L00, "conditional's left side must be a bare", "details.get");
         }
 
         #[test]
@@ -658,8 +694,7 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "안에 또 조건부를 넣는 것은 아직 지원하지 않는다")]
-        fn rejects_a_conditional_nested_directly_inside_another_conditional() {
+                fn rejects_a_conditional_nested_directly_inside_another_conditional() {
             let source = r#"
                 export function App() {
                   const outer = signal(false);
@@ -667,8 +702,7 @@ mod tests {
                   return <div>{outer() && <p>{inner() && <span>x</span>}</p>}</div>;
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            assert_lower_diag(source, lower::L00, "안에 또 조건부를 넣는 것은 아직 지원하지 않는다", "{inner() && <span>x</span>}");
         }
 
         #[test]
@@ -686,7 +720,7 @@ mod tests {
                 }
             "#;
             let module = parse_tsx(source);
-            let graph = lower::lower_module(&module);
+            let graph = lower::lower_module(&module).unwrap().0;
             codegen::generate(graph.root_component());
         }
     }
@@ -776,8 +810,7 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "must reference the same signal")]
-        fn rejects_value_and_oninput_referencing_different_signals() {
+                fn rejects_value_and_oninput_referencing_different_signals() {
             let source = r#"
                 export function App() {
                   const a = signal("");
@@ -785,34 +818,29 @@ mod tests {
                   return <input value={a()} onInput={(e) => b.set(e.target.value)} />;
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            assert_lower_diag(source, lower::L00, "must reference the same signal", "onInput={(e) => b.set(e.target.value)}");
         }
 
         #[test]
-        #[should_panic(expected = "must reference the arrow's own event parameter")]
-        fn rejects_oninput_not_reading_from_its_own_event_param() {
+                fn rejects_oninput_not_reading_from_its_own_event_param() {
             let source = r#"
                 export function App() {
                   const name = signal("");
                   return <input value={name()} onInput={(e) => name.set(other.target.value)} />;
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            assert_lower_diag(source, lower::L00, "must reference the arrow's own event parameter", "other");
         }
 
         #[test]
-        #[should_panic(expected = "requires a Bool signal")]
-        fn rejects_toggle_on_a_str_signal() {
+                fn rejects_toggle_on_a_str_signal() {
             let source = r#"
                 export function App() {
                   const name = signal("");
                   return <button onClick={() => name.toggle()}>go</button>;
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            assert_lower_diag(source, lower::L00, "requires a Bool signal", "name");
         }
     }
 
@@ -841,7 +869,7 @@ mod tests {
         #[test]
         fn multi_component_graph_has_both_components_with_correct_root() {
             let module = parse_tsx(ISLAND_SOURCE);
-            let graph = lower::lower_module(&module);
+            let graph = lower::lower_module(&module).unwrap().0;
             assert_eq!(graph.root, "App");
             assert_eq!(graph.components.len(), 2);
             assert!(graph.components.iter().any(|c| c.name == "Widget"));
@@ -853,7 +881,7 @@ mod tests {
         fn client_visible_parses_to_the_visible_activation() {
             let source = ISLAND_SOURCE.replace("client:load", "client:visible");
             let module = parse_tsx(&source);
-            let graph = lower::lower_module(&module);
+            let graph = lower::lower_module(&module).unwrap().0;
             assert_eq!(graph.activation_for("Widget"), Some(ir::IslandActivation::Visible));
         }
 
@@ -1046,8 +1074,7 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "no `client:load`/`client:visible` directive")]
-        fn bare_component_ref_without_activation_panics() {
+                fn bare_component_ref_without_activation_panics() {
             let source = r#"
                 function Widget() {
                   const count = signal(0);
@@ -1057,21 +1084,17 @@ mod tests {
                   return <div><Widget /></div>;
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            assert_lower_diag(source, lower::L00, "no `client:load`/`client:visible` directive", "Widget");
         }
 
         #[test]
-        #[should_panic(expected = "unsupported `client:idle` directive")]
-        fn unsupported_client_directive_panics() {
+                fn unsupported_client_directive_panics() {
             let source = ISLAND_SOURCE.replace("client:load", "client:idle");
-            let module = parse_tsx(&source);
-            lower::lower_module(&module);
+            assert_lower_diag(&source, lower::L00, "unsupported `client:idle` directive", "client:idle");
         }
 
         #[test]
-        #[should_panic(expected = "unsupported attribute namespace `data:`")]
-        fn non_client_namespace_panics() {
+                fn non_client_namespace_panics() {
             let source = r#"
                 function Widget() {
                   const count = signal(0);
@@ -1081,20 +1104,17 @@ mod tests {
                   return <div><Widget data:foo="bar" /></div>;
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            assert_lower_diag(source, lower::L00, "unsupported attribute namespace `data:`", "data");
         }
 
         #[test]
-        #[should_panic(expected = "no `function Foo()` is declared in this module")]
-        fn unresolved_component_reference_panics_with_clear_message() {
+                fn unresolved_component_reference_panics_with_clear_message() {
             let source = r#"
                 export function App() {
                   return <div><Foo client:load /></div>;
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            assert_lower_diag(source, lower::L00, "no `function Foo()` is declared in this module", "Foo");
         }
 
         #[test]
@@ -1113,12 +1133,11 @@ mod tests {
                 }
             "#;
             let module = parse_tsx(source);
-            lower::lower_module(&module); // must not panic
+            lower::lower_module(&module).unwrap(); // must not error (7a C2: Result)
         }
 
         #[test]
-        #[should_panic(expected = "component prop value must be a number, boolean, string, or string-array literal")]
-        fn component_ref_prop_cannot_carry_a_live_signal_value() {
+                fn component_ref_prop_cannot_carry_a_live_signal_value() {
             // RQ6 §6 M10 / RQ3 "알려진 약점" 3번 실측(Task #27) — "중첩 island
             // 간 동적 데이터 전달 부재(SSR prop 동결)"가 실제로 재현되는지
             // 직접 확인: 부모의 살아있는 시그널 값을 자식 Island의 prop으로
@@ -1141,8 +1160,7 @@ mod tests {
                   );
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            assert_lower_diag(source, lower::L00, "component prop value must be a number, boolean, string, or string-array literal", "parentCount()");
         }
     }
 
@@ -1234,8 +1252,7 @@ mod tests {
         use super::*;
 
         #[test]
-        #[should_panic(expected = "more than one action-bearing binding site targeting i32 signal `count`")]
-        fn two_actions_on_the_same_i32_signal_is_rejected() {
+                fn two_actions_on_the_same_i32_signal_is_rejected() {
             let source = r#"
                 export function App() {
                   const count = signal(0);
@@ -1247,8 +1264,11 @@ mod tests {
                   );
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module);
+            let d = assert_lower_diag(source, lower::L01, "more than one action-bearing binding site targeting i32 signal `count`", "onClick={() => count.increment()}");
+            // 주 위치는 **두 번째** 핸들러(7번째 줄), 첫 번째(6번째 줄)에 label.
+            assert_eq!(d.line_col(d.items()[0].span).0, 7, "{d}");
+            assert_eq!(d.items()[0].labels.len(), 1, "{d}");
+            assert_eq!(d.line_col(d.items()[0].labels[0].0).0, 6, "{d}");
         }
 
         #[test]
@@ -1273,7 +1293,217 @@ mod tests {
                 }
             "#;
             let module = parse_tsx(source);
-            lower::lower_module(&module); // must not panic
+            lower::lower_module(&module).unwrap(); // must not error (7a C2: Result)
+        }
+    }
+
+    /// Phase 7a C2(2026-10-17) — lower 거부의 Result화와 `SpanTable`.
+    mod lower_result {
+        use super::*;
+        use crate::lower::BindingKind;
+
+        #[test]
+        fn public_api_returns_a_diagnostic_instead_of_panicking() {
+            // 공개 API 4개 모두 lower 거부를 `Err`로 돌려준다(이전에는 panic).
+            let src = "export function App() {\n  const n = signal(0);\n  return <span>{m()}</span>;\n}\n";
+            let errs = [
+                super::super::compile_tsx_to_rust("a.tsx", src).unwrap_err(),
+                super::super::compile_tsx_to_rust_with_candidate("a.tsx", src, ListCandidate::K).unwrap_err(),
+                super::super::compile_tsx_to_rust_graph("a.tsx", src, GraphMode::Islands).unwrap_err(),
+                super::super::compile_tsx_to_single_island_rust("a.tsx", src, "App").unwrap_err(),
+            ];
+            for d in &errs {
+                assert_eq!(d.items().len(), 1, "{d}");
+                assert_eq!(d.items()[0].code, lower::L00, "{d}");
+                assert_eq!(d.source_text(d.items()[0].span).as_deref(), Some("m"), "{d}");
+                assert!(d.render().contains("--> a.tsx:3:17"), "{d}");
+            }
+            // 결정성: 같은 입력이면 렌더 결과가 같다.
+            assert_eq!(errs[0].render(), errs[2].render());
+        }
+
+        #[test]
+        fn conditional_whose_right_side_is_a_component_ref_is_a_diagnostic_not_unreachable() {
+            // 옛 lower.rs:812의 `unreachable!()` — 사용자가 도달할 수 있었다.
+            let src = r#"
+                function W() {
+                  const c = signal(0);
+                  return <span>{c()}</span>;
+                }
+                export function App() {
+                  const o = signal(false);
+                  return <div>{o() && <W client:load />}</div>;
+                }
+            "#;
+            assert_lower_diag(src, lower::L00, "must be a plain HTML element", "W");
+            // 최소 차이 양성 짝: 감싸면 통과한다.
+            let ok = src.replace("<W client:load />", "<p><W client:load /></p>");
+            let module = parse_tsx(&ok);
+            lower::lower_module(&module).unwrap();
+        }
+
+        #[test]
+        fn conditional_whose_right_side_is_an_input_is_a_diagnostic_not_unreachable() {
+            let src = r#"
+                export function App() {
+                  const o = signal(false);
+                  const t = signal("");
+                  return <div>{o() && <input value={t()} onInput={(e) => t.set(e.target.value)} />}</div>;
+                }
+            "#;
+            assert_lower_diag(src, lower::L00, "must be a plain HTML element", "input");
+        }
+
+        #[test]
+        fn rejections_point_at_the_offending_syntax() {
+            // 기존 거부 몇 개를 골라 강조 위치를 고정한다(문구는 7a 이전과 같다).
+            assert_lower_diag(
+                "export function App() {\n  return <div {...p}>x</div>;\n}\n",
+                lower::L00,
+                "spread attributes are not supported",
+                "...p",
+            );
+            assert_lower_diag(
+                "export function App() {\n  const n = signal(0);\n  return <button onClick={() => n.decrement()}>-</button>;\n}\n",
+                lower::L00,
+                "unsupported signal method `.decrement()`",
+                "decrement",
+            );
+            assert_lower_diag(
+                "export function App() {\n  let x = 1;\n  return <div />;\n}\n",
+                lower::L00,
+                "unsupported `const` declaration",
+                "x = 1",
+            );
+            assert_lower_diag(
+                "export function App() {\n  const xs = signal([\"a\", 1]);\n  return <div />;\n}\n",
+                lower::L00,
+                "array elements must be string literals",
+                "1",
+            );
+            assert_lower_diag(
+                "function A() { return <div />; }\n",
+                lower::L00,
+                "no exported `function NAME() { ... }` found",
+                "",
+            );
+            let d = assert_lower_diag(
+                "export function A() { return <div />; }\nexport function B() { return <div />; }\n",
+                lower::L00,
+                "more than one exported `function`",
+                "B",
+            );
+            assert_eq!(d.source_text(d.items()[0].labels[0].0).as_deref(), Some("A"));
+            assert_lower_diag(
+                "export function App() {\n  const xs = signal([\"a\"]);\n  return <ul>{xs().map((x) => <li>{x}</li>).length}</ul>;\n}\n",
+                lower::L00,
+                "unsupported JSX expression",
+                "xs().map((x) => <li>{x}</li>).length",
+            );
+        }
+
+        #[test]
+        fn span_table_records_components_signals_refs_bindings_and_events_in_source_order() {
+            let src = r#"
+                function W() {
+                  const c = signal(0);
+                  return <button onClick={() => c.increment()}>{c()}</button>;
+                }
+                export function App() {
+                  const open = signal(false);
+                  const items = signal(["a"]);
+                  const t = signal("");
+                  return (
+                    <div>
+                      <button onClick={() => open.toggle()}>t</button>
+                      {open() && <ul>{items().map((it) => <li>{it}</li>)}</ul>}
+                      <input value={t()} onInput={(e) => t.set(e.target.value)} />
+                      <W client:load />
+                    </div>
+                  );
+                }
+            "#;
+            let (cm, module) = super::super::parse_tsx(TEST_FILE, src).unwrap();
+            let (graph, spans) = lower::lower_module(&module).unwrap();
+            assert_eq!(graph.root, "App");
+            let d = Diagnostics::new(cm);
+            let text = |sp| d.source_text(sp).unwrap();
+
+            // 루트가 먼저 lower된다(lower_module의 순서 그대로).
+            let comps: Vec<(&str, String)> = spans.components.iter().map(|(n, s)| (n.as_str(), text(*s))).collect();
+            assert_eq!(comps, [("App", "App".to_string()), ("W", "W".to_string())]);
+
+            let sigs: Vec<(&str, &str, String)> =
+                spans.signals.iter().map(|(c, n, s)| (c.as_str(), n.as_str(), text(*s))).collect();
+            assert_eq!(
+                sigs,
+                [
+                    ("App", "open", "open".to_string()),
+                    ("App", "items", "items".to_string()),
+                    ("App", "t", "t".to_string()),
+                    ("W", "c", "c".to_string()),
+                ]
+            );
+
+            assert_eq!(spans.component_refs.len(), 1);
+            assert_eq!((spans.component_refs[0].0.as_str(), spans.component_refs[0].1.as_str()), ("App", "W"));
+            assert_eq!(text(spans.component_refs[0].2), "W");
+
+            let binds: Vec<(&str, &str, BindingKind, bool, String)> = spans
+                .bindings
+                .iter()
+                .map(|b| (b.component.as_str(), b.signal.as_str(), b.kind, b.in_row, text(b.span)))
+                .collect();
+            assert_eq!(
+                binds,
+                [
+                    ("App", "items", BindingKind::List, false, "items().map((it) => <li>{it}</li>)".to_string()),
+                    ("App", "open", BindingKind::Cond, false, "open()".to_string()),
+                    ("App", "t", BindingKind::Input, false, "input".to_string()),
+                    ("W", "c", BindingKind::Text, false, "c()".to_string()),
+                ]
+            );
+
+            let events: Vec<(&str, &str, &str, String)> = spans
+                .events
+                .iter()
+                .map(|e| (e.component.as_str(), e.signal.as_str(), e.attr, text(e.span)))
+                .collect();
+            assert_eq!(
+                events,
+                [
+                    ("App", "open", "onClick", "onClick={() => open.toggle()}".to_string()),
+                    ("App", "t", "onInput", "onInput={(e) => t.set(e.target.value)}".to_string()),
+                    ("W", "c", "onClick", "onClick={() => c.increment()}".to_string()),
+                ]
+            );
+        }
+
+        #[test]
+        fn span_table_marks_row_template_sites_as_in_row() {
+            // row 원본(리스트 row 템플릿 안의 사이트) 구분 — 이후 R07 집계가 쓴다.
+            let src = r#"
+                export function App() {
+                  const open = signal(false);
+                  const outer = signal(["a"]);
+                  const inner = signal(["x"]);
+                  return (
+                    <ul>{outer().map((item) => <li>{item}{open() && <ol>{inner().map((y) => <li>{y}</li>)}</ol>}</li>)}</ul>
+                  );
+                }
+            "#;
+            let (_cm, module) = super::super::parse_tsx(TEST_FILE, src).unwrap();
+            let (_graph, spans) = lower::lower_module(&module).unwrap();
+            let binds: Vec<(&str, BindingKind, bool)> =
+                spans.bindings.iter().map(|b| (b.signal.as_str(), b.kind, b.in_row)).collect();
+            assert_eq!(
+                binds,
+                [
+                    ("inner", BindingKind::List, true),
+                    ("open", BindingKind::Cond, true),
+                    ("outer", BindingKind::List, false),
+                ]
+            );
         }
     }
 }

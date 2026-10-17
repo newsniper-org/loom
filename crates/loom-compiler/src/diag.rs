@@ -13,7 +13,7 @@ use std::fmt;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use swc_common::errors::{DiagnosticId, Handler, SourceMapperDyn};
+use swc_common::errors::{DiagnosticId, Handler, SourceMapper, SourceMapperDyn};
 use swc_common::errors::emitter::EmitterWriter;
 use swc_common::sync::Lrc;
 use swc_common::{SourceMap, Span};
@@ -101,6 +101,19 @@ impl Diagnostics {
 
     pub fn has_errors(&self) -> bool {
         self.items.iter().any(|d| d.severity == Severity::Error)
+    }
+
+    /// `span`이 가리키는 원본 소스 조각(렌더 결과의 `^^^`가 강조하는 텍스트).
+    /// 테스트가 "진단이 문제 구문을 정확히 가리키는가"를 단언하는 데 쓴다
+    /// (7a C2 — `span != DUMMY_SP`만으로는 엉뚱한 위치도 통과한다).
+    pub fn source_text(&self, span: Span) -> Option<String> {
+        SourceMapper::span_to_snippet(&*self.cm, span).ok()
+    }
+
+    /// `span` 시작의 1-based `(줄, 열)` — 렌더 결과의 `파일:줄:열`과 같은 값.
+    pub fn line_col(&self, span: Span) -> (usize, usize) {
+        let loc = self.cm.lookup_char_pos(span.lo);
+        (loc.line, loc.col_display + 1)
     }
 
     /// swc_common의 `EmitterWriter`로 렌더링한 사람용 문자열(색 없음).
