@@ -65,12 +65,19 @@ fn single(cm: &Lrc<SourceMap>, d: Diagnostic) -> Diagnostics {
 }
 
 /// lower 단계(7a C2부터 `Result`)를 공개 API의 `Diagnostics`로 감싼다.
-/// `SpanTable`은 7a C3부터 `check`가 진단 위치를 찾는 데 쓴다.
+/// `SpanTable`은 7a C3부터 `check`가 진단 위치를 찾는 데 쓴다. 셋째 값은
+/// lower의 **경고**(7a C6부터 — W25)를 담은 `Diagnostics`로, 성공한 컴파일의
+/// `Compiled::warnings`가 된다(산출물 바이트와 무관).
 fn lower_graph(
     cm: &Lrc<SourceMap>,
     module: &Module,
-) -> Result<(ir::ComponentGraph, lower::SpanTable), Diagnostics> {
-    lower::lower_module(module).map_err(|d| single(cm, d))
+) -> Result<(ir::ComponentGraph, lower::SpanTable, Diagnostics), Diagnostics> {
+    let (graph, spans, warnings) = lower::lower_module(module).map_err(|d| single(cm, d))?;
+    let mut ws = Diagnostics::new(cm.clone());
+    for w in warnings {
+        ws.push(w);
+    }
+    Ok((graph, spans, ws))
 }
 
 /// 7a C3: codegen이 패닉으로 거부하던 사용자 도달 입력을 codegen **앞에서**
@@ -101,10 +108,10 @@ fn check_graph(
 /// `Compiled::rust`는 이전 `String` 반환값과 바이트 단위로 같다.
 pub fn compile_tsx_to_rust(file_name: &str, source: &str) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let (graph, spans) = lower_graph(&cm, &module)?;
+    let (graph, spans, warnings) = lower_graph(&cm, &module)?;
     check_graph(&cm, &graph, &spans, check::Target::RootOnly)?;
     let rust = codegen::generate(graph.root_component());
-    Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
+    Ok(Compiled { rust, warnings })
 }
 
 /// `compile_tsx_to_rust`의 **트랙 L 후보 선택** 판본 (2026-08-08 신설).
@@ -124,10 +131,10 @@ pub fn compile_tsx_to_rust_with_candidate(
     candidate: ListCandidate,
 ) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let (graph, spans) = lower_graph(&cm, &module)?;
+    let (graph, spans, warnings) = lower_graph(&cm, &module)?;
     check_graph(&cm, &graph, &spans, check::Target::RootOnly)?;
     let rust = codegen::generate_with_candidate(graph.root_component(), candidate);
-    Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
+    Ok(Compiled { rust, warnings })
 }
 
 /// 증분 4 (Task #25) multi-component path — compiles the module's full
@@ -140,10 +147,10 @@ pub fn compile_tsx_to_rust_graph(
     mode: GraphMode,
 ) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let (graph, spans) = lower_graph(&cm, &module)?;
+    let (graph, spans, warnings) = lower_graph(&cm, &module)?;
     check_graph(&cm, &graph, &spans, check::Target::Graph(&mode))?;
     let rust = codegen::generate_graph(&graph, mode);
-    Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
+    Ok(Compiled { rust, warnings })
 }
 
 /// RQ6 §6 M1 real per-Island code splitting (Task #27) — parses+lowers
@@ -161,10 +168,10 @@ pub fn compile_tsx_to_single_island_rust(
     island_component_name: &str,
 ) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let (graph, spans) = lower_graph(&cm, &module)?;
+    let (graph, spans, warnings) = lower_graph(&cm, &module)?;
     check_graph(&cm, &graph, &spans, check::Target::SingleIsland(island_component_name))?;
     let rust = codegen::generate_single_island_client(&graph, island_component_name);
-    Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
+    Ok(Compiled { rust, warnings })
 }
 
 #[cfg(test)]
@@ -363,7 +370,8 @@ mod tests {
 
         #[test]
         fn successful_compile_carries_an_empty_warning_set() {
-            let src = "export function App() {\n  const n = signal(0);\n  return <span>{n()}</span>;\n}\n";
+            // 7a C6: W25(import 누락 경고)가 생겼으므로 `signal`을 import한다.
+            let src = "import { signal } from \"loom\";\nexport function App() {\n  const n = signal(0);\n  return <span>{n()}</span>;\n}\n";
             let ok = super::super::compile_tsx_to_rust("ok.tsx", src).unwrap();
             assert!(ok.rust.contains("pub fn setup("));
             assert!(ok.warnings.is_empty());
@@ -1278,6 +1286,9 @@ mod tests {
             assert_lower_diag(source, lower::L00, "no `function Foo()` is declared in this module", "Foo");
         }
 
+        // 7a C6(design-7a §4): docs/09 R1이 지목한 "고정 테스트". 예전에는 prop
+        // 리터럴이 lower를 통과하는 것(값은 조용히 버려짐)을 단언했다 — 이제
+        // 첫 리터럴 prop에서 R01로 거부되는 것을 단언한다(이름은 이력 보존을 위해 유지).
         #[test]
         fn component_ref_with_prop_literals_lowers_without_panicking() {
             let source = r#"
@@ -1293,8 +1304,7 @@ mod tests {
                   );
                 }
             "#;
-            let module = parse_tsx(source);
-            lower::lower_module(&module).unwrap(); // must not error (7a C2: Result)
+            assert_lower_diag(source, "LOOM-R01", "컴포넌트 prop `initial`는 아직 전달되지 않습니다", "initial={5}");
         }
 
         #[test]
@@ -1530,8 +1540,9 @@ mod tests {
                 "unsupported signal method `.decrement()`",
                 "decrement",
             );
+            // (7a C6: `let`은 이제 R27이 먼저 잡으므로 이 L00 행은 `const`로 바꿨다.)
             assert_lower_diag(
-                "export function App() {\n  let x = 1;\n  return <div />;\n}\n",
+                "export function App() {\n  const x = 1;\n  return <div />;\n}\n",
                 lower::L00,
                 "unsupported `const` declaration",
                 "x = 1",
@@ -1585,7 +1596,7 @@ mod tests {
                 }
             "#;
             let (cm, module) = super::super::parse_tsx(TEST_FILE, src).unwrap();
-            let (graph, spans) = lower::lower_module(&module).unwrap();
+            let (graph, spans, _) = lower::lower_module(&module).unwrap();
             assert_eq!(graph.root, "App");
             let d = Diagnostics::new(cm);
             let text = |sp| d.source_text(sp).unwrap();
@@ -1654,7 +1665,7 @@ mod tests {
                 }
             "#;
             let (_cm, module) = super::super::parse_tsx(TEST_FILE, src).unwrap();
-            let (_graph, spans) = lower::lower_module(&module).unwrap();
+            let (_graph, spans, _) = lower::lower_module(&module).unwrap();
             let binds: Vec<(&str, BindingKind, bool)> =
                 spans.bindings.iter().map(|b| (b.signal.as_str(), b.kind, b.in_row)).collect();
             assert_eq!(
@@ -1705,7 +1716,7 @@ mod tests {
         /// check를 건너뛰고 lower → codegen을 직접 부른다. 패닉 메시지를 돌려준다.
         fn codegen_panic(api: Api, src: &str) -> Option<String> {
             let (_cm, module) = super::super::parse_tsx(TEST_FILE, src).unwrap();
-            let (graph, _spans) = lower::lower_module(&module).expect("backstop inputs must pass lower");
+            let (graph, _spans, _) = lower::lower_module(&module).expect("backstop inputs must pass lower");
             let r = catch_unwind(AssertUnwindSafe(|| match api {
                 Api::Root => drop(codegen::generate(graph.root_component())),
                 Api::Flatten => drop(codegen::generate_graph(&graph, GraphMode::Flatten)),
@@ -2163,7 +2174,10 @@ mod tests {
         fn node_span_table_is_aligned_with_the_ir_for_every_backstop_source() {
             // check.rs의 노드 → span 대응은 lower의 pre-order 기록과 IR 순회가
             // 같은 순서라는 데 기대고, 어긋나면 내부 오류로 멈춘다. 위 원본들이
-            // 전부 그 단언을 통과한다는 것 자체가 이 테스트다(여러 return(R22)도 포함).
+            // 전부 그 단언을 통과한다는 것 자체가 이 테스트다.
+            //
+            // (7a C6: 여기 있던 "return 둘" 원본은 이제 R22로 거부된다 — 루트는
+            // 항상 첫 `return`이므로 노드 표를 다시 비우는 경로 자체가 없어졌다.)
             let two_returns = r#"
                 export function App() {
                   const n = signal(0);
@@ -2171,7 +2185,8 @@ mod tests {
                   return <div><span>{n()}</span></div>;
                 }
             "#;
-            accepted(Api::Root, two_returns);
+            let e = run_api(Api::Root, two_returns).err().expect("R22");
+            assert_diag(e, "LOOM-R22", "`return` 뒤에 문장이 있습니다", Some("return <div><span>{n()}</span></div>;"));
         }
     }
 
@@ -2184,13 +2199,16 @@ mod tests {
         use super::*;
 
         /// App 본문(선언 + return JSX)만 바꿔 끼우는 틀.
+        // 7a C6: W25(import 누락 경고)가 생겨 양성 짝의 "경고 0" 단언이 깨지지
+        // 않도록 두 틀 모두 저작 표면 callee 셋을 import한다.
+        const IMPORT: &str = "import { signal, sharedSignal, sharedValue } from \"loom\";\n";
         fn app(body: &str) -> String {
-            format!("export function App() {{\n{body}\n}}\n")
+            format!("{IMPORT}export function App() {{\n{body}\n}}\n")
         }
         /// 위젯 참조 줄만 바꿔 끼우는 틀(디렉티브·prop 검사용).
         fn with_widget(r#ref: &str) -> String {
             format!(
-                "function Widget() {{\n  const n = signal(0);\n  return <button onClick={{() => n.increment()}}>{{n()}}</button>;\n}}\n\
+                "{IMPORT}function Widget() {{\n  const n = signal(0);\n  return <button onClick={{() => n.increment()}}>{{n()}}</button>;\n}}\n\
                  export function App() {{\n  return <div>{ref}</div>;\n}}\n",
                 r#ref = r#ref
             )
@@ -2327,6 +2345,282 @@ mod tests {
             assert!(matches!(g.components[0].signals[0].init, ir::SignalInit::I32(i32::MAX)));
             let over = app(&SIGNAL.replace('@', "2147483648"));
             assert_lower_diag(&over, "LOOM-R19", "(지금은 2147483647로", "2147483648");
+        }
+    }
+
+    /// 7a C6(2026-10-17, design-7a §1.1·§4): 구조 묶음 R01·R02·R05·R06·R22·R24·
+    /// R25·R27과 경고 W25. 행마다 c5와 같은 세 가지를 단언한다 — lower 진단
+    /// 1건(코드·문구·**강조 토큰**·렌더 `파일:줄:열`), 공개 API(Flatten)의 같은
+    /// 진단, 최소 차이 양성 짝의 성공(경고 0).
+    mod c6_structure_rejections {
+        use super::*;
+
+        const IMPORT: &str = "import { signal, sharedSignal, sharedValue } from \"loom\";\n";
+        fn app(body: &str) -> String {
+            format!("{IMPORT}export function App() {{\n{body}\n}}\n")
+        }
+        /// `Widget` 헬퍼(매개변수 `params`) + App이 `reference`로 그것을 참조.
+        fn widget(params: &str, reference: &str) -> String {
+            format!(
+                "{IMPORT}function Widget({params}) {{\n  const n = signal(0);\n  return <button onClick={{() => n.increment()}}>{{n()}}</button>;\n}}\n\
+                 export function App() {{\n  return <div>{reference}</div>;\n}}\n"
+            )
+        }
+        /// 최상위 항목 `item`을 App 앞에 끼운다(R25). import 행은 `top_bare`로
+        /// 넣어 `IMPORT`와 겹치지 않게 한다.
+        fn top(item: &str) -> String {
+            top_bare(&format!("{IMPORT}{item}"))
+        }
+        fn top_bare(item: &str) -> String {
+            format!("{item}\nexport function App() {{\n  const c = signal(0);\n  return <button onClick={{() => c.increment()}}>{{c()}}</button>;\n}}\n")
+        }
+
+        const LIST: &str = "  const xs = signal([\"a\"]);\n  return <div><button @>b</button><ul>{xs().map((x) => <li>{x}</li>)}</ul></div>;";
+        const COUNTER: &str = "  const c = signal(0);\n  return <button onClick={@() => c.increment()}>{c()}</button>;";
+        const STATIC: &str = "  const c = signal(0);\n  return <div><button onClick={() => c.increment()}>{c()}</button><p @>x</p></div>;";
+        const INPUT: &str = "  const t = signal(\"\");\n  return <div><input @ /></div>;";
+        const MAP: &str = "  const xs = signal([\"a\"]);\n  return <ul>{xs().map(@(x) => <li>{x}</li>)}</ul>;";
+        const VALUE: &str = "value={t()}";
+        const ONINPUT: &str = "onInput={(e) => t.set(e.target.value)}";
+        const HELPER: &str = "function @() {\n  const h = signal(0);\n  return <button onClick={() => h.increment()}>{h()}</button>;\n}\n";
+
+        /// (코드, 부정 소스, 문구 부분 문자열, 강조 토큰, 양성 짝 소스)
+        fn cases() -> Vec<(&'static str, String, &'static str, &'static str, Option<String>)> {
+            let a = |tpl: &str, arg: &str| app(&tpl.replace('@', arg));
+            let input = |attrs: &str| a(INPUT, attrs);
+            let base = top("");
+            let helper_app = |name: &str, reference: &str| {
+                format!(
+                    "{IMPORT}{}export function App() {{\n  const c = signal(0);\n  return <div><button onClick={{() => c.increment()}}>{{c()}}</button>{reference}</div>;\n}}\n",
+                    HELPER.replace('@', name)
+                )
+            };
+            vec![
+                // R01 — prop(리터럴 검사 뒤), 매개변수
+                ("LOOM-R01", widget("", "<Widget client:load initial={5} />"), "컴포넌트 prop `initial`는 아직 전달되지 않습니다", "initial={5}", Some(widget("", "<Widget client:load />"))),
+                ("LOOM-R01", widget("", "<Widget client:load label=\"hi\" />"), "컴포넌트 prop `label`는", "label=\"hi\"", Some(widget("", "<Widget client:load />"))),
+                ("LOOM-R01", widget("p", "<Widget client:load />"), "컴포넌트 함수 `Widget`는 매개변수를 받을 수 없습니다", "p", Some(widget("", "<Widget client:load />"))),
+                // R02 — children(공백 아닌 자식, 주석 식)
+                ("LOOM-R02", widget("", "<Widget client:load><p>x</p></Widget>"), "children은 전달되지 않고 SSR에서도 사라집니다", "<p>x</p>", Some(widget("", "<Widget client:load> </Widget>"))),
+                ("LOOM-R02", widget("", "<Widget client:load>{/* c */}</Widget>"), "children은 전달되지 않고", "{/* c */}", Some(widget("", "<Widget client:load />"))),
+                // R05 — onClick 두 번
+                (
+                    "LOOM-R05",
+                    a(LIST, "onClick={() => xs.append(\"z\")} onClick={() => xs.rotate()}"),
+                    "<button>에 `onClick`이 두 번 있습니다",
+                    "onClick={() => xs.rotate()}",
+                    Some(a(LIST, "onClick={() => xs.rotate()}")),
+                ),
+                // R06 — class/className 합산, 같은 이름, <input>의 value/onInput
+                ("LOOM-R06", a(STATIC, "class=\"a\" className=\"b\""), "<p>에 `className`가 두 번 있습니다", "className=\"b\"", Some(a(STATIC, "class=\"a\""))),
+                ("LOOM-R06", a(STATIC, "class=\"a\" class=\"b\""), "<p>에 `class`가 두 번 있습니다", "class=\"b\"", Some(a(STATIC, "className=\"b\""))),
+                (
+                    "LOOM-R06",
+                    input(&format!("{VALUE} {VALUE} {ONINPUT}")),
+                    "<input>에 `value`가 두 번 있습니다",
+                    "value={t()}",
+                    Some(input(&format!("{VALUE} {ONINPUT}"))),
+                ),
+                (
+                    "LOOM-R06",
+                    input(&format!("{VALUE} {ONINPUT} {ONINPUT}")),
+                    "<input>에 `onInput`가 두 번 있습니다",
+                    ONINPUT,
+                    Some(input(&format!("{ONINPUT} {VALUE}"))),
+                ),
+                // R22 — return 뒤의 문장(선언, 둘째 return)
+                (
+                    "LOOM-R22",
+                    app("  const c = signal(0);\n  return <p>{c()}</p>;\n  const d = signal(1);"),
+                    "`return` 뒤에 문장이 있습니다",
+                    "const d = signal(1);",
+                    Some(app("  const c = signal(0);\n  const d = signal(1);\n  return <div><p>{c()}</p><p>{d()}</p></div>;")),
+                ),
+                (
+                    "LOOM-R22",
+                    app("  const c = signal(0);\n  return <p>{c()}</p>;\n  return <div>{c()}</div>;"),
+                    "첫 `return`만 루트가 될 수 있습니다",
+                    "return <div>{c()}</div>;",
+                    Some(app("  const c = signal(0);\n  return <p>{c()}</p>;")),
+                ),
+                // R24 — 소문자 태그 = 선언된 컴포넌트 이름
+                (
+                    "LOOM-R24",
+                    helper_app("helper", "<helper />"),
+                    "`<helper/>`는 HTML 태그로 해석되는데 `function helper()`가 선언돼 있습니다",
+                    "helper",
+                    Some(helper_app("Helper", "<Helper client:load />")),
+                ),
+                // R25 — 지원하지 않는 최상위 항목
+                ("LOOM-R25", top("export default 1;"), "최상위 `export default`는 지원하지 않습니다", "export default 1;", Some(base.clone())),
+                ("LOOM-R25", top("const x = 1;"), "최상위 `const` 선언는 지원하지 않습니다", "const x = 1;", Some(base.clone())),
+                ("LOOM-R25", top("let x = 1;"), "최상위 `let` 선언는", "let x = 1;", Some(base.clone())),
+                ("LOOM-R25", top("type T = number;"), "최상위 `type` 별칭는", "type T = number;", Some(base.clone())),
+                ("LOOM-R25", top("interface I { a: number }"), "최상위 `interface`는", "interface I { a: number }", Some(base.clone())),
+                ("LOOM-R25", top("class K {}"), "최상위 `class`는", "class K {}", Some(base.clone())),
+                ("LOOM-R25", top("export const y = 1;"), "최상위 `export const`는", "export const y = 1;", Some(base.clone())),
+                ("LOOM-R25", top(";"), "최상위 빈 문장(`;`)는", ";", Some(base.clone())),
+                ("LOOM-R25", top_bare("import x from \"y\";"), "최상위 `import … from \"y\"`는", "\"y\"", Some(base.clone())),
+                ("LOOM-R25", top_bare("import type { signal } from \"loom\";"), "최상위 `import type`는", "import type { signal } from \"loom\";", Some(base.clone())),
+                ("LOOM-R25", top_bare("import { signal as s } from \"loom\";"), "import 별칭(`… as …`)는", "signal as s", Some(top_bare("import { signal } from \"loom\";"))),
+                ("LOOM-R25", top_bare("import { foo } from \"loom\";"), "\"loom\"의 `foo` import는", "foo", Some(top_bare("import { signal } from \"loom\";"))),
+                ("LOOM-R25", top_bare("import * as L from \"loom\";"), "namespace import(`* as …`)는", "* as L", Some(base.clone())),
+                ("LOOM-R25", top_bare("import L from \"loom\";"), "default import는", "L", Some(base.clone())),
+                // R27 — 함수: async/generator/타입 매개변수, 선언: let/var
+                (
+                    "LOOM-R27",
+                    format!("{IMPORT}export async function App() {{\n  const c = signal(0);\n  return <p>{{c()}}</p>;\n}}\n"),
+                    "async 컴포넌트는 지원하지 않습니다",
+                    "async",
+                    Some(app("  const c = signal(0);\n  return <p>{c()}</p>;")),
+                ),
+                (
+                    "LOOM-R27",
+                    format!("{IMPORT}export function* App() {{\n  const c = signal(0);\n  return <p>{{c()}}</p>;\n}}\n"),
+                    "generator(`function*`) 컴포넌트는 지원하지 않습니다",
+                    "App",
+                    Some(app("  const c = signal(0);\n  return <p>{c()}</p>;")),
+                ),
+                (
+                    "LOOM-R27",
+                    format!("{IMPORT}export function App<T>() {{\n  const c = signal(0);\n  return <p>{{c()}}</p>;\n}}\n"),
+                    "타입 매개변수는 지원하지 않습니다",
+                    "<T>",
+                    Some(app("  const c = signal(0);\n  return <p>{c()}</p>;")),
+                ),
+                ("LOOM-R27", app("  let c = signal(0);\n  return <p>{c()}</p>;"), "`let` 대신 `const`를 쓰십시오", "let", Some(app("  const c = signal(0);\n  return <p>{c()}</p>;"))),
+                ("LOOM-R27", app("  var c = signal(0);\n  return <p>{c()}</p>;"), "`var` 대신 `const`를 쓰십시오", "var", Some(app("  const c = signal(0);\n  return <p>{c()}</p>;"))),
+                // R27 — 화살표(onClick·onInput·.map): async, 타입 매개변수
+                ("LOOM-R27", a(COUNTER, "async "), "async `onClick` 핸들러는 지원하지 않습니다", "async", Some(a(COUNTER, ""))),
+                ("LOOM-R27", a(COUNTER, "<T,>"), "타입 매개변수는 지원하지 않습니다", "<T,>", Some(a(COUNTER, ""))),
+                (
+                    "LOOM-R27",
+                    input(&format!("{VALUE} onInput={{async (e) => t.set(e.target.value)}}")),
+                    "async `onInput` 핸들러는",
+                    "async",
+                    Some(input(&format!("{VALUE} {ONINPUT}"))),
+                ),
+                ("LOOM-R27", a(MAP, "async "), "async `.map(...)` row 함수는", "async", Some(a(MAP, ""))),
+                ("LOOM-R27", a(MAP, "<T,>"), "타입 매개변수는 지원하지 않습니다", "<T,>", Some(a(MAP, ""))),
+            ]
+        }
+
+        #[test]
+        fn each_structure_rejection_points_at_the_offending_syntax_and_has_a_compiling_positive_pair() {
+            let cases = cases();
+            // 개수 단언: R01 3, R02 2, R05 1, R06 4, R22 2, R24 1, R25 14, R27 10.
+            assert_eq!(cases.len(), 37);
+            for (code, neg, needle, token, pos) in &cases {
+                assert_lower_diag(neg, code, needle, token);
+                let e = super::super::compile_tsx_to_rust_graph(TEST_FILE, neg, GraphMode::Flatten)
+                    .err()
+                    .unwrap_or_else(|| panic!("공개 API가 받아 버림:\n{neg}"));
+                assert_diag(e, code, needle, Some(token));
+                if let Some(pos) = pos {
+                    let ok = super::super::compile_tsx_to_rust_graph(TEST_FILE, pos, GraphMode::Flatten)
+                        .unwrap_or_else(|d| panic!("양성 짝이 실패:\n{pos}\n{d}"));
+                    assert!(ok.warnings.is_empty(), "{pos}\n{}", ok.warnings);
+                }
+            }
+        }
+
+        #[test]
+        fn duplicate_attr_diagnostics_label_the_first_occurrence() {
+            let a = |tpl: &str, arg: &str| app(&tpl.replace('@', arg));
+            for (src, code, first) in [
+                (a(LIST, "onClick={() => xs.append(\"z\")} onClick={() => xs.rotate()}"), "LOOM-R05", "onClick={() => xs.append(\"z\")}"),
+                (a(STATIC, "className=\"a\" class=\"b\""), "LOOM-R06", "className=\"a\""),
+            ] {
+                let d = lower_diag(&src);
+                assert_eq!(d.items()[0].code, code, "{d}");
+                let labels = &d.items()[0].labels;
+                assert_eq!(labels.len(), 1, "{d}");
+                assert_eq!(d.source_text(labels[0].0).as_deref(), Some(first), "{d}");
+            }
+        }
+
+        #[test]
+        fn non_literal_prop_keeps_its_pre_7a_rejection_before_r01() {
+            // design-7a §1.1 R1a: 리터럴 검사가 먼저다 — 비리터럴 prop은 R01이 아니라
+            // 옛 L00 문구로 거부된다(RQ6 M10 증거 테스트의 관측 메커니즘 유지).
+            // 리터럴 prop이 앞에 있어도 그 prop에서 R01이 먼저 나는 것은 소스 순서다.
+            assert_lower_diag(
+                &widget("", "<Widget client:load initial={xs()} />"),
+                lower::L00,
+                "component prop value must be a number, boolean, string, or string-array literal",
+                "xs()",
+            );
+            assert_lower_diag(&widget("", "<Widget client:load a={1} b={xs()} />"), "LOOM-R01", "prop `a`", "a={1}");
+        }
+
+        #[test]
+        fn arrow_return_type_annotation_is_accepted() {
+            // R27은 반환 타입 주석을 거부하지 않는다(의미가 없으므로).
+            let src = app("  const c = signal(0);\n  return <button onClick={(): void => c.increment()}>{c()}</button>;");
+            let ok = super::super::compile_tsx_to_rust_graph(TEST_FILE, &src, GraphMode::Flatten)
+                .unwrap_or_else(|d| panic!("{src}\n{d}"));
+            assert!(ok.warnings.is_empty());
+        }
+
+        // ---- W25(경고) ----
+
+        const NO_IMPORT: &str = "export function App() {\n  const a = signal(0);\n  const b = signal(0);\n  const c = signal(0);\n  return (\n    <div>\n      <button onClick={() => a.increment()}>{a()}</button>\n      <button onClick={() => b.increment()}>{b()}</button>\n      <button onClick={() => c.increment()}>{c()}</button>\n      <p>{sharedValue(\"k\", 0)}</p>\n      <p>{sharedValue(\"k\", 0)}</p>\n      <p>{sharedValue(\"k\", 0)}</p>\n    </div>\n  );\n}\n";
+
+        fn warnings(src: &str) -> Diagnostics {
+            super::super::compile_tsx_to_rust_graph(TEST_FILE, src, GraphMode::Flatten)
+                .unwrap_or_else(|d| panic!("W25는 경고일 뿐 거부가 아니다:\n{d}"))
+                .warnings
+        }
+
+        #[test]
+        fn w25_warns_once_per_missing_callee_at_its_first_use() {
+            // 존재 단언 + 압축: callee마다 3번 쓰였지만 경고는 callee당 1건, 첫 사이트.
+            let w = warnings(NO_IMPORT);
+            assert_eq!(w.items().len(), 2, "{w}");
+            assert!(!w.has_errors());
+            for (item, callee, line) in [(&w.items()[0], "signal", 2), (&w.items()[1], "sharedValue", 10)] {
+                assert_eq!(item.code, "LOOM-W25");
+                assert_eq!(item.severity, Severity::Warning);
+                assert!(item.message.contains(&format!("`{callee}`를 \"loom\"에서 import하지 않았습니다")), "{w}");
+                assert_eq!(w.source_text(item.span).as_deref(), Some(callee), "{w}");
+                assert_eq!(w.line_col(item.span).0, line, "{w}");
+            }
+            let r = w.render();
+            assert_eq!(r.matches("warning[LOOM-W25]: ").count(), 2, "{r}");
+            assert!(r.contains(&format!("--> {TEST_FILE}:2:13")), "{r}");
+            assert!(r.contains(&format!("--> {TEST_FILE}:10:11")), "{r}");
+            // 결정성(§3.4): 같은 입력 두 번 → 같은 렌더.
+            assert_eq!(r, warnings(NO_IMPORT).render());
+        }
+
+        #[test]
+        fn w25_is_silent_for_imported_callees_and_counts_only_the_missing_ones() {
+            assert!(warnings(&format!("{IMPORT}{NO_IMPORT}")).is_empty());
+            let partial = warnings(&format!("import {{ signal }} from \"loom\";\n{NO_IMPORT}"));
+            assert_eq!(partial.items().len(), 1, "{partial}");
+            assert!(partial.items()[0].message.contains("`sharedValue`"), "{partial}");
+            // 쓰지 않은 callee는 import하지 않아도 경고가 없다.
+            let unused = warnings("import { signal } from \"loom\";\nexport function App() {\n  const c = signal(0);\n  return <p>{c()}</p>;\n}\n");
+            assert!(unused.is_empty(), "{unused}");
+        }
+
+        #[test]
+        fn w25_reaches_every_public_api_and_does_not_change_the_output() {
+            // 경고는 산출물과 무관하다: import 유무만 다른 두 소스의 Rust 산출물이 같다.
+            let bare = "export function App() {\n  const c = signal(0);\n  return <button onClick={() => c.increment()}>{c()}</button>;\n}\n";
+            let imported = format!("import {{ signal }} from \"loom\";\n{bare}");
+            let r1 = super::super::compile_tsx_to_rust(TEST_FILE, bare).unwrap();
+            let r2 = super::super::compile_tsx_to_rust(TEST_FILE, &imported).unwrap();
+            assert_eq!(r1.rust, r2.rust);
+            assert_eq!(r1.warnings.items().len(), 1);
+            assert!(r2.warnings.is_empty());
+            let c = super::super::compile_tsx_to_rust_with_candidate(TEST_FILE, bare, ListCandidate::K).unwrap();
+            assert_eq!(c.warnings.items().len(), 1);
+            let isl = "function W() {\n  const c = signal(0);\n  return <button onClick={() => c.increment()}>{c()}</button>;\n}\nexport function App() {\n  return <div><W client:load /></div>;\n}\n";
+            let s = super::super::compile_tsx_to_single_island_rust(TEST_FILE, isl, "W").unwrap();
+            assert_eq!(s.warnings.items().len(), 1);
+            let g = super::super::compile_tsx_to_rust_graph(TEST_FILE, isl, GraphMode::Islands).unwrap();
+            assert_eq!(g.warnings.items().len(), 1);
         }
     }
 }

@@ -58,6 +58,22 @@
 //! `LOOM-R26`(인자 개수 초과, `<input>` 자식). 모두 지금까지 **조용히 다른 뜻으로**
 //! 컴파일되던 모양이고, 받아 주는 입력의 IR은 그대로다.
 //!
+//! **Phase 7a C6 (2026-10-17)**: 구조 묶음 거부를 더했다 — `LOOM-R01`(컴포넌트
+//! prop·매개변수: props는 아직 전달되지 않는다), `LOOM-R02`(컴포넌트 참조의
+//! children), `LOOM-R05`(`onClick` 두 번), `LOOM-R06`(같은 attr 두 번 —
+//! `class`/`className`은 합쳐 센다, `<input>`의 `value`/`onInput` 포함),
+//! `LOOM-R22`(`return` 뒤의 문장), `LOOM-R24`(소문자 태그가 선언된 컴포넌트
+//! 이름과 같음), `LOOM-R25`(지원하지 않는 최상위 항목 — 지금까지 `_ => {}`로
+//! 조용히 버려졌다), `LOOM-R27`(async/generator/타입 매개변수 함수·화살표,
+//! `let`/`var`). 함께 **경고** `LOOM-W25`(쓴 `signal`/`sharedSignal`/
+//! `sharedValue`를 `"loom"`에서 import하지 않음 — callee 이름마다 1건)를 낸다.
+//! W25가 오류가 아닌 이유는 소비 픽스처 8회 호출(widget-embed의 `sharedValue`,
+//! largeapp 합성 소스의 `signal`)이 이 모양이기 때문이다(design-7a §1.1 R25).
+//! R01의 prop 검사는 기존 `lower_prop_literal`을 **먼저** 돌린 뒤에 낸다 —
+//! 비리터럴 prop은 옛 문구 그대로 거부되므로, lib.rs의 M10 증거 테스트
+//! (`component_ref_prop_cannot_carry_a_live_signal_value`, RQ6-verification-plan
+//! 인용)의 관측 메커니즘과 문구가 바뀌지 않는다.
+//!
 //! 함께 `SpanTable`을 돌려준다. IR(`ir.rs`)에 span을 넣지 않는 이유는 IR의
 //! `derive(PartialEq)`와 codegen의 구조체 생성을 건드리지 않기 위해서다
 //! (design-7a §3.3). 그래프 검사(single-writer, 이후 커밋의 R07/R44 등)는 이
@@ -89,6 +105,29 @@ pub(crate) const R18: &str = "LOOM-R18";
 pub(crate) const R19: &str = "LOOM-R19";
 /// 인자 개수 초과(초과분은 지금 무시), `<input>`의 자식(지금은 사라짐).
 pub(crate) const R26: &str = "LOOM-R26";
+
+// 7a C6(2026-10-17, design-7a §1.1): 구조 묶음.
+/// 컴포넌트 prop·매개변수(props는 아직 전달되지 않는다 — 값이 버려지고 선언 초기값이 쓰임).
+pub(crate) const R01: &str = "LOOM-R01";
+/// 컴포넌트 참조의 children(전달되지 않고 SSR에서도 사라짐).
+pub(crate) const R02: &str = "LOOM-R02";
+/// 한 요소에 `onClick`이 두 번(앞 핸들러가 버려지고 single-writer 검사도 우회).
+pub(crate) const R05: &str = "LOOM-R05";
+/// 한 요소에 같은 attr가 두 번(뒤의 것만 남음). `class`/`className`은 합쳐 센다.
+pub(crate) const R06: &str = "LOOM-R06";
+/// `return` 뒤의 문장(지금은 마지막 `return`이 루트가 된다).
+pub(crate) const R22: &str = "LOOM-R22";
+/// 소문자 태그가 선언된 컴포넌트 이름과 같음(HTML 태그로 해석된다).
+pub(crate) const R24: &str = "LOOM-R24";
+/// 지원하지 않는 최상위 항목(지금까지 조용히 무시됐다).
+pub(crate) const R25: &str = "LOOM-R25";
+/// async/generator/타입 매개변수 함수·화살표, `let`/`var` 선언.
+pub(crate) const R27: &str = "LOOM-R27";
+/// **경고**: 쓴 callee를 `"loom"`에서 import하지 않음.
+pub(crate) const W25: &str = "LOOM-W25";
+
+/// `"loom"`에서 import할 수 있는 이름(= 저작 표면의 callee 전부).
+const LOOM_EXPORTS: [&str; 3] = ["signal", "sharedSignal", "sharedValue"];
 
 type LResult<T> = Result<T, Diagnostic>;
 
@@ -173,6 +212,9 @@ pub struct SpanTable {
     /// 1:1이다. check.rs가 같은 순서로 IR을 훑어 짝짓는다(IR에 span을 넣지
     /// 않는다는 §3.3 결정을 지키면서 노드 단위 진단 위치를 얻는 방법).
     pub nodes: Vec<Vec<NodeSpan>>,
+    /// 7a C6: 저작 표면 callee(`signal`/`sharedSignal`/`sharedValue`) 사용
+    /// 사이트 — callee 식별자 span. W25(import 누락 경고)가 쓴다.
+    pub loom_calls: Vec<(&'static str, Span)>,
 }
 
 /// IR 노드 하나의 소스 위치(7a C3).
@@ -269,8 +311,10 @@ impl Cx<'_> {
     }
 }
 
-pub fn lower_module(module: &Module) -> LResult<(ComponentGraph, SpanTable)> {
-    let (root_decl, helper_decls) = collect_component_fn_decls(module)?;
+/// lower의 결과: IR, 위치 표, 그리고 **경고**(7a C6 — 지금은 W25만). 경고는
+/// 산출물에 영향이 없다(공개 API가 `Compiled::warnings`로 돌려준다).
+pub fn lower_module(module: &Module) -> LResult<(ComponentGraph, SpanTable, Vec<Diagnostic>)> {
+    let (root_decl, helper_decls, imported) = collect_component_fn_decls(module)?;
     let root_name = root_decl.ident.sym.to_string();
 
     let known_components: HashSet<String> = helper_decls
@@ -287,6 +331,7 @@ pub fn lower_module(module: &Module) -> LResult<(ComponentGraph, SpanTable)> {
     }
 
     check_one_action_per_signal(&components, &spans)?;
+    let warnings = missing_import_warnings(&imported, &spans);
 
     Ok((
         ComponentGraph {
@@ -294,7 +339,27 @@ pub fn lower_module(module: &Module) -> LResult<(ComponentGraph, SpanTable)> {
             root: root_name,
         },
         spans,
+        warnings,
     ))
+}
+
+/// W25: 쓴 callee가 `"loom"` import에 없으면 **callee 이름마다 1건**(사이트마다
+/// 내지 않는다), 가장 앞선 사용 사이트를 가리킨다. 순회는 고정 배열
+/// `LOOM_EXPORTS`와 `Vec`뿐이다(§3.4 결정성 — 해시 순회 없음).
+fn missing_import_warnings(imported: &[String], spans: &SpanTable) -> Vec<Diagnostic> {
+    LOOM_EXPORTS
+        .iter()
+        .filter(|name| !imported.iter().any(|i| i == *name))
+        .filter_map(|name| {
+            let first = spans
+                .loom_calls
+                .iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, sp)| *sp)
+                .min_by_key(|sp| sp.lo)?;
+            Some(Diagnostic::warning(W25, first, format!("`{name}`를 \"loom\"에서 import하지 않았습니다")))
+        })
+        .collect()
 }
 
 /// Task #28-f — statically enforces the "signal당 액션 1개" (single-writer)
@@ -376,9 +441,15 @@ fn check_one_action_per_signal(components: &[Component], spans: &SpanTable) -> L
 /// unreferenced helpers are accepted, not lint-rejected (this narrow
 /// compiler doesn't dead-code-eliminate; a stated scope cut, not an
 /// oversight).
-fn collect_component_fn_decls(module: &Module) -> LResult<(&FnDecl, Vec<&FnDecl>)> {
+///
+/// 7a C6(R25): 옛 `_ => {}`(그 밖의 최상위 항목을 진단 없이 버림)를 명시적
+/// match로 바꿨다. 받는 것은 `import {…} from "loom"`(이름 지정자만, 별칭 없이,
+/// `LOOM_EXPORTS`의 부분집합), `function`, `export function`뿐이고 나머지는
+/// `LOOM-R25` 오류다. 셋째 반환값은 import한 이름 목록(W25용, 소스 순서).
+fn collect_component_fn_decls(module: &Module) -> LResult<(&FnDecl, Vec<&FnDecl>, Vec<String>)> {
     let mut root: Option<&FnDecl> = None;
     let mut helpers = Vec::new();
+    let mut imported = Vec::new();
     for item in &module.body {
         match item {
             ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl { decl: Decl::Fn(f), .. })) => {
@@ -397,13 +468,106 @@ fn collect_component_fn_decls(module: &Module) -> LResult<(&FnDecl, Vec<&FnDecl>
             ModuleItem::Stmt(Stmt::Decl(Decl::Fn(f))) => {
                 helpers.push(f);
             }
-            _ => {}
+            ModuleItem::ModuleDecl(ModuleDecl::Import(import)) => {
+                imported.extend(lower_loom_import(import)?);
+            }
+            other => {
+                return Err(Diagnostic::error(
+                    R25,
+                    other.span(),
+                    format!(
+                        "최상위 {}는 지원하지 않습니다(지금은 조용히 무시됩니다). 최상위에는 `import {{…}} from \"loom\"`, `function`, `export function`만 쓸 수 있습니다",
+                        top_level_kind(other)
+                    ),
+                ))
+            }
         }
     }
     let root = root.ok_or_else(|| {
         unsupported(module.span.shrink_to_lo(), "no exported `function NAME() { ... }` found")
     })?;
-    Ok((root, helpers))
+    Ok((root, helpers, imported))
+}
+
+/// R25: `import { signal, … } from "loom"`만 받는다. 이름 지정자의 로컬 이름을
+/// 돌려준다(별칭은 거부 — lower는 callee를 이름으로 찾으므로 별칭은 조용히
+/// 다른 뜻이 된다).
+fn lower_loom_import(import: &ImportDecl) -> LResult<Vec<String>> {
+    let r25 = |span: Span, what: String| {
+        Diagnostic::error(
+            R25,
+            span,
+            format!("{what}는 지원하지 않습니다(지금은 조용히 무시됩니다). `import {{ signal, sharedSignal, sharedValue }} from \"loom\"`의 부분집합만 받습니다"),
+        )
+    };
+    let src = import.src.value.to_string_lossy();
+    if src != "loom" {
+        return Err(r25(import.src.span, format!("최상위 `import … from \"{src}\"`")));
+    }
+    if import.type_only {
+        return Err(r25(import.span, "최상위 `import type`".to_string()));
+    }
+    let mut names = Vec::new();
+    for spec in &import.specifiers {
+        match spec {
+            ImportSpecifier::Named(ImportNamedSpecifier {
+                local,
+                imported: None,
+                is_type_only: false,
+                ..
+            }) if LOOM_EXPORTS.contains(&local.sym.as_ref()) => names.push(local.sym.to_string()),
+            ImportSpecifier::Named(n) if n.imported.is_some() => {
+                return Err(r25(n.span, "import 별칭(`… as …`)".to_string()))
+            }
+            ImportSpecifier::Named(n) if n.is_type_only => {
+                return Err(r25(n.span, "`type` import 지정자".to_string()))
+            }
+            ImportSpecifier::Named(n) => {
+                return Err(r25(n.span, format!("\"loom\"의 `{}` import", n.local.sym)))
+            }
+            ImportSpecifier::Default(d) => return Err(r25(d.span, "default import".to_string())),
+            ImportSpecifier::Namespace(ns) => return Err(r25(ns.span, "namespace import(`* as …`)".to_string())),
+        }
+    }
+    Ok(names)
+}
+
+/// R25 진단 문구용 최상위 항목 종류.
+fn top_level_kind(item: &ModuleItem) -> &'static str {
+    match item {
+        ModuleItem::ModuleDecl(decl) => match decl {
+            ModuleDecl::ExportDecl(ExportDecl { decl, .. }) => match decl {
+                Decl::Var(v) => match v.kind {
+                    VarDeclKind::Const => "`export const`",
+                    VarDeclKind::Let => "`export let`",
+                    VarDeclKind::Var => "`export var`",
+                },
+                Decl::Class(_) => "`export class`",
+                Decl::TsTypeAlias(_) => "`export type`",
+                Decl::TsInterface(_) => "`export interface`",
+                Decl::TsEnum(_) => "`export enum`",
+                _ => "`export` 선언",
+            },
+            ModuleDecl::ExportDefaultDecl(_) | ModuleDecl::ExportDefaultExpr(_) => "`export default`",
+            ModuleDecl::ExportNamed(_) | ModuleDecl::ExportAll(_) => "재export(`export {…}`/`export * from`)",
+            ModuleDecl::Import(_) => "`import`",
+            _ => "TypeScript 모듈 선언",
+        },
+        ModuleItem::Stmt(stmt) => match stmt {
+            Stmt::Decl(Decl::Var(v)) => match v.kind {
+                VarDeclKind::Const => "`const` 선언",
+                VarDeclKind::Let => "`let` 선언",
+                VarDeclKind::Var => "`var` 선언",
+            },
+            Stmt::Decl(Decl::Class(_)) => "`class`",
+            Stmt::Decl(Decl::TsTypeAlias(_)) => "`type` 별칭",
+            Stmt::Decl(Decl::TsInterface(_)) => "`interface`",
+            Stmt::Decl(Decl::TsEnum(_)) => "`enum`",
+            Stmt::Decl(_) => "선언",
+            Stmt::Empty(_) => "빈 문장(`;`)",
+            _ => "문장",
+        },
+    }
 }
 
 fn lower_component_fn(
@@ -414,6 +578,25 @@ fn lower_component_fn(
     let component_name = fn_decl.ident.sym.to_string();
     spans.components.push((component_name.clone(), fn_decl.ident.span));
     spans.nodes.push(Vec::new());
+    // R01(매개변수): props는 아직 전달되지 않는다 — 매개변수를 받아 두면 저작자는
+    // 값이 온다고 믿지만 실제로는 아무것도 오지 않는다.
+    if let Some(first) = fn_decl.function.params.first() {
+        return Err(Diagnostic::error(
+            R01,
+            first.span,
+            format!("컴포넌트 함수 `{component_name}`는 매개변수를 받을 수 없습니다(props 미지원, 7d)"),
+        ));
+    }
+    // R27: async/generator/타입 매개변수 컴포넌트는 지금 그 성질이 조용히 무시된다.
+    if fn_decl.function.is_async {
+        return Err(r27_async(fn_decl.function.span, "컴포넌트"));
+    }
+    if fn_decl.function.is_generator {
+        return Err(Diagnostic::error(R27, fn_decl.ident.span, "generator(`function*`) 컴포넌트는 지원하지 않습니다"));
+    }
+    if let Some(tp) = &fn_decl.function.type_params {
+        return Err(r27_type_params(tp.span));
+    }
     let body = fn_decl
         .function
         .body
@@ -425,15 +608,34 @@ fn lower_component_fn(
     let mut root = None;
 
     for stmt in &body.stmts {
+        // R22: 첫 `return`만 루트가 될 수 있다(옛 동작은 마지막 `return`이 루트,
+        // 그 사이 선언도 조용히 받아 줬다).
+        if root.is_some() {
+            return Err(Diagnostic::error(
+                R22,
+                stmt.span(),
+                "`return` 뒤에 문장이 있습니다. 첫 `return`만 루트가 될 수 있습니다(지금은 마지막 것이 쓰입니다)",
+            ));
+        }
         match stmt {
             Stmt::Decl(Decl::Var(var_decl)) => {
+                if var_decl.kind != VarDeclKind::Const {
+                    let kw = if var_decl.kind == VarDeclKind::Let { "let" } else { "var" };
+                    return Err(Diagnostic::error(
+                        R27,
+                        Span::new(var_decl.span.lo, var_decl.span.lo + BytePos(kw.len() as u32)),
+                        format!("`{kw}` 대신 `const`를 쓰십시오(signal 핸들은 재할당되지 않습니다)"),
+                    ));
+                }
                 for decl in &var_decl.decls {
                     if let Some((signal, shared)) = try_lower_shared_signal_decl(decl)? {
                         spans.signals.push((component_name.clone(), signal.name.clone(), decl.name.span()));
+                        spans.loom_calls.push(("sharedSignal", callee_span(decl)));
                         signals.push(signal);
                         shared_bindings.push(shared);
                     } else if let Some(signal) = try_lower_signal_decl(decl)? {
                         spans.signals.push((component_name.clone(), signal.name.clone(), decl.name.span()));
+                        spans.loom_calls.push(("signal", callee_span(decl)));
                         signals.push(signal);
                     } else {
                         return Err(unsupported(
@@ -448,11 +650,8 @@ fn lower_component_fn(
                 let Expr::JSXElement(el) = jsx else {
                     return Err(unsupported(jsx.span(), "component must `return` a single JSX element"));
                 };
-                // `return`이 둘 이상이면(R22, 이후 커밋에서 거부) 마지막 것이
-                // 루트가 된다 — 노드 위치 표도 그 루트에 맞춰 비운다.
-                if let Some(list) = spans.nodes.last_mut() {
-                    list.clear();
-                }
+                // (7a C3의 "return이 둘이면 노드 표를 비움" 처리는 C6의 R22
+                // 거부로 필요 없어져 걷었다 — 루트는 이제 항상 첫 `return`이다.)
                 let mut cx = Cx {
                     component: &component_name,
                     signals: &signals,
@@ -531,6 +730,44 @@ fn try_lower_shared_signal_decl(decl: &VarDeclarator) -> LResult<Option<(SignalD
         },
         SharedBinding { signal: name, key },
     )))
+}
+
+/// `const x = signal(…)`/`sharedSignal(…)` 선언의 callee 식별자 span(W25용).
+/// `try_lower_*_signal_decl`이 `Some`을 돌려준 선언에만 부른다.
+fn callee_span(decl: &VarDeclarator) -> Span {
+    match decl.init.as_deref() {
+        Some(Expr::Call(CallExpr { callee: Callee::Expr(callee), .. })) => callee.span(),
+        _ => decl.span,
+    }
+}
+
+/// R27: `async` 함수·화살표. 주 span은 `async` 키워드(함수·화살표 span의 앞 5바이트).
+fn r27_async(fn_span: Span, what: &str) -> Diagnostic {
+    Diagnostic::error(
+        R27,
+        Span::new(fn_span.lo, fn_span.lo + BytePos(5)),
+        format!("async {what}는 지원하지 않습니다(지금은 `async`가 조용히 무시됩니다)"),
+    )
+}
+
+/// R27: 타입 매개변수(`<T>`).
+fn r27_type_params(span: Span) -> Diagnostic {
+    Diagnostic::error(R27, span, "타입 매개변수는 지원하지 않습니다")
+}
+
+/// R27(화살표): `onClick`/`onInput`/`.map(...)`의 화살표가 async·generator이거나
+/// 타입 매개변수를 가지면 거부한다. 반환 타입 주석은 의미가 없으므로 받아 준다.
+fn check_arrow(arrow: &ArrowExpr, what: &str) -> LResult<()> {
+    if arrow.is_async {
+        return Err(r27_async(arrow.span, what));
+    }
+    if arrow.is_generator {
+        return Err(Diagnostic::error(R27, arrow.span, format!("generator {what}는 지원하지 않습니다")));
+    }
+    if let Some(tp) = &arrow.type_params {
+        return Err(r27_type_params(tp.span));
+    }
+    Ok(())
 }
 
 fn unwrap_paren(expr: &Expr) -> &Expr {
@@ -632,6 +869,18 @@ fn lower_element(el: &JSXElement, cx: &mut Cx<'_>, row_var: Option<&str>) -> LRe
         return Ok(node);
     }
 
+    // R24: 소문자 태그는 언제나 HTML 태그로 해석된다 — 같은 이름의 컴포넌트
+    // 함수가 있으면 저작자는 그것을 부른다고 믿지만 조용히 빈 HTML 요소가 된다.
+    if cx.known_components.contains(&tag) {
+        return Err(Diagnostic::error(
+            R24,
+            *tag_span,
+            format!(
+                "`<{tag}/>`는 HTML 태그로 해석되는데 `function {tag}()`가 선언돼 있습니다. 컴포넌트 이름은 대문자로 시작해야 합니다"
+            ),
+        ));
+    }
+
     if tag == "input" {
         let node = lower_input_binding(el, cx)?;
         if let JsxNode::InputBinding { signal } = &node {
@@ -642,6 +891,9 @@ fn lower_element(el: &JSXElement, cx: &mut Cx<'_>, row_var: Option<&str>) -> LRe
 
     let mut class = None;
     let mut action = None;
+    // R05/R06: 앞선 출현의 attr span(진단 label용).
+    let mut class_at: Option<Span> = None;
+    let mut onclick_at: Option<Span> = None;
     for attr in &el.opening.attrs {
         let JSXAttrOrSpread::JSXAttr(attr) = attr else {
             return Err(unsupported(attr.span(), "spread attributes are not supported"));
@@ -651,12 +903,25 @@ fn lower_element(el: &JSXElement, cx: &mut Cx<'_>, row_var: Option<&str>) -> LRe
         };
         match name.as_ref() {
             "class" | "className" => {
+                if let Some(first) = class_at {
+                    return Err(duplicate_attr(&tag, name, attr.span, first));
+                }
+                class_at = Some(attr.span);
                 let Some(JSXAttrValue::Str(s)) = &attr.value else {
                     return Err(unsupported(attr.span, "`class` must be a static string literal"));
                 };
                 class = Some(s.value.to_string_lossy().into_owned());
             }
             "onClick" => {
+                if let Some(first) = onclick_at {
+                    return Err(Diagnostic::error(
+                        R05,
+                        attr.span,
+                        format!("<{tag}>에 `onClick`이 두 번 있습니다. 앞 핸들러가 버려지고 single-writer 검사도 우회됩니다"),
+                    )
+                    .with_label(first, "첫 번째 `onClick`"));
+                }
+                onclick_at = Some(attr.span);
                 let a = lower_click_action(attr, cx)?;
                 cx.event(a.signal_name(), "onClick", attr.span);
                 cx.node_event(node_idx, attr.span);
@@ -686,6 +951,13 @@ fn lower_element(el: &JSXElement, cx: &mut Cx<'_>, row_var: Option<&str>) -> LRe
     })
 }
 
+/// R06: 같은 attr가 두 번(`class`/`className`은 같은 attr로 센다). 주 span은
+/// 뒤 attr, 첫 출현에 label.
+fn duplicate_attr(tag: &str, attr: &str, span: Span, first: Span) -> Diagnostic {
+    Diagnostic::error(R06, span, format!("<{tag}>에 `{attr}`가 두 번 있습니다(뒤의 것만 남습니다)"))
+        .with_label(first, "첫 번째 출현")
+}
+
 /// Parses `<ComponentName client:load|client:visible prop={literal} .../>`
 /// into `JsxNode::ComponentRef`. This is the **only** place `client:`-
 /// namespaced attributes are accepted — plain `Element`/`InputBinding`
@@ -695,7 +967,9 @@ fn lower_component_ref(el: &JSXElement, name: &str) -> LResult<JsxNode> {
     let mut activation = None;
     // R18: 첫 디렉티브의 (원문 이름, attr 이름 span) — 둘째 디렉티브 진단의 label용.
     let mut first_directive: Option<(String, Span)> = None;
-    let mut props = Vec::new();
+    // 7a C6: prop은 R01로 모두 거부되므로 IR의 `props`는 언제나 비어 있다
+    // (IR 모양은 바꾸지 않는다 — 7d에서 props를 설계할 때 다시 채운다).
+    let props = Vec::new();
     for attr in &el.opening.attrs {
         let JSXAttrOrSpread::JSXAttr(attr) = attr else {
             return Err(unsupported(attr.span(), "spread attributes are not supported"));
@@ -748,9 +1022,34 @@ fn lower_component_ref(el: &JSXElement, name: &str) -> LResult<JsxNode> {
                 let value = attr.value.as_ref().ok_or_else(|| {
                     unsupported(attr.span, format!("prop `{prop_name}` on <{name}> requires a value"))
                 })?;
-                props.push((prop_name.to_string(), lower_prop_literal(value)?));
+                // R01(prop): 기존 리터럴 검사를 **먼저** 돌린다 — 비리터럴 prop은
+                // 옛 문구 그대로 거부된다(lib.rs M10 증거 테스트의 관측 메커니즘
+                // 유지, design-7a §1.1 R1a). 리터럴이면 그다음에 R01이다.
+                lower_prop_literal(value)?;
+                return Err(Diagnostic::error(
+                    R01,
+                    attr.span,
+                    format!(
+                        "컴포넌트 prop `{prop_name}`는 아직 전달되지 않습니다. 지금은 값이 버려지고 선언 초기값이 쓰입니다. props는 CAP 조건 (2)(docs/02:199-205)와 얽혀 있어 7d에서 RQ를 먼저 세웁니다"
+                    ),
+                ));
             }
         }
+    }
+    // R02: children은 전달되지 않고 SSR에서도 사라진다. 공백뿐인 JSXText 말고는
+    // (`{/* 주석 */}` 포함) 모두 거부한다 — 일반 요소의 JSXEmptyExpr 거부와 같은 경계.
+    if let Some(child) = el
+        .children
+        .iter()
+        .find(|c| !matches!(c, JSXElementChild::JSXText(t) if t.value.trim().is_empty()))
+    {
+        return Err(Diagnostic::error(
+            R02,
+            child.span(),
+            format!(
+                "`<{name} client:…>`의 children은 전달되지 않고 SSR에서도 사라집니다. `<{name} client:load />`처럼 자기 닫힘으로 쓰십시오(슬롯은 7d)"
+            ),
+        ));
     }
     let activation = activation.ok_or_else(|| {
         unsupported(
@@ -808,6 +1107,15 @@ fn lower_input_binding(el: &JSXElement, cx: &mut Cx<'_>) -> LResult<JsxNode> {
         let JSXAttrName::Ident(IdentName { sym: name, .. }) = &attr.name else {
             return Err(unsupported(attr.name.span(), "namespaced attributes are not supported"));
         };
+        // R06: 같은 attr가 두 번이면 지금은 뒤의 것만 남는다.
+        let earlier = match name.as_ref() {
+            "value" => value_signal.as_ref(),
+            "onInput" => oninput_signal.as_ref(),
+            _ => None,
+        };
+        if let Some((_, first)) = earlier {
+            return Err(duplicate_attr("input", name, attr.span, *first));
+        }
         match name.as_ref() {
             "value" => value_signal = Some((lower_input_value_attr(attr, cx)?, attr.span)),
             "onInput" => oninput_signal = Some((lower_input_oninput_attr(attr, cx)?, attr.span)),
@@ -891,9 +1199,10 @@ fn lower_input_oninput_attr(attr: &JSXAttr, cx: &Cx<'_>) -> LResult<String> {
     else {
         return Err(unsupported(attr.span, "<input>'s `onInput` must be `{(e) => ...}`"));
     };
-    let Expr::Arrow(ArrowExpr { body, params, span: arrow_span, .. }) = unwrap_paren(expr) else {
+    let Expr::Arrow(arrow @ ArrowExpr { body, params, span: arrow_span, .. }) = unwrap_paren(expr) else {
         return Err(unsupported(expr.span(), "<input>'s `onInput` must be an arrow function"));
     };
+    check_arrow(arrow, "`onInput` 핸들러")?;
     let [Pat::Ident(BindingIdent { id: event_param, .. })] = params.as_slice() else {
         return Err(unsupported(
             *arrow_span,
@@ -1018,9 +1327,10 @@ fn lower_click_action(attr: &JSXAttr, cx: &Cx<'_>) -> LResult<ClickAction> {
     else {
         return Err(unsupported(attr.span, "`onClick` must be `{() => ...}`"));
     };
-    let Expr::Arrow(ArrowExpr { body, params, .. }) = unwrap_paren(expr) else {
+    let Expr::Arrow(arrow @ ArrowExpr { body, params, .. }) = unwrap_paren(expr) else {
         return Err(unsupported(expr.span(), "`onClick` must be an arrow function"));
     };
+    check_arrow(arrow, "`onClick` 핸들러")?;
     if let Some(first) = params.first() {
         return Err(unsupported(first.span(), "`onClick` arrow function must take no parameters"));
     }
@@ -1185,6 +1495,7 @@ fn lower_expr_container(expr: &Expr, cx: &mut Cx<'_>, row_var: Option<&str>) -> 
             };
             let initial = lit_i32(initial)?;
             cx.node(*call_span);
+            cx.spans.loom_calls.push(("sharedValue", callee.span()));
             Ok(JsxNode::SharedValueBinding {
                 key: key.value.to_string_lossy().into_owned(),
                 initial,
@@ -1401,15 +1712,18 @@ fn lower_expr_container(expr: &Expr, cx: &mut Cx<'_>, row_var: Option<&str>) -> 
                 .first()
                 .ok_or_else(|| unsupported(*map_call_span, "`.map(...)` requires one arrow-function argument"))?;
             check_arity(".map()", args, 1)?;
-            let Expr::Arrow(ArrowExpr {
-                params,
-                body: row_body,
-                span: arrow_span,
-                ..
-            }) = unwrap_paren(&map_arg.expr)
+            let Expr::Arrow(
+                arrow @ ArrowExpr {
+                    params,
+                    body: row_body,
+                    span: arrow_span,
+                    ..
+                },
+            ) = unwrap_paren(&map_arg.expr)
             else {
                 return Err(unsupported(map_arg.expr.span(), "`.map(...)` argument must be an arrow function"));
             };
+            check_arrow(arrow, "`.map(...)` row 함수")?;
             let [Pat::Ident(BindingIdent { id: row_ident, .. })] = params.as_slice() else {
                 return Err(unsupported(
                     *arrow_span,

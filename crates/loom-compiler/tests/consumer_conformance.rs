@@ -40,9 +40,12 @@ struct Row {
     consumer: &'static str,
     src: Src,
     call: Call,
-    /// 이 호출에서 기대하는 경고 코드(정렬된 렌더 순서). C1 시점에는 경고를
-    /// 내는 검사가 없으므로 전부 비어 있다(W25는 C6에서 추가).
-    expected_warnings: &'static [&'static str],
+    /// 이 호출에서 기대하는 경고 `(코드, 문구에 들어 있어야 할 callee)` 목록
+    /// (정렬된 렌더 순서). C1 시점에는 경고를 내는 검사가 없어 전부 비어 있었다.
+    /// 7a C6(2026-10-17)부터 W25(import 누락)가 widget-embed 소스 6회 호출
+    /// (`sharedValue`)과 largeapp 합성 소스 2회 호출(`signal`)에서만 뜬다 —
+    /// design-7a §1.1 R25 표의 "8회 호출"과 같다. callee마다 1건으로 압축된다.
+    expected_warnings: &'static [(&'static str, &'static str)],
 }
 
 const ROWS: &[Row] = &[
@@ -50,8 +53,8 @@ const ROWS: &[Row] = &[
     Row { consumer: "loom-fic", src: Src::Demo("counter-list.tsx"), call: Call::Legacy, expected_warnings: &[] },
     Row { consumer: "loom-island-compiled", src: Src::Demo("islands/product-card.tsx"), call: Call::Graph(Arm::Islands), expected_warnings: &[] },
     Row { consumer: "loom-island-compiled", src: Src::Demo("islands/product-card.tsx"), call: Call::Graph(Arm::Flatten), expected_warnings: &[] },
-    Row { consumer: "loom-largeapp-axis-flat", src: Src::LargeappSynth, call: Call::Graph(Arm::Flatten), expected_warnings: &[] },
-    Row { consumer: "loom-largeapp-axis-island-target", src: Src::LargeappSynth, call: Call::SingleIsland("TargetWidget"), expected_warnings: &[] },
+    Row { consumer: "loom-largeapp-axis-flat", src: Src::LargeappSynth, call: Call::Graph(Arm::Flatten), expected_warnings: &[("LOOM-W25", "`signal`")] },
+    Row { consumer: "loom-largeapp-axis-island-target", src: Src::LargeappSynth, call: Call::SingleIsland("TargetWidget"), expected_warnings: &[("LOOM-W25", "`signal`")] },
     Row { consumer: "loom-nested-fixture", src: Src::Demo("nested-conditional.tsx"), call: Call::Legacy, expected_warnings: &[] },
     Row { consumer: "loom-nested-fixture", src: Src::Demo("nested-list.tsx"), call: Call::Legacy, expected_warnings: &[] },
     Row { consumer: "loom-nested-fixture", src: Src::Demo("nested-list-derived.tsx"), call: Call::Legacy, expected_warnings: &[] },
@@ -62,12 +65,12 @@ const ROWS: &[Row] = &[
     Row { consumer: "loom-track-n", src: Src::Demo("nested-list-derived.tsx"), call: Call::Candidate(ListCandidate::DLis), expected_warnings: &[] },
     Row { consumer: "loom-track-n", src: Src::Demo("nested-list-derived.tsx"), call: Call::Candidate(ListCandidate::E), expected_warnings: &[] },
     Row { consumer: "loom-track-n", src: Src::Demo("nested-list-derived.tsx"), call: Call::Candidate(ListCandidate::ELis), expected_warnings: &[] },
-    Row { consumer: "loom-widget-embed", src: Src::Demo("widget-embed.tsx"), call: Call::Graph(Arm::Islands), expected_warnings: &[] },
-    Row { consumer: "loom-widget-embed", src: Src::Demo("widget-embed.tsx"), call: Call::Graph(Arm::Flatten), expected_warnings: &[] },
-    Row { consumer: "loom-widget-embed-island-checkout-form", src: Src::Demo("widget-embed.tsx"), call: Call::SingleIsland("CheckoutForm"), expected_warnings: &[] },
-    Row { consumer: "loom-widget-embed-island-mini-dashboard", src: Src::Demo("widget-embed.tsx"), call: Call::SingleIsland("MiniDashboard"), expected_warnings: &[] },
-    Row { consumer: "loom-widget-embed-island-product-card", src: Src::Demo("widget-embed.tsx"), call: Call::SingleIsland("ProductCard"), expected_warnings: &[] },
-    Row { consumer: "loom-widget-embed-island-quantity-picker", src: Src::Demo("widget-embed.tsx"), call: Call::SingleIsland("QuantityPicker"), expected_warnings: &[] },
+    Row { consumer: "loom-widget-embed", src: Src::Demo("widget-embed.tsx"), call: Call::Graph(Arm::Islands), expected_warnings: &[("LOOM-W25", "`sharedValue`")] },
+    Row { consumer: "loom-widget-embed", src: Src::Demo("widget-embed.tsx"), call: Call::Graph(Arm::Flatten), expected_warnings: &[("LOOM-W25", "`sharedValue`")] },
+    Row { consumer: "loom-widget-embed-island-checkout-form", src: Src::Demo("widget-embed.tsx"), call: Call::SingleIsland("CheckoutForm"), expected_warnings: &[("LOOM-W25", "`sharedValue`")] },
+    Row { consumer: "loom-widget-embed-island-mini-dashboard", src: Src::Demo("widget-embed.tsx"), call: Call::SingleIsland("MiniDashboard"), expected_warnings: &[("LOOM-W25", "`sharedValue`")] },
+    Row { consumer: "loom-widget-embed-island-product-card", src: Src::Demo("widget-embed.tsx"), call: Call::SingleIsland("ProductCard"), expected_warnings: &[("LOOM-W25", "`sharedValue`")] },
+    Row { consumer: "loom-widget-embed-island-quantity-picker", src: Src::Demo("widget-embed.tsx"), call: Call::SingleIsland("QuantityPicker"), expected_warnings: &[("LOOM-W25", "`sharedValue`")] },
 ];
 
 fn run(row: &Row) -> Result<Compiled, Diagnostics> {
@@ -107,7 +110,14 @@ fn all_22_consumer_compile_calls_succeed_with_exactly_the_expected_warnings() {
                 // 존재 단언: 비어 있지 않은 Rust 소스가 나와야 "Ok"가 의미를 갖는다.
                 assert!(c.rust.contains("pub fn setup("), "row {i} ({}): 산출물에 setup 없음", row.consumer);
                 let got: Vec<&str> = c.warnings.items().iter().map(|d| d.code).collect();
-                if got != row.expected_warnings {
+                let want: Vec<&str> = row.expected_warnings.iter().map(|(code, _)| *code).collect();
+                let names_ok = c
+                    .warnings
+                    .items()
+                    .iter()
+                    .zip(row.expected_warnings)
+                    .all(|(d, (_, callee))| d.message.contains(callee));
+                if got != want || !names_ok {
                     failures.push(format!(
                         "row {i} ({}): 경고 {got:?} != 기대 {:?}\n{}",
                         row.consumer,
@@ -120,4 +130,7 @@ fn all_22_consumer_compile_calls_succeed_with_exactly_the_expected_warnings() {
         }
     }
     assert!(failures.is_empty(), "소비자 적합성 실패 {}건:\n{}", failures.len(), failures.join("\n"));
+    // 존재 단언(7a C6): 경고를 기대하는 호출 수가 설계의 8회와 같다 — 기대 표가
+    // 통째로 비어 "경고 0 == 기대 0"으로 공허하게 통과하는 것을 막는다.
+    assert_eq!(ROWS.iter().filter(|r| !r.expected_warnings.is_empty()).count(), 8);
 }
