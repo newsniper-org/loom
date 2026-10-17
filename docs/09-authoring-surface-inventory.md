@@ -430,3 +430,64 @@
   세어졌다). §3 항목 6의 "정독으로는 widget-embed.tsx에 해당 패턴이 없습니다"는 R20 히트와 모순된다 — 정정한다.
 - 부분 확인: `demo/islands/product-card.tsx`와 합성 소스는 R20만 확인했다. 확인 수준 한계: 고부하로 빌드·브라우저 실행 없이
   커밋 산출물과 OUT_DIR 생성 소스를 읽어 판정했다.
+
+## 2026-10-17 갱신(7a) — Phase 7a 위험 수리 결과 (행별)
+
+> 위 표(§1)와 §0.3·§2.13의 원문은 감사 시점(aac2dc2) 기록이라 고치지 않는다. 아래가 행별 갱신이다.
+> 출처: 브랜치 phase7a 커밋 20ce418(C0)~46e0da7(C9), 설계 design-7a(개정판). 모든 커밋이 바이트 동일 게이트를
+> 통과했다(RQ1 프로토콜 "개정 #11 적용 기록 — 7a"). **소비자 22회 컴파일 호출 중 새 거부에 걸린 것은 0건**이다
+> (`crates/loom-compiler/tests/consumer_conformance.rs`가 22회 전부 `Ok`와 호출별 기대 경고를 단언). 진단 체계는 docs/02
+> "진단 (2026-10-17, Phase 7a)" 절에 있다.
+
+**처리 방식**: "거부"는 지금까지 조용히 다른 뜻으로 컴파일되던 입력을 `Err(Diagnostics)`로 막은 것이다. 받아 주는 입력의 IR과
+codegen은 바뀌지 않았다(codegen.rs는 C9의 R12 텍스트 수정 한 곳만 바뀜). 따라서 "거부"는 **기능 지원이 아니다** — 해당 표면은
+여전히 없고, 이제 없다는 사실이 진단으로 드러난다. 각 행의 "보낼 곳"이 지원을 맡는다.
+
+| 행 | 2026-10-17 갱신(7a) | 커밋 | 지원은 |
+|---|---|---|---|
+| R1 | **거부 LOOM-R01.** 리터럴 prop(`<W client:load initial={5}/>`)과 컴포넌트 함수 매개변수. 순서: 기존 `lower_prop_literal`을 먼저 돌리고 리터럴에만 R01 — 비리터럴 prop은 7a 이전 문구 그대로 L00이라 RQ6 M10 증거 테스트(`component_ref_prop_cannot_carry_a_live_signal_value`)의 문구·관측 메커니즘이 유지된다. 이 행이 지목한 "패닉하지 않음을 고정하는 테스트"(옛 lib.rs:989)는 R01 부정 테스트로 뒤집었다(이름은 이력 보존). CAP 조건 (2)는 그대로 열린 문제다 | C6 714c1f6 | 7d(RQ 먼저) |
+| R2 | **거부 LOOM-R02.** 컴포넌트 참조의 children — 공백뿐인 텍스트 외 전부, `{/* c */}` 포함(일반 요소의 기존 규칙과 같은 경계) | C6 | 7d(슬롯) |
+| R3 | **거부 LOOM-R03.** `.increment(…)`·`.rotate(…)`에 인자. 문구는 `{s}.increment(…)`(lower에 SourceMap이 없어 인자 원문 대신 span 강조로 보여 줌) | C5 fa37391 | 7b(액션 인자) |
+| R4 | **거부 LOOM-R04.** `.toggle(…)`에 인자 | C5 | 7b |
+| R5 | **거부 LOOM-R05.** 한 요소에 `onClick` 두 번(둘째 attr이 주 span, 첫째에 label) | C6 | — |
+| R6 | **거부 LOOM-R06.** 같은 attr 두 번 — `class`/`className` 합산, `<input>`의 `value`/`onInput` 중복 포함 | C6 | — |
+| R7 | **거부 LOOM-R07**(사이트 2곳 이상, 사이트마다 label) + **LOOM-R07U**(표시되는 곳이 없는 signal — codegen.rs "never spawned" 내부 오류를 사용자 오류로 승격). 집계 대상: Text·Cond 조건·List·Input binding과 row 원본(row 안 cond/list). **이후 트랙 N 픽스처 설계의 제약**: row 원본 signal을 바깥 binding에서 함께 쓸 수 없다(실제로 두 번 spawn되는 결함 경로라 거부). R07U는 모드 무관이라, 7a 이전 단일 Island 경로에서 대상 밖 컴포넌트의 미표시 signal이 통과하던 것도 이제 거부한다 | C7 caa5bbb | 사이트별 entity(미정) |
+| R8 | **거부 LOOM-R08.** `.map` row 루트의 `onClick`(조건부 안 리스트 포함) | C7 | 7d(key 표면, G0 P1 이후) |
+| R12 | **텍스트 직계는 구현, 리스트 직계는 거부.** (1) `{c() && <p>{n()}</p>}`: resume의 I32 블록이 SSR DOM에 없는 `find_node("n")` 대신 wrapper `find_node("c")`를 쓰도록 codegen 수정(`CondSite.direct_text`). 방출 차이는 그 한 줄. 정확한 방출은 블록 전체 문자열 일치로 단언하고, 미커밋 스크래치 크레이트(별도 `[workspace]`)에서 SSR→resume을 실측했다 — 수정 컴파일러 2/2 통과, 부모 컴파일러는 "SSR DOM에 없는 data-loom-id=\"count\""로 패닉(결함 존재 확인). 영구 회귀 크레이트는 Cargo.lock을 바꿔 게이트 D에 걸리므로 7b로 미룬다. **대역 불일치 발견**: `loom-nested-fixture`의 `TreeDom::adopt_children`은 텍스트 조각을 빼고 돌려주는데 `BrowserDom::adopt_children`(web.rs)은 텍스트 노드도 adopt한다. 그래서 TreeDom 위에서는 열린 직계 텍스트를 닫힘으로 오판해 부모 컴파일러도 패닉 없이 통과한다 — 7b의 영구 회귀 테스트는 **텍스트 노드를 adopt하는 대역** 위에서 돌려야 한다(스크래치 실측은 그런 래퍼로 했다). (2) `{c() && <ul>{xs().map(…)}</ul>}`: **거부 LOOM-R12**(주 span은 wrapper 태그, "`<div>`로 한 번 감싸십시오"). 구현하면 같은 DOM 노드를 Bool 패스와 리스트 패스가 두 번 adopt하고(CondBlock 크기 1과도 어긋남), SSR 시점 열림 + 빈 리스트를 닫힘으로 복원한다 | C9 46e0da7, C8 681a30e | 리스트 직계 지원 7b |
+| R13·R14 | **7a에서 처리하지 않음 — 병익님 결정 대기.** `demo/resume/bootstrap.js` 수정(설계 C11)은 개정 #11 조건 1이 "bootstrap JS"를 산출물로 열거한다는 문언 해석이 걸려 있어 만들지 않았다. 사실관계: RQ6 M1 Layer 0이 잰 것은 16c7e10판이고 49b8660에서 이미 바뀌었다(HEAD판은 측정판이 아님) | — | 결정 후 C11 또는 7b |
+| R15 | **거부 LOOM-R15.** 단일 Island 대상 컴포넌트의 `<input>` 양방향 binding. 찾기는 List row·Cond 안까지 모든 노드를 내려간다. 다중 Islands의 같은 거부는 7a 이전부터 있던 것이라 LOOM-L00·기존 문구를 유지하고 순회 깊이만 맞췄다 | C8 | 7b(Flatten input 수리와 함께) |
+| R16 | **거부 LOOM-R16**(Islands·단일 Island). 같은 컴포넌트를 가리키는 참조가 그래프 전체에 2개 이상(디렉티브가 같아도 island id 충돌). **Flatten에는 검사를 더하지 않았다**: signal 있는 중복은 기존 Flatten 이름 유일성 검사(L00)가 이미 거부하고, signal 없는 중복 참조는 같은 정적 마크업을 두 번 펼칠 뿐이라 무해하다(테스트로 고정) | C8 | — |
+| R17 | 7a 범위 밖(경고로 해도 Flatten 소비자 전부에서 뜸, "디렉티브 없는 `<W/>`" 표면 결정과 묶임) | — | 7b |
+| R18 | **거부 LOOM-R18.** 디렉티브의 값(`client:load={false}`), 디렉티브 둘 | C5 | — |
+| R19 | **거부 LOOM-R19.** `lit_i32`(소수부 0이고 i32 범위): `signal()`, `sharedSignal`·`sharedValue` 초기값, prop 리터럴. 길이 비교 `it.length > 1.5`(`LenGt`)도 거부하지만 **오컴파일이 아니라 표기 정규화**로 분류한다 — 길이는 정수라 `> 1.5`와 `> 1`이 같은 뜻이고 포화도 같은 결과다. 그래서 그 문구에는 "잘림"을 쓰지 않는다 | C5 | — |
+| R22 | **거부 LOOM-R22.** `return` 뒤의 문장 | C6 | — |
+| R23 | **거부 LOOM-R23.** `parse_module()` 뒤 `take_errors()` 수거(SWC 메시지 재사용). 착수 전 프로브: 소비자 22회 호출 소스의 수거 0건, `with`/`010` 양성 대조는 실제로 수거됨. SWC는 `with`·`010`에 같은 span으로 2건(TS 진단 + strict 진단)을 내고, 중복 제거 없이 둘 다 보고한다 | C4 0b94bb7 | — |
+| R24 | **거부 LOOM-R24.** 소문자 태그가 선언된 컴포넌트 이름과 같음 | C6 | — |
+| R25 | **두 갈래.** (1) 거부 LOOM-R25: 최상위는 `import {…} from "loom"`(이름 지정자, 별칭 없음, `signal`·`sharedSignal`·`sharedValue`의 부분집합), `function`, `export function`만 받는다. 그 밖은 전부 오류 — 설계가 열거하지 않은 빈 문장 `;`, enum, 재export, 별칭·default·namespace import도 함께 오류다(`;`는 무해하지만 함께 거부, 완화 여부는 병익님 판단 대상). (2) **경고 LOOM-W25**: 쓴 callee를 "loom"에서 import하지 않음(callee마다 1건, 첫 사이트). 소비자 8회 호출에서 뜬다(widget-embed 6회 `sharedValue` — 이 행이 적은 widget-embed.tsx:30/:85 실례, largeapp 합성 소스 2회 `signal`). 그 8개 크레이트의 build.rs가 `cargo:warning`을 출력하지만 산출물 바이트는 같다. 원인 소스를 고치는 것은 RQ6 픽스처 소스를 건드리는 일이라 7b로 미룬다 | C6 | 7b(소스 정리 후 오류 승격 검토) |
+| R26 | **거부 LOOM-R26.** 인자 초과: `signal()`, `.set()`, `.append()`, `.map()`. `<input>` 자식(R02와 같은 경계). `sharedSignal`·`sharedValue`는 이미 정확히 2개를 L00으로 요구하므로 더하지 않았다 | C5 | — |
+| R27 | **거부 LOOM-R27(확장).** 컴포넌트 함수의 async/generator/타입 매개변수, `let`/`var`, **그리고 onClick·onInput·`.map` 화살표의 async/generator/타입 매개변수**. 반환 타입 주석은 의미가 없으므로 받는다. 매개변수는 R01이 맡는다 | C6 | — |
+| R44 | **거부 LOOM-R44.** onClick 요소 안의 onClick·`<input onInput>`·컴포넌트 참조(진입점 간 의미 불일치 차단). 안쪽이 주 span, 바깥 onClick에 label | C7 | 이벤트 전파 의미 결정 후 |
+| R46 | **거부 LOOM-R46(확장).** (a) signal·컴포넌트 이름이 Rust 2024 strict·reserved 키워드이거나 `_`, (b) ASCII 영숫자·`_` 밖 문자(`$`, **비ASCII 전부** — 이 행의 "한글 식별자는 통과합니다"는 7a부터 거부로 바뀜; U+200C/U+200D·비-NFC도 여기서 걸림), (c) 루트가 아닌 두 컴포넌트가 codegen의 모듈 이름 변환 뒤 충돌(`ProductCard`/`Product_card`, Islands·단일 Island만). (c)는 codegen의 private 함수를 부르지 않고 같은 규칙을 check.rs에 다시 구현했고, codegen이 실제 방출한 `pub mod …_generated` 이름과 대조하는 표류 방지 테스트를 뒀다 | C7 | 맹글링(미정) |
+| R47 | **거부 LOOM-R47(모드 무관).** 루트에서 도달할 수 없는 헬퍼. Islands의 기존 거부(codegen.rs:620-627)를 흡수 | C7 | — |
+| (추가) G01 | **거부 LOOM-G01.** 단일 컴포넌트 API(`compile_tsx_to_rust`, `_with_candidate`)에 컴포넌트 참조 — 지금까지는 rustc 단계에서야 실패했다. 같은 소스는 그래프 API에서 Ok | C7 | — |
+
+**7a에서 손대지 않은 행**: R9–R11, R20, R21, R28–R43(R44 제외), R45. 사유와 보낼 곳은 설계 §1.4와 같다 — 산출물 바이트가
+바뀌는 것(R20·R21·R40·R41·R29·R38 → 7b, R10·R11·R28·R32 → G0 새 기반, R45 → 7b/PT), 런타임 수리가 필요한 것(R9·R34–R37·R43 → 7c),
+CAP(R31 → 7d). 설계 §1.2의 선택 항목(R30·R42 태그 거부, R33 테스트)은 넣지 않았다.
+
+**§0.3·§2.13 갱신**
+- "진단 체계가 없습니다" → 7a에서 생겼다. 공개 API 4종과 `parse_tsx`가 `Result<_, Diagnostics>`를 돌려주고, 진단은 swc_common의
+  `Handler`/`EmitterWriter`로 `파일:줄:열` + 소스 발췌 + 강조를 렌더한다(새 의존성 없음). lower.rs의 거부 122곳 중 120곳이 진단이 됐고,
+  매치 가드가 보장한 모양을 다시 분해하는 내부 `unreachable!` 2곳만 남았다. 7a 이전부터 있던 거부는 코드 LOOM-L00(single-writer는
+  LOOM-L01)이고 기존 문구를 유지했다.
+- 사용자 오류를 internal로 표시하던 셋: `unreachable!`(옛 lower.rs:812) → L00, "never spawned"(codegen.rs:1271) → R07U,
+  `assert_eq!`(옛 lower.rs:489-492) → L00.
+- codegen의 사용자 도달 패닉은 codegen을 고치지 않고 `check.rs`가 같은 순회 순서로 **사전 검사로 복제**한다. codegen의 패닉은 내부
+  백스톱으로 남고, 행마다 "검사 없이 codegen을 부르면 그 패닉이 실제로 난다 + 공개 API는 진단을 준다" 테스트가 있다.
+- 복구 가능 파스 에러(R23) → 위 표.
+- 생성 코드의 실행 시점 패닉 지점(`expect`·`find_node` 등)은 7a 범위 밖이다. 단, R12 텍스트 직계의 `find_node` 패닉 경로는 C9가 없앴다.
+- 문서·코드 불일치 목록 중 `compile_tsx_to_rust` 주석의 `loom-bench` 오기는 C1에서 정정됐다. 나머지(lower.rs 모듈 문서, runtime lib.rs,
+  ir.rs의 `specialize_component_refs`, `examples/counter-island.sample.tsx`)는 그대로다.
+
+**"이 문서의 지위" 갱신**: "위험 표(§1)의 항목은 아직 고치지 않았다"는 7a 이후 위 행별 갱신으로 대체한다. 7a 수리는 컴파일러만이고
+런타임·데모 JS(R13·R14 결정 대기)·소비 픽스처 소스는 건드리지 않았다.

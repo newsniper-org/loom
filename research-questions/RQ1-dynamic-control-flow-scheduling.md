@@ -2161,3 +2161,15 @@ list.rs:665-668의 OrderKeyMembers "비순서" 주석은 실제 동작과 다르
 - **Phase 7**: 옵션 3 — 7a(컴파일러 위험 수리, 산출물 바이트 동일 게이트, 개정 #11) 즉시 가능 → G0 수리로 가면 그 새 동결 기반에
   7c(런타임 `DomWrite` 추가)를 합류해 캠페인 1회(트랙 L v23 + Firefox BiDi + 트랙 N G2 + RQ6)로 처리 → 7b → 7d. 귀속 혼선 완화:
   7c는 새 variant 추가만, 커밋 분리, K·C 셀을 자연 대조군으로 확인.
+
+### G0 새 기반 캠페인에 넘기는 7a 사실 (2026-10-17, Phase 7a 종료 시 등재)
+
+- **R07 제약**: 7a부터 signal 하나를 binding 사이트 두 곳 이상에 쓰면 `LOOM-R07`로 거부된다. 집계에는 **row 원본**(row 안의
+  cond/list 원본)이 들어가므로, row 원본 signal을 row 바깥 binding에서 함께 쓰는 픽스처는 컴파일되지 않는다(7a 이전에는 두 번
+  spawn되어 첫 사이트가 갱신되지 않는 결함 경로였다). 표시되는 곳이 없는 signal도 `LOOM-R07U`로 거부된다. 트랙 N 새 변형·픽스처는
+  signal당 사이트 1곳으로 설계한다. 현재 `nested-list-derived.tsx`(트랙 N 6개 팔)는 이 제약을 이미 만족한다(소비자 적합성 테스트).
+- **API**: 7a 이후 D/E 새 변형을 등록할 경로는 `compile_tsx_to_rust_with_candidate(file_name, source, cand) -> Result<Compiled, Diagnostics>`다.
+  산출물은 `Compiled::rust`이고, build.rs에서는 `loom_compiler::build_support::expect_for_build_rs`로 푼다(docs/02 "진단" 절).
+- 7a는 G0가 지목한 매칭 수리(P1 `String` key, P3 `match_keys` Θ(n·m), first-match-wins, HashMap 순서)를 하지 않았다. 7a 게이트가
+  증명하는 범위는 "da4a9bc 대비 컴파일러 소비자 산출물 무변경"까지이고, 트랙 N 인증 기반(98f2d3d)과의 동일성은 아니다(G2는 새 기반에서
+  다시 받는다 — RQ1 프로토콜 "개정 #11 적용 기록 — 7a").

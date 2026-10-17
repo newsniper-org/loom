@@ -172,6 +172,53 @@ JSX/TSX 파싱 자체는 이미 여러 번 잘 풀린 문제(SWC, Babel). 여기
 SWC(Rust 기반, 병익님 기존 툴체인과 자연스럽게 맞물림)를 프론트엔드로 채택하고 커스텀 lowering
 pass만 새로 작성하는 게 맞음.
 
+## 진단 (2026-10-17, Phase 7a)
+
+> 7a 이전에는 진단 체계가 없었다 — 거부는 lower·codegen의 `panic!`이었고 span이 없었다(docs/09 §0.3). 이 절은 7a(브랜치
+> phase7a, C1~C9)가 들인 구조와 그 규칙이다. 진단 렌더링은 SWC 재사용 원칙(위 절, CLAUDE.md 2-1)을 그대로 따른다.
+
+**공개 API**
+- `parse_tsx(file_name, source) -> Result<(Lrc<SourceMap>, Module), Diagnostics>`
+- `compile_tsx_to_rust`, `compile_tsx_to_rust_with_candidate(file_name, source, cand)`, `compile_tsx_to_rust_graph(file_name, source, mode)`,
+  `compile_tsx_to_single_island_rust(file_name, source, island)` → 모두 `Result<Compiled, Diagnostics>`.
+  `Compiled { rust, warnings }`의 `rust`는 7a 이전 `String` 반환값과 바이트 단위로 같다(바이트 동일 게이트로 확인).
+- 파이프라인: parse(+ `take_errors()` 수거) → lower(모드 무관 거부, SpanTable) → **check**(모드별 거부) → codegen.
+- build.rs 쪽: `build_support::expect_for_build_rs`가 경고를 줄마다 `cargo:warning=`으로 내고, 오류면 렌더된 진단으로 panic한다.
+  13개 build.rs가 이 함수를 쓴다.
+
+**구조(`src/diag.rs`)**
+- `Diagnostic { severity, code, message, span, labels, notes }`, `Diagnostics`(SourceMap + 항목, `(span.lo, code)` 순 정렬 보관).
+- `render()`는 swc_common 24의 `Handler` + `EmitterWriter`(teach=false)로 rustc 모양 `파일:줄:열` + 소스 발췌 + 강조를 낸다.
+  새 의존성·`tty-emitter` feature는 쓰지 않는다(Cargo.lock 무변경).
+- IR에는 span을 넣지 않는다(`derive(PartialEq)`·codegen 구조체 생성에 영향을 주지 않기 위해). 대신 lower가 별도 `SpanTable`
+  (컴포넌트 ident, signal 선언, ComponentRef 사이트, binding 사이트, 이벤트 attr, IR 노드별 span)을 돌려준다.
+
+**진단 코드** — 테스트와 docs/09는 문구가 아니라 코드로 대조한다.
+- `LOOM-L00`: 7a 이전부터 있던 "지원 범위 밖" 거부(기존 문구 유지). `LOOM-L01`: single-writer(i32 signal 하나에 writer 액션 하나).
+- `LOOM-Rnn`: docs/09 위험 표 행 번호와 같은 번호의 새 거부(R01–R08, R07U, R12, R15, R16, R18, R19, R22–R27, R44, R46, R47).
+  `LOOM-G01`: 단일 컴포넌트 API에 컴포넌트 참조. 행별 내용은 docs/09 "2026-10-17 갱신(7a)".
+- `LOOM-W25`(경고): 쓴 callee를 "loom"에서 import하지 않음 — callee마다 1건.
+- 오류가 나면 경고는 함께 보고하지 않는다(오류만).
+
+**규칙**
+1. **사용자가 고칠 수 있는 거부는 진단으로, 내부 불변식만 `panic!`/`unreachable!`으로.** lower.rs에 남은 내부 지점은 매치 가드가
+   보장한 모양을 다시 분해하는 `unreachable!` 2곳이다.
+2. **codegen은 Result로 바꾸지 않는다.** codegen의 사용자 도달 패닉은 `check.rs`가 같은 순회 순서로 사전 검사로 **복제**하고,
+   codegen 패닉은 내부 백스톱으로 남긴다. 그래서 codegen의 Ok 경로 소스가 바뀌지 않아 방출 바이트가 구조적으로 보존된다.
+   **표류 방지 규칙**: codegen에 사용자가 도달할 수 있는 새 거부를 더하면, check.rs에 같은 판정을 넣고 `check_backstop` 테스트에
+   행을 하나 더한다 — 그 행은 (1) 검사 없이 codegen을 부르면 그 패닉이 실제로 난다(존재 단언), (2) 공개 API는 패닉 없이 진단 1건과
+   정확한 강조 토큰·`파일:줄:열`을 준다, (3) 최소 차이 양성 짝이 끝까지 컴파일된다를 단언한다. check.rs가 codegen의 private 함수를
+   다시 구현한 곳(모듈 이름 변환 `mod_name` 등)은 codegen의 실제 방출과 대조하는 테스트를 함께 둔다.
+3. **결정성**: 새 검사는 `HashMap`/`HashSet`을 순회하지 않는다(Vec 또는 BTreeMap 집계). 같은 입력의 렌더는 한 프로세스 안 2회,
+   별도 프로세스 2회 모두 같아야 한다(C7 결정성 테스트).
+4. **새 거부를 넣을 때(병익님 규칙, docs/09 §3.6)**: 소비자 컴파일 호출 전부(`tests/consumer_conformance.rs`, 현재 22회)가 `Ok`인지
+   먼저 확인한다. 하나라도 걸리면 수리보다 연구 산출물 재검토가 먼저다. 7a의 새 거부는 소비자에 0건 걸렸다.
+5. 새 거부 테스트는 진단 코드, 렌더된 `파일:줄:열`(문제 구문 위치), 강조된 소스 토큰, 최소 차이 양성 짝(`Ok`, 경고 0)을 단언한다.
+   `span != DUMMY_SP`만으로는 단언하지 않는다(엉뚱한 span도 통과하므로).
+
+**한계**: 생성 코드의 **실행 시점** 패닉(`expect`·`find_node` 등)은 이 진단 체계 밖이다. Flatten의 "시그널 이름 전역 유일" 위반(위
+"의도적으로 남긴 범위" 정정 문단의 "컴파일 패닉")은 7a부터 패닉이 아니라 `LOOM-L00` 진단이다.
+
 ## 미해결
 
 - ~~제어 흐름 특수형의 정확한 컴파일 타겟 (RQ1)~~ → **`.map()`/`{cond&&}` 둘 다
