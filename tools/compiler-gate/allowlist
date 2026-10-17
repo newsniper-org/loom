@@ -1,0 +1,24 @@
+# Phase 7a 허용 목록(D 계층) — `git diff --name-only BASE CAND`의 모든 경로가 아래 중 하나와 맞아야 한다.
+# 금지 목록이 아니라 허용 목록이다: 여기 없는 경로(Cargo.lock, 모든 Cargo.toml, loom-runtime/flush-core/bench,
+# RQ6 청크 소스 크레이트, bench/e2e, research-questions/analysis, demo/ 전체 등)는 자동으로 금지된다.
+# 형식: 'prefix <dir>/'(그 아래 전부) | 'exact <path>' | 'glob <fnmatch 패턴, 디렉터리 구분자 없음>'
+prefix crates/loom-compiler/
+exact crates/loom-demo/build.rs
+exact crates/loom-fic/build.rs
+exact crates/loom-island-compiled/build.rs
+exact crates/loom-largeapp-axis-flat/build.rs
+exact crates/loom-largeapp-axis-island-target/build.rs
+exact crates/loom-nested-fixture/build.rs
+exact crates/loom-resume-demo/build.rs
+exact crates/loom-track-n/build.rs
+exact crates/loom-widget-embed/build.rs
+exact crates/loom-widget-embed-island-checkout-form/build.rs
+exact crates/loom-widget-embed-island-mini-dashboard/build.rs
+exact crates/loom-widget-embed-island-product-card/build.rs
+exact crates/loom-widget-embed-island-quantity-picker/build.rs
+prefix docs/
+prefix roadmap/
+glob research-questions/*.md
+glob research-questions/data/phase7a-*.json
+prefix tools/compiler-gate/
+# demo/resume/bootstrap.js 예외는 design-7a §1.3 (i)이 승인된 뒤 C11에서만 `--allow-c11-bootstrap`으로 켠다.

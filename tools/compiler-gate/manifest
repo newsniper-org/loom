@@ -1,0 +1,78 @@
+# Phase 7a 바이트 동일 게이트 — 고정 산출물 목록 (RQ1 프로토콜 개정 #11 조건 1)
+#
+# 형식: <tier> <id> <role> <kind> <args...>   (공백 구분, '#' 이후는 주석)
+#   role: evidence(증거, 판정에 씀) | guard(가드, 판정에 쓰되 증거로 세지 않음)
+#   kind:
+#     A  outdir   <crate> <file>                  호스트 OUT_DIR 생성 소스
+#     B  stdout   <crate> <bin>                   `cargo run -p crate --bin bin`의 stdout
+#     B  argfile  <crate> <bin> <file>            `cargo run -p crate --bin bin -- $T/file`이 쓴 파일
+#     BT test     <crate>                         `cargo test -p crate` 통과(가드, sha 없음)
+#     C  wasmpack <crate> <out-name> <suffix>     `wasm-pack build crates/<crate> --target web --release
+#                                                  --out-dir $G/pkgout/<crate> --out-name <out-name>`의 <out-name><suffix>
+#     C  ficwasm  <crate> <file>                  cargo build -p <crate> --target wasm32-unknown-unknown --release --lib
+#                                                  (CARGO_TARGET_DIR=$G/target-fic, RUSTFLAGS 없음)의 release/<file>.
+#                                                  design의 RUSTFLAGS='--cfg getrandom_backend="custom"'은 da4a9bc에서
+#                                                  빌드 실패(getrandom 0.4.3 E0599 WEB_CRYPTO) — gate.py 주석 참고.
+#
+# 개수(하네스가 단언): A 22, B 5, BT 1, C 23(증거 21 + 가드 2). 행을 빼거나 더하면 하네스가 실패한다.
+# 설계: design-7a §2.2. 9→10 정정: build.rs가 있는 cdylib에서 loom-fic을 빼면 10개(18이 아니라 20파일)이고,
+# 설계의 합계 "C 23 = 증거 21 + 가드 2"는 10개 기준이다(이 manifest가 그 합계를 따른다).
+
+# ---- A: 호스트 OUT_DIR, 13 크레이트 22 파일 ----
+A A01 evidence outdir loom-demo generated.rs
+A A02 evidence outdir loom-fic generated.rs
+A A03 evidence outdir loom-island-compiled generated.rs
+A A04 evidence outdir loom-island-compiled generated_flat.rs
+A A05 evidence outdir loom-largeapp-axis-flat generated_flat.rs
+A A06 evidence outdir loom-largeapp-axis-island-target generated.rs
+A A07 evidence outdir loom-nested-fixture generated.rs
+A A08 evidence outdir loom-nested-fixture generated_list.rs
+A A09 evidence outdir loom-nested-fixture generated_derived.rs
+A A10 evidence outdir loom-resume-demo generated.rs
+A A11 evidence outdir loom-track-n arm_k.rs
+A A12 evidence outdir loom-track-n arm_c.rs
+A A13 evidence outdir loom-track-n arm_d.rs
+A A14 evidence outdir loom-track-n arm_d_lis.rs
+A A15 evidence outdir loom-track-n arm_e.rs
+A A16 evidence outdir loom-track-n arm_e_lis.rs
+A A17 evidence outdir loom-widget-embed generated.rs
+A A18 evidence outdir loom-widget-embed generated_flat.rs
+A A19 evidence outdir loom-widget-embed-island-checkout-form generated.rs
+A A20 evidence outdir loom-widget-embed-island-mini-dashboard generated.rs
+A A21 evidence outdir loom-widget-embed-island-product-card generated.rs
+A A22 evidence outdir loom-widget-embed-island-quantity-picker generated.rs
+
+# ---- B: 실행 출력, 증거 5 + 소비자 테스트 1 ----
+B B01 evidence stdout loom-widget-embed print_ssr
+B B02 evidence stdout loom-widget-embed print_ssr_flat
+B B03 evidence stdout loom-island-compiled print_ssr
+B B04 evidence stdout loom-island-compiled print_ssr_flat
+B B05 evidence argfile loom-resume-demo ssr resume.html
+BT BT1 guard test loom-rq6-fixture-gen
+
+# ---- C: wasm, 증거 21 + 가드 2 ----
+C C01 evidence wasmpack loom-demo loom_demo _bg.wasm
+C C02 evidence wasmpack loom-demo loom_demo .js
+C C03 evidence wasmpack loom-island-compiled loom_island_compiled _bg.wasm
+C C04 evidence wasmpack loom-island-compiled loom_island_compiled .js
+C C05 evidence wasmpack loom-largeapp-axis-flat loom_largeapp_axis_flat _bg.wasm
+C C06 evidence wasmpack loom-largeapp-axis-flat loom_largeapp_axis_flat .js
+C C07 evidence wasmpack loom-largeapp-axis-island-target loom_largeapp_axis_island_target _bg.wasm
+C C08 evidence wasmpack loom-largeapp-axis-island-target loom_largeapp_axis_island_target .js
+C C09 evidence wasmpack loom-resume-demo loom_resume_demo _bg.wasm
+C C10 evidence wasmpack loom-resume-demo loom_resume_demo .js
+C C11 evidence wasmpack loom-widget-embed loom_widget_embed _bg.wasm
+C C12 evidence wasmpack loom-widget-embed loom_widget_embed .js
+# RQ6 청크 4개: 측정 때 쓴 out-name 고정(research-questions/data/rq6-task27-m1-bundle-size.json)
+C C13 evidence wasmpack loom-widget-embed-island-product-card product_card _bg.wasm
+C C14 evidence wasmpack loom-widget-embed-island-product-card product_card .js
+C C15 evidence wasmpack loom-widget-embed-island-quantity-picker quantity_picker _bg.wasm
+C C16 evidence wasmpack loom-widget-embed-island-quantity-picker quantity_picker .js
+C C17 evidence wasmpack loom-widget-embed-island-checkout-form checkout_form _bg.wasm
+C C18 evidence wasmpack loom-widget-embed-island-checkout-form checkout_form .js
+C C19 evidence wasmpack loom-widget-embed-island-mini-dashboard mini_dashboard _bg.wasm
+C C20 evidence wasmpack loom-widget-embed-island-mini-dashboard mini_dashboard .js
+C C21 evidence ficwasm loom-fic loom_fic.wasm
+# 가드: 컴파일러와 무관(동결 크레이트 무변경 확인용)
+C C22 guard wasmpack loom-bench loom_bench _bg.wasm
+C C23 guard wasmpack loom-bench loom_bench .js
