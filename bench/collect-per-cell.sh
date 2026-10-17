@@ -13,6 +13,7 @@
 # 사용:
 #   bench/collect-per-cell.sh <브라우저> <수집이름> <첫 그룹> <끝 그룹(제외)> [그룹당 상한초]
 #   (THROTTLE=4 CELLS=core 등 collect-stock.sh의 환경 변수는 그대로 전달된다)
+#   `GROUP_LIST="6 7 9 …"`가 주어지면 첫·끝 그룹 대신 그 목록만 돈다(개정 #10 후속 3 — Firefox 부분 집합).
 # 그룹 g의 산출물은 bench/collected/<수집이름>-g<g>.* 이고, 끝나면 조각을 합친다:
 #   python3 bench/merge-parts.py bench/collected/<수집이름>-g*.part.json --expect <그룹 수> --out <경로>
 #
@@ -25,8 +26,18 @@ PER="${5:-3600}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 FAILED=(); STREAK=0
-echo "[per-cell] $BASE 그룹 $FIRST..$((END-1)) 시작 $(date +%T) (그룹당 상한 ${PER}초)"
-for ((g = FIRST; g < END; g++)); do
+echo "[per-cell] $BASE 그룹 ${GROUP_LIST:-$FIRST..$((END-1))} 시작 $(date +%T) (그룹당 상한 ${PER}초)"
+if [ -n "${GROUP_LIST:-}" ]; then read -ra GS <<< "$GROUP_LIST"; else GS=($(seq "$FIRST" $((END - 1)))); fi
+for g in "${GS[@]}"; do
+  # `LOAD_MAX`가 주어지면 그룹마다 1분 부하 평균이 그 이하로 내려올 때까지 **기다린다**(collect-stock.sh의
+  # 같은 검사는 넘으면 실패한다 — 여기서 먼저 기다려 실패로 세지 않는다). 10분마다 한 줄 남긴다.
+  if [ -n "${LOAD_MAX:-}" ]; then
+    w=0
+    while awk -v l="$(cut -d' ' -f1 /proc/loadavg)" -v m="$LOAD_MAX" 'BEGIN{exit !(l > m)}'; do
+      [ $((w % 600)) -eq 0 ] && echo "[per-cell] 그룹 $g 대기 — 부하 $(cut -d' ' -f1-3 /proc/loadavg) > LOAD_MAX=$LOAD_MAX ($(date +%T))"
+      sleep 30; w=$((w + 30))
+    done
+  fi
   t0=$(date +%s)
   FIRST_GROUP=$g TOTAL_GROUPS=$((g + 1)) bash bench/collect-stock.sh "$BIN" "$BASE-g$g" "$PER" \
     > "bench/collected/$BASE-g$g.driver.log" 2>&1

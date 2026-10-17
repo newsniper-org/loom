@@ -225,6 +225,23 @@ CASES = [
     ], [
         "없음 — 모든 판정 짝이 같은 배치 모드에서 왔다.",
     ]),
+    ("firefox_bidi", [
+        "RQ1_FIREFOX_FILE 지정",
+        "(에이전트 기대)",
+        "Firefox 강제 GC 구간에 GCSlice(일시정지) 마커가 없는 셀 1개",
+        "Firefox 강제 GC 구간에 CC가 관측되지 않은 셀 1개",
+        "Firefox GC 로그 출처: ['gecko-profiler",
+        # 상한 셀의 뒤집힌 방향은 측정 결함이다 — 대조에서 빠졌다는 줄이 있어야 한다.
+        "(측정 불가)  W1×R1",
+    ], [
+        "⚠️ 정반대  W1×R1",
+        "Firefox(에이전트 없는 수집분)",
+    ]),
+    ("firefox_wrong_file", [
+        "Firefox BiDi 에이전트 수집분을 기대했는데 GC 통제가 된 셀이 없다",
+    ], [
+        "Firefox GC 로그 출처",
+    ]),
     ("missing_cell", [
         "⇒ (a) **판정 불가(데이터 없음)**",
         # ▶ 줄이 그 판정 불가를 보존하는가. 이 문구가 핵심이다.
@@ -247,6 +264,11 @@ def run(mode, tmp):
         env["RQ1_VERSION"] = "v21"
     else:
         env.pop("RQ1_VERSION", None)
+    if mode.startswith("firefox"):
+        env["RQ1_FIREFOX_FILE"] = os.path.join(d, "rq1-phase1-track-l-core-grid-v22-firefox-bidi.json")
+    else:
+        env.pop("RQ1_FIREFOX_FILE", None)
+        env.pop("RQ1_FIREFOX_EXPECT_AGENT", None)
     p = subprocess.run([sys.executable, VERDICTS], env=env,
                        capture_output=True, text=True)
     return p.returncode, p.stdout + p.stderr

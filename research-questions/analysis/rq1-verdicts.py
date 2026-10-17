@@ -52,6 +52,13 @@ VERSION = os.environ.get("RQ1_VERSION", "v22")
 THROTTLE_FILE = os.environ.get(
     "RQ1_THROTTLE_FILE",
     f"{DATA}/rq1-phase1-track-l-core-grid-{VERSION}-chromium-throttle4.json")
+# **Firefox 교차 확인 파일 지정(개정 #10 후속 3)**: BiDi 재수집분은 1d85c4f 수집분(에이전트 없음)을 덮지 않게 다른
+# 이름으로 둔다 — 이 변수로 그 파일을 판정기에 준다. 지정 파일 이름에 "bidi"가 있거나 `RQ1_FIREFOX_EXPECT_AGENT=1`
+# 이면 **에이전트를 기대한다** — 그때 전 셀이 `unavailable`이면 "통제 없는 수집분"으로 조용히 넘어가지 않고 문제로 올린다
+# (파일을 잘못 줘서 옛 수집분이 BiDi 수집분 행세를 하는 경로를 막는다).
+FIREFOX_FILE = os.environ.get("RQ1_FIREFOX_FILE")
+FIREFOX_EXPECT_AGENT = (os.environ.get("RQ1_FIREFOX_EXPECT_AGENT") == "1"
+                        or (FIREFOX_FILE is not None and "bidi" in os.path.basename(FIREFOX_FILE)))
 # 강건성 확인 모드에서는 게이트의 `▶ 판정` 줄을 판정이 아닌 것으로 표시한다 — 스로틀
 # 출력의 "▶ C 판정"이 grep되어 판정으로 읽히면 §8 "판정은 1차 열에서만"이 깨진다.
 ROBUSTNESS = {"on": False}
@@ -263,6 +270,10 @@ def check_labels(rows, browser):
 
 def load(browser):
     path = f"{DATA}/rq1-phase1-track-l-core-grid-{VERSION}-{browser}.json"
+    if browser == "firefox" and FIREFOX_FILE:
+        path = FIREFOX_FILE
+        print(f"  [firefox] RQ1_FIREFOX_FILE 지정 — {path}"
+              f"{' (에이전트 기대)' if FIREFOX_EXPECT_AGENT else ''}")
     if not os.path.exists(path):
         print(f"  [{browser}] {VERSION} 수집분이 아직 없다 — 판정 불가")
         return [], {}
@@ -1244,11 +1255,22 @@ def gc_integrity(rows, browser):
     if agent_run:
         bad = {k: v for k, v in ctl.items() if k != "cdp"}
         if bad:
-            problems.append(f"Chromium인데 GC 통제가 이행되지 않은 셀 {sum(bad.values())}개 {bad}")
+            problems.append(f"{'Chromium' if chromium else 'Firefox(BiDi 에이전트 수집분)'}인데 GC 통제가 이행되지 않은 셀 "
+                            f"{sum(bad.values())}개 {bad}")
         forced0 = [k for k, g in cells.items() if g.get("control") == "cdp"
                    and not ((g.get("segments") or [{}])[0].get("forced_majorgc_events") or 0) >= 1]
         if forced0:
             problems.append(f"강제 GC가 트레이스에서 관측되지 않은 셀 {len(forced0)}개 (그룹 {[k[0] for k in forced0][:8]})")
+        # **Firefox: 강제 GC가 일시정지 수준으로도 보이고 CC도 돌았는가**(개정 #10 후속 3). 합집합은 GCSlice·GCMinor·
+        # CCSlice만 쓰므로, 강제 GC 구간에 GCSlice가 0이면 합집합 정의가 실제 마커를 못 잡는다는 뜻이다(공허한 주석).
+        # 필드가 없으면(후속 3 이전 에이전트) 관측된 것으로 세지 않는다.
+        if not chromium:
+            for fld, what in (("forced_pause_events", "강제 GC 구간에 GCSlice(일시정지) 마커가 없는"),
+                              ("forced_cc_events", "강제 GC 구간에 CC가 관측되지 않은")):
+                miss = [k for k, g in cells.items() if g.get("control") == "cdp"
+                        and not ((g.get("segments") or [{}])[0].get(fld) or 0) >= 1]
+                if miss:
+                    problems.append(f"Firefox {what} 셀 {len(miss)}개 (그룹 {[k[0] for k in miss][:8]}) — `{fld}`")
         lost = [k for k, g in cells.items() if g.get("control") == "cdp" and not g.get("log_complete")]
         if lost:
             problems.append(f"GC 로그가 불완전한 셀 {len(lost)}개(유실·구간 실패) — 그 셀의 주석은 null")
@@ -1272,6 +1294,9 @@ def gc_integrity(rows, browser):
     else:
         if set(ctl) != {"unavailable"}:
             problems.append(f"Firefox인데 에이전트 없는 셀과 실패 셀이 섞였다 {dict(ctl)}")
+        if FIREFOX_EXPECT_AGENT:
+            problems.append(f"Firefox BiDi 에이전트 수집분을 기대했는데 GC 통제가 된 셀이 없다 {dict(ctl)} — "
+                            "RQ1_FIREFOX_FILE이 옛(에이전트 없는) 수집분을 가리키지 않는지 볼 것")
         print("    Firefox(에이전트 없는 수집분): 강제 GC·GC 로그 없음 — 개정 #10의 등재 한계. "
               "개정 #10 후속 3부터는 WebDriver BiDi 에이전트로 이행한다")
     if agent_run and not chromium:
@@ -2059,6 +2084,12 @@ def direction_diff(ia, ib, label_a, label_b, why):
                 ka, kb = cell(ia, w, bindings, a), cell(ia, w, bindings, b)
                 fa, fb = cell(ib, w, bindings, a), cell(ib, w, bindings, b)
                 if not (ka and kb and fa and fb):
+                    continue
+                # **측정 불가 셀(§8 — 셀 상한 초과 등)은 방향 대조에서 뺀다**(개정 #10 후속 3 재검토 지적). 잘린 표본의
+                # 방향을 "정반대"로 세면 §11-1(b) 등재 사유가 측정 결함에서 나온다. 뺀 사실은 줄로 남긴다.
+                why = next((u for u in map(unusable, (ka, kb, fa, fb)) if u), None)
+                if why:
+                    print(f"  (측정 불가)  {w}×R{1 if bindings == 1 else 2} {a}/{b:5s}  — {why}")
                     continue
                 # **이미 조회한 레코드로 직접 대조한다.** 2026-09-22까지 옛 6-튜플 키로
                 # `incomparable`을 조회해 **한 번도 매치되지 않았다**(키가 8-튜플로

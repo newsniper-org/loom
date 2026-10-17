@@ -45,6 +45,11 @@ C·D·D-LIS 두 변형이 **같은 셀**(9후보), rep별 단계 시간(`stage_s
                  §9 서두의 변형 선택이 기준선과 다른 모드의 레코드를 데려온다.
   vocab_overlap — C/K 비율이 우세 ∩ 등가 겹침 구간에 드는 상태. 겹침 기록에
                  브라우저·조항 맥락이 실제로 붙는지 본다.
+  firefox_bidi — (개정 #10 후속 3) Firefox BiDi 수집분(`…-firefox-bidi.json`)을 함께 쓴다. 한 셀은 강제 GC 구간에
+                 GCSlice가 없고, 한 셀은 CC가 없으며, W1×R1 K는 셀 상한에 걸린 채 방향이 뒤집힌다 — 존재 단언
+                 둘이 울리고, 상한 셀은 방향 대조에서 "(측정 불가)"로 빠져야 한다("정반대"로 세면 안 된다).
+  firefox_wrong_file — BiDi 이름의 파일인데 내용은 에이전트 없는 수집분(전 셀 unavailable). 조용히 "통제 없는
+                 수집분"으로 넘어가지 않고 문제로 올리는가.
   base         — 전 셀 정상. 스크립트가 종료코드 0으로 완주해야 한다.
   partial_cap  — W2 × R2 판정 셀이 표본 3개에서 §8 셀 상한에 걸린 상태.
                  **표본이 0개가 아니다** — 상한은 측정 루프 안에서도 발동하므로
@@ -351,7 +356,36 @@ if mode == "stage_median":
             r["stage_samples_ms"]["total"] = [1.0] * m
             r["stage_samples_ms"]["sync_point"] = [0.3] * (m - 1) + [0.6]      # rep별 median: 30%
 
+FF_ROWS = None
+if mode in ("firefox_bidi", "firefox_wrong_file"):
+    import copy
+    FF_ROWS = copy.deepcopy(rows)
+    fgs = sorted({r["group"] for r in FF_ROWS if r["workload"] != "stress"})
+    for r in FF_ROWS:
+        g = r["gc"]
+        if mode == "firefox_wrong_file":
+            r["gc"] = {"control": "unavailable", "source": g["source"], "cell_start": None, "forced": None,
+                       "segments": [], "log_complete": False, "with_gc": None, "overlap_ms": None}
+            continue
+        seg = dict(g["segments"][0], forced_majorgc_events=1, forced_pause_events=3, forced_cc_events=2)
+        if r["group"] == fgs[0]:
+            seg["forced_pause_events"] = 0
+        elif r["group"] == fgs[1]:
+            seg["forced_cc_events"] = 0
+        r["gc"] = dict(g, cell_start={"ok": True, "throttle_rate": 1, "agent": "ff-bidi-agent",
+                                      "tracing": "gecko-profiler GeckoMain markers via WebDriver BiDi; union = GCSlice|GCMinor|CCSlice"},
+                       forced={"ok": True, "method": "child-gc-request → child-cc-request → child-gc-request"},
+                       segments=[seg])
+        if (r["candidate"] == "K" and r["workload"] == "swap" and r["row_bindings"] == 1 and r["n"] == 1000
+                and not r["row_variants"] and r["item_type"] == POD):
+            r["over_cell_cap"] = True
+            r["samples_ms"] = [v * 0.3 for v in r["samples_ms"][:40]]
+            r["cell_wall_ms"] = 1_800_500.0
+
 os.makedirs(out_dir, exist_ok=True)
+if FF_ROWS is not None:
+    with open(os.path.join(out_dir, f"rq1-phase1-track-l-core-grid-{VERSION}-firefox-bidi.json"), "w") as f:
+        json.dump({"track_l": FF_ROWS, "track_t": []}, f)
 if THROTTLE_ROWS is not None:
     with open(os.path.join(out_dir, f"rq1-phase1-track-l-core-grid-{VERSION}-chromium-throttle4.json"), "w") as f:
         json.dump({"track_l": THROTTLE_ROWS, "track_t": []}, f)

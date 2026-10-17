@@ -13,22 +13,19 @@
 #   스케일링 6:   {W2,W4}×R2×n∈{100,10,000} + W2×R1×n∈{100,10,000}
 # (v21의 24그룹은 무조건 변형이 별도 셀이던 69셀 목록 기준이었다.)
 #
-# 그룹마다 브라우저를 새로 띄운다 — §8 "셀마다 fresh page load"보다 강한 격리다. 드라이버가
-# `&end=`를 넘기므로 페이지가 범위 밖 그룹으로 스스로 이동하지 않고, 정리는 세션 전체를 죽인다
-# (둘 다 2026-09-27 스모크에서 드러난 결함의 수리 — 전에는 구간 수집 뒤 브라우저가 살아남아
-# 다음 그룹을 계속 쟀다).
+# **개정 #10 후속 3(2026-10-17)**: 자체 루프를 버리고 `collect-per-cell.sh`의 그룹 목록 모드로 돈다 — 그룹마다
+# 새 브라우저·잔존 프로세스 검사·연속 3실패 정지·로그를 bench/collected에 두는 것을 같은 코드로 얻는다.
+# 그룹마다 부하 평균이 LOAD_MAX(기본 4) 이하가 될 때까지 기다린다(CPU 경합은 셀을 상한에 걸리게 한다).
+#
+# 사용: PREFIX=v22-firefox-bidi bash bench/collect-firefox-subset.sh
+# PREFIX는 **필수**다 — 기존 수집분(v22-firefox, 1d85c4f, 에이전트 없음)을 같은 이름으로 덮어쓰지 않게.
 set -u
-# 출력 이름 접두어(개정 #10 후속 3): 1d85c4f 수집분(v22-firefox, 에이전트 없음)을 덮어쓰지 않게 BiDi 재수집은
-# PREFIX=v22-firefox-bidi로 돈다. 기존 파일이 있으면 collect-stock.sh가 지우므로 접두어가 곧 보존 수단이다.
-PREFIX="${PREFIX:-v22-firefox}"
+PREFIX="${PREFIX:?PREFIX 필수 (예: v22-firefox-bidi) — 기존 수집분을 덮어쓰지 않게}"
 cd "$(dirname "$0")/.."
-JOB=/home/ybi/.claude/jobs/fcb33b66/tmp
-for g in 6 7 9 11 24 26 30 31 34 36 38 39 48 52 55 57; do
-  echo "=== $(date +%H:%M:%S) 그룹 $g 시작 ==="
-  FIRST_GROUP=$g TOTAL_GROUPS=$((g+1)) PORT=${PORT:-8931} \
-    bash bench/collect-stock.sh /usr/bin/firefox ${PREFIX}-g$g ${PER_GROUP_SEC:-2400} > $JOB/${PREFIX}-g$g.log 2>&1
-  rc=$?
-  echo "=== $(date +%H:%M:%S) 그룹 $g rc=$rc $(tail -1 $JOB/${PREFIX}-g$g.log) ==="
-  # 한 그룹의 실패로 전체를 멈추지 않는다 — 실패는 병합 단계의 --groups 검사가 잡는다.
-done
-echo "=== $(date +%H:%M:%S) Firefox 부분 집합 수집 종료 ==="
+if ls bench/collected/"$PREFIX"-g*.part.json >/dev/null 2>&1; then
+  echo "**bench/collected/$PREFIX-g*.part.json이 이미 있다** — 다른 PREFIX를 쓰거나 직접 옮길 것" >&2
+  exit 1
+fi
+GROUP_LIST="6 7 9 11 24 26 30 31 34 36 38 39 48 52 55 57" \
+CELLS=all THROTTLE=1 PORT="${PORT:-8931}" LOAD_MAX="${LOAD_MAX:-4}" \
+  exec bash bench/collect-per-cell.sh /usr/bin/firefox "$PREFIX" 0 0 "${PER_GROUP_SEC:-2400}"

@@ -115,14 +115,23 @@ async function bindExisting() {
       functionDeclaration: BIND, awaitPromise: false, target: { context: c.context },
       arguments: [{ type: "channel", value: { channel: "loom" } }],
     }).catch((e) => log(`기존 문서 바인딩 실패: ${e.message}`));
-    log(`페이지 타깃에 붙음 ${c.context.slice(0, 8)} — ${c.url}`);
+    announce(c.context, c.url);
   }
 }
 function matches(url) {
   return url.includes(`collect=${collectName}&`) || url.endsWith(`collect=${collectName}`);
 }
+// "붙음" 로그는 문맥마다 한 번 — 시작 시 URL이 아직 수집 URL이 아니었던 문맥도 load/첫 메시지에서 남긴다(재검토 지적:
+// 시작 시 한 번만 찍으면 드라이버의 90초 부착 검사가 정상 수집을 죽일 수 있었다).
+const announced = new Set();
+function announce(ctx, url) {
+  if (announced.has(ctx) || !matches(url)) return;
+  announced.add(ctx);
+  log(`페이지 타깃에 붙음 ${ctx.slice(0, 8)} — ${url}`);
+}
 on("browsingContext.load", (p) => {
   contextUrl.set(p.context, p.url);
+  announce(p.context, p.url);
 });
 await bindExisting();
 
@@ -206,13 +215,16 @@ function extract({ threads, page, pageStart }) {
   // GC 구간: phase 1 = 구간(start, end), 2 = 시작, 3 = 끝(같은 이름끼리 짝), 0 = 순간(길이 0 — 버린다).
   // 구간을 만든 뒤 일시정지 마커(raw → 합집합)와 사이클 구간(cycles — 로그만)으로 나눈다.
   const raw = [], cycles = [], counts = {}, open = new Map();
+  let unpairedEnd = 0;
   const put = (seg) => (PAUSE_MARKER.test(seg[2]) ? raw : cycles).push(seg);
   for (const [nm, s, e, ph, reason] of best.gc) {
     counts[nm] = (counts[nm] || 0) + 1;
     if (ph === 1) put([s - off, e - off, nm, reason]);
     else if (ph === 2) open.set(nm, [s, reason]);
     else if (ph === 3 && open.has(nm)) { const [s0, r0] = open.get(nm); put([s0 - off, e - off, nm, r0]); open.delete(nm); }
+    else if (ph === 3) unpairedEnd++;
   }
+  const unpaired = { start: open.size, end: unpairedEnd };
   raw.sort((a, b) => a[0] - b[0]);
   const union = [];
   for (const [s, e] of raw) {
@@ -226,16 +238,22 @@ function extract({ threads, page, pageStart }) {
   // 자연 증분 GCMajor 구간이 그 창에 걸쳐도 세지 않는다(수집 전 검토 지적: 그러면 기제가 안 돌아도 통과한다).
   const forced = req === undefined || fin === undefined ? null
     : cycles.filter(([s, e, n, r]) => n === "GCMajor" && r === "DOM_IPC" && e >= req && s <= fin).length;
+  // 강제 GC가 **일시정지로도** 보이는가(합집합 정의가 실제 마커를 잡는다는 존재 단언) · CC 요청도 실제로 돌았는가.
+  const inWin = (s, e) => req !== undefined && fin !== undefined && e >= req && s <= fin;
+  const forcedPause = req === undefined || fin === undefined ? null : raw.filter(([s, e, n]) => n === "GCSlice" && inWin(s, e)).length;
+  const forcedCc = req === undefined || fin === undefined ? null
+    : cycles.concat(raw).filter(([s, e, n]) => (n === "CC" || n === "CCSlice") && inWin(s, e)).length;
   const cycleSummary = {};
   for (const [s, e, n] of cycles) { const c = (cycleSummary[n] ||= { n: 0, total_ms: 0 }); c.n++; c.total_ms += e - s; }
   // n_events = 합집합에 들어간 구간 수(Chromium 에이전트와 같은 정의) — 하네스의 bad-union 판정이 이것을 쓴다.
   return { ok: true, data_loss: missing > 0, missing_marks: missing, sync_spread_ms: spread, n_events: raw.length,
-    counts, cycles: cycleSummary, marker_rows: best.markerRows, union, markTimes, forced };
+    counts, cycles: cycleSummary, unpaired, marker_rows: best.markerRows, union, markTimes, forced, forcedPause, forcedCc };
 }
 
 const r4 = (x) => Math.round(x * 1e4) / 1e4;
 
 async function handle(ctx, req) {
+  const t0Handle = Date.now();
   const base = { group: req.group, cid: req.cid, cmd: req.cmd };
   switch (req.cmd) {
     case "cell-start": {
@@ -244,15 +262,25 @@ async function handle(ctx, req) {
         await evalIn(chromeCtx, "Services.profiler.StopProfiler()");
       }
       await profilerStart(ctx);
-      return { ok: true, throttle_rate: 1, tracing: "gecko-profiler markers GeckoMain (GCMajor/GCSlice/GCMinor/CC/CCSlice) via WebDriver BiDi" };
+      return { ok: true, throttle_rate: 1, agent: "ff-bidi-agent",
+        tracing: "gecko-profiler GeckoMain markers via WebDriver BiDi; union = GCSlice|GCMinor|CCSlice (pause-level); " +
+          "forced = GCMajor reason DOM_IPC (+CC, +GCSlice in window); GCMajor/CC cycle spans logged only, not in union" };
     }
     case "gc": {
       // 콘텐츠 프로세스 GC + CC 요청(about:memory GC 버튼과 같은 경로). 비동기라 처리될 시간을 준 뒤 응답한다 —
       // 실제로 일어났는지는 프로파일의 GCMajor(요청~완료 표식 사이)로 사후 단언한다.
-      await evalIn(chromeCtx, `Services.obs.notifyObservers(null, "child-gc-request"); Services.obs.notifyObservers(null, "child-cc-request"); true`);
-      await new Promise((r) => setTimeout(r, FORCED_GC_WAIT_MS));
+      // **GC → CC → GC** (재검토 지적): CC가 끊은 DOM↔JS 사이클의 JS 쪽은 다음 GC가 있어야 해제된다. GC·CC 한 번씩으로
+      // 끝내면 그 몫이 파일럿·워밍업(길게는 측정 초반)의 자연 GC로 미뤄진다. Chromium의 HeapProfiler.collectGarbage는
+      // V8+Oilpan 통합 힙을 한 번에 치우므로, 이 순서가 "셀 시작 시 쓰레기를 치운다"는 같은 의도에 가깝다.
+      const ask = (topic) => evalIn(chromeCtx, `Services.obs.notifyObservers(null, "${topic}"); true`);
+      await ask("child-gc-request");
+      await new Promise((r) => setTimeout(r, FORCED_GC_WAIT_MS / 3));
+      await ask("child-cc-request");
+      await new Promise((r) => setTimeout(r, FORCED_GC_WAIT_MS / 3));
+      await ask("child-gc-request");
+      await new Promise((r) => setTimeout(r, FORCED_GC_WAIT_MS / 3));
       stats.gc++;
-      return { ok: true, method: "child-gc-request + child-cc-request" };
+      return { ok: true, method: "child-gc-request → child-cc-request → child-gc-request" };
     }
     case "trace-flush":
     case "measure-end": {
@@ -266,13 +294,14 @@ async function handle(ctx, req) {
       }
       appendFileSync(gcLog, JSON.stringify({
         ...base, ok: true, data_loss: x.data_loss, missing_marks: x.missing_marks, sync_spread_ms: r4(x.sync_spread_ms),
-        n_events: x.n_events, counts: x.counts, cycles: x.cycles, marker_rows: x.marker_rows, collect_ms: col.collectMs,
-        forced_majorgc_events: x.forced, marks: x.markTimes,
+        n_events: x.n_events, counts: x.counts, cycles: x.cycles, unpaired: x.unpaired, marker_rows: x.marker_rows,
+        profile_collect_ms: col.collectMs, handshake_ms: Date.now() - t0Handle,
+        forced_majorgc_events: x.forced, forced_pause_events: x.forcedPause, forced_cc_events: x.forcedCc, marks: x.markTimes,
         union_ms: x.union.map(([s, e]) => [r4(s), r4(e)]),
       }) + "\n");
       return {
         ok: true, data_loss: x.data_loss, sync_spread_ms: r4(x.sync_spread_ms), n_events: x.n_events,
-        forced_majorgc_events: x.forced, union: x.union.flatMap(([s, e]) => [r4(s), r4(e)]),
+        forced_majorgc_events: x.forced, forced_pause_events: x.forcedPause, forced_cc_events: x.forcedCc, union: x.union.flatMap(([s, e]) => [r4(s), r4(e)]),
       };
     }
     default:
@@ -295,6 +324,7 @@ on("script.message", (p) => {
       contextUrl.set(ctx, url);
     }
     if (!matches(url)) { log(`다른 수집의 페이지 메시지 — 무시: ${url}`); return; }
+    announce(ctx, url);
     await onMessage(ctx, p);
   }).catch((e) => log(`핸들러 오류: ${e.message}`)));
 });

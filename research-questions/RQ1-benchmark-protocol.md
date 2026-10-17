@@ -2091,3 +2091,74 @@ STALL-g23.*`에 진단 증거로 보존하고 재수집은 v22 이름으로 처�
   (자동 무효가 아니다 — 오염의 크기가 판정을 바꿀 만했는지가 데이터로 정해진다).
 - 개정 #9 전수 대조표와 v21 적대적 검증, 개정 #10 검증 모두 이것을 못 봤다: 조항 문언("셀마다 fresh page load")이 지켜지는지만
   대조했고, 그 문언이 막으려던 것(셀 간 오염)이 실제로 막히는지는 누구도 재지 않았다.
+
+#### 개정 #10 후속 3 (2026-10-17, **Firefox 재수집 전**) — Firefox GC 통제(M-15)를 WebDriver BiDi로 이행
+
+**경위**: 개정 #10 4(f)는 Firefox를 "CDP 수단이 없어 강제 GC·GC 로그 없음"으로 등재했고, v22 Firefox 교차 확인
+16그룹(1d85c4f)은 그 상태로 수집됐다. 병익님이 "Firefox에서는 CDP 대신 WebDriver BiDi를 쓰면 된다"고 제안했고,
+프로브(2026-10-01, Firefox 155.0.1)로 확인한 뒤 **Firefox만 재수집**하기로 했다(병익님 결정). Chromium 데이터는 그대로다.
+
+**확인된 사실(프로브)**:
+- `--remote-debugging-port` + `--remote-allow-system-access`로 띄우면 BiDi 세션에서 **chrome(특권) 컨텍스트**
+  (`browsingContext.getTree {"moz:scope":"chrome"}`)가 열린다.
+- 강제 GC: chrome 컨텍스트에서 `Services.obs.notifyObservers(null, "child-gc-request")` + `"child-cc-request"`
+  (about:memory의 GC 버튼과 같은 경로) → 콘텐츠 프로세스마다 GCMajor + CC가 실제로 일어난다. 그 GCMajor는
+  reason `DOM_IPC`, `NonIncrementalRequested`로 표시돼 자연 GC와 구별된다.
+- GC 로그: Gecko 프로파일러(`["nostacksampling"]`, 스레드 `GeckoMain`)가 측정 페이지 메인 스레드의 GC 마커와 하네스의
+  `performance.mark("loom:…")`(UserTiming)를 같은 스레드에 기록한다. 마커 스키마 `[name, startTime, endTime, phase,
+  category, data]`. 페이지 표식 간격과 마커 간격이 일치(221.42 대 221.42ms)해 시계 대응이 된다.
+- 핸드셰이크: BiDi 프리로드 스크립트의 **채널**로 `window.__loomCdp`를 만들고 `script.callFunction`으로
+  `window.__loomCdpAck`을 부른다 — **하네스 wasm은 바꾸지 않는다**(Chromium과 같은 코드가 돈다).
+- **CPU 스로틀은 여전히 불가**다 — Firefox에 해당 기능이 없다(§8 한계 그대로).
+
+**구현**: `bench/e2e/ff-bidi-agent.mjs`, `collect-stock.sh`의 Firefox 경로(원격 포트·chrome 접근 허용·에이전트·포트 가드),
+판정기(Firefox에 에이전트가 있으면 같은 GC 점검, 출처 표시). 셀마다 새 브라우저(`collect-firefox-subset.sh` 그대로).
+- **GC 주석의 정의(크롬과 맞춘다)**: 합집합 = 메인 스레드 **일시정지 수준** 마커 `GCSlice`·`GCMinor`·`CCSlice`만.
+  `GCMajor`·`CC`는 증분 사이클 **전체**를 덮는 구간(슬라이스 사이의 일반 실행 포함)이라 넣지 않고 개수·길이만 로그에
+  남긴다. **수집 전 검토가 잡은 결함**: 첫 구현은 사이클 구간까지 넣어 모든 후보가 표본 시간의 ~10%를 GC로 받았다
+  (스모크: D-LIS 10.4%·C 10.1%·K 9.2% — 후보를 가르지 못하는 공허한 주석). 64ea6c8에서 합집합을 일시정지 마커만으로 고친 뒤 같은 스모크(그룹 7)의 GC 비중은 후보마다 0.88~4.23%로 갈린다.
+- 강제 GC 존재 단언: 요청~완료 표식 사이 **reason=DOM_IPC**인 GCMajor 수(자연 증분 GCMajor는 세지 않는다).
+  **두 번째 수집 전 검토(2026-10-17)로 보탠 것**: 같은 구간의 `GCSlice` 수(`forced_pause_events` — 합집합 정의가
+  실제 마커를 잡는다는 존재 단언)와 `CC`/`CCSlice` 수(`forced_cc_events`). 판정기는 셋 다 ≥ 1을 요구한다.
+- **강제 GC 순서를 GC → CC → GC로 바꿨다**(같은 검토): CC가 끊은 DOM↔JS 사이클의 JS 쪽은 다음 GC가 있어야
+  해제된다. GC·CC 한 번씩이면 그 몫이 파일럿·워밍업의 자연 GC로 미뤄진다. Chromium의 `collectGarbage`는 V8+Oilpan
+  통합 힙을 한 번에 치우므로, 이 순서가 "셀 시작 시 쓰레기를 치운다"는 같은 의도에 더 가깝다(그래도 같은 기제는 아니다 —
+  아래 (a)).
+- 에이전트의 "페이지 타깃에 붙음" 로그를 문맥마다 첫 load/첫 메시지에서도 남긴다(시작 시 한 번만 찍으면 드라이버의
+  90초 부착 검사가 정상 수집을 죽일 수 있었다). 짝 없는 마커 수(`unpaired`)·핸드셰이크 전체 시간도 기록한다.
+- 유실 판정: 구간 시작 이후의 페이지 `loom:` 표식이 프로파일에 **다 있는가**(원형 버퍼는 앞쪽을 버린다).
+- Firefox 레코드의 `gc.control = "cdp"`는 하네스의 상태 이름("에이전트 핸드셰이크 정상")이고 `gc.source`의 고정 문자열
+  `"cdp-trace v8+cppgc renderer-main"`은 **Firefox에서는 틀린 값**이다 — 하네스를 바꾸지 않으려고 둔다. 실제 출처는
+  `gc.cell_start.tracing`("gecko-profiler markers …")이고 판정기가 그것을 찍는다.
+
+**CPU 경합(두 번째 검토의 실질 지적)과 대기 결정**: 이 기계에서 다른 작업(솔버 여러 개, 부하 평균 30~40/16코어)이
+돌고 있다. BiDi 에이전트 판으로 그룹 11(W2×R1 n=10,000)을 스모크하자 **6후보 모두 셀 상한 30분에 걸려 표본 43/200**에서
+잘렸다 — 1d85c4f 수집분(무부하, 에이전트 없음)은 같은 그룹을 18분에 200표본으로 마쳤다. 유실은 없고 프로파일 수집은 1.4초,
+강제 GC는 관측됐다. 경합과 프로파일러 비용을 지금은 분리할 수 없다(프로브는 **비율** 변화만 쟀다 — 절대 감속은 안 쟀다).
+병익님 결정: **다른 작업이 끝난 뒤에 수집한다.** 그래서
+- 드라이버에 부하 기록(`mem.jsonl`의 `load1`, `env.json`의 `loadavg_start`)과 `LOAD_MAX` 가드를 넣었다 — `collect-per-cell.sh`는
+  그룹마다 1분 부하 평균이 `LOAD_MAX` 이하가 될 때까지 기다리고, `collect-stock.sh`는 넘으면 시작하지 않는다.
+  `collect-firefox-subset.sh`는 `LOAD_MAX=4`가 기본이고, 이제 `collect-per-cell.sh`의 그룹 목록 모드(`GROUP_LIST`)로 돈다.
+  그룹마다 새 브라우저, 잔존 프로세스 검사, 연속 3실패 정지를 같은 코드로 얻는다. `PREFIX`는 필수이고 기존 조각이 있으면 거부한다.
+- **본수집 첫 단계는 무부하 그룹 11 단독 스모크다**: 18분·200표본에 가까우면 감속은 경합이었고, 여전히 상한에 걸리면 프로파일러
+  비용이 절대 시간을 바꾼다는 뜻이다 — 그 경우 수집 전에 여기 다시 등재한다(조용히 진행하지 않는다).
+- 드라이버는 병합 뒤 GC 통제가 `cdp`가 아닌 레코드가 있으면 실패 코드로 끝난다. 루프 안 검사는 그룹 하나짜리 수집에서
+  마지막 조각을 지나쳤다. 데이터는 버리지 않는다.
+- 판정기: `RQ1_FIREFOX_FILE`로 BiDi 파일을 준다. 이름에 `bidi`가 있으면(또는 `RQ1_FIREFOX_EXPECT_AGENT=1`) 에이전트를 기대하고,
+  전 셀 `unavailable`이면 문제로 올린다. 브라우저 간 방향 대조는 측정 불가(상한 초과) 셀을 빼고 그 사실을 줄로 남긴다.
+  selfcheck에 `firefox_bidi`·`firefox_wrong_file` 모드를 더했다.
+
+**공평성 진술**:
+- (a) 셀 시작 강제 GC: 한 셀의 전 후보가 공유하고 파일럿·워밍업 앞 — 중립(Chromium과 같은 논리). Firefox에서는
+  child-gc-request가 **CC(순환 수집)**까지 돌린다(Chromium은 HeapProfiler.collectGarbage). 두 브라우저의 "셀 시작 GC"는
+  같은 기제가 아니다 — 브라우저 간 풀링은 원래 금지이고(§8 E-1), Firefox는 교차 확인용이다.
+- (b) 프로파일러 오버헤드: 같은 페이지 블록 교대 프로브(`bench/e2e/ff-profiler-overhead-probe.mjs`)에서 C/K 비율 변화
+  median 1.038, 99% CI [0.980, 1.071] — 검출 없음(분해능 ±4~7%), 대리물(손으로 쓴 JS DOM 루프)이라는 한계는 Chromium
+  프로브와 같다.
+- (c) **원격 에이전트 활성이 Firefox 동작을 바꿀 수 있다**: Firefox 원격 에이전트(BiDi)는 켜질 때 자동화용 권장
+  환경설정(recommended preferences)을 적용한다(예: 일부 백그라운드 동작·업데이트·텔레메트리 끄기). 1d85c4f Firefox
+  수집분(에이전트 없음)과 측정 조건이 다르다 — 셀 안 후보 간에는 공통이라 비율에 대해 중립으로 보지만, 두 Firefox
+  수집분의 절대값 대조에는 이 차이가 섞인다. Chromium은 v22 전 수집이 같은 조건(CDP 에이전트)이다.
+
+**처리**: 1d85c4f Firefox 수집분은 **GC 통제 없는 Firefox 교차 확인**으로 보존하고(판정문 694d274), BiDi 재수집분을
+v22 Firefox 교차 확인의 정본으로 쓴다(이름 `v22-firefox-bidi-g<g>`). 두 수집분의 방향 대조도 병기한다.

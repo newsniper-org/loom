@@ -171,6 +171,19 @@ PGID="$PID"
 # §8 "버전은 실행 시점 기록" + §2.5 "공유 기반 동결" — 무엇으로 어떻게 쟀는지를
 # 데이터 옆에 남긴다. 이게 없으면 다음 사람이 "stock 브라우저"라는 말만 보고
 # 개인 플래그가 섞였는지 알 수 없다(실제로 그 일이 있었다).
+# **시작 부하 가드(개정 #10 후속 3, 2026-10-17)**: 다른 작업이 CPU를 다투면 셀이 상한(30분)에 걸려 표본이 잘린다 —
+# 실제로 Firefox 그룹 11 스모크가 부하 평균 30~40에서 43/200 표본으로 잘렸다(무부하 수집분은 18분에 200).
+# `LOAD_MAX`가 주어지면 1분 부하 평균이 그 이하일 때만 시작한다(기본은 검사 없음 — 기존 호출 그대로).
+LOAD1=$(cut -d' ' -f1 /proc/loadavg)
+if [ -n "${LOAD_MAX:-}" ] && awk -v l="$LOAD1" -v m="$LOAD_MAX" 'BEGIN{exit !(l > m)}'; then
+  echo "[collect-stock] **1분 부하 평균 $LOAD1 > LOAD_MAX=$LOAD_MAX — 시작하지 않는다** (CPU 경합)" >&2
+  exit 1
+fi
+case "$BIN" in
+  *firefox*) AGENT_NAME=ff-bidi-agent.mjs
+    AGENT_NOTE="Firefox 원격 에이전트(BiDi) 활성 — remote.prefs.recommended 기본값(true)으로 자동화 권장 환경설정이 적용된다(개정 #10 후속 3 공평성 (c))" ;;
+  *) AGENT_NAME=cdp-agent.mjs; AGENT_NOTE="" ;;
+esac
 cat > "$ROOT/bench/collected/$NAME.env.json" <<ENVJSON
 {
   "collected_at_unix": $(date +%s),
@@ -185,6 +198,10 @@ cat > "$ROOT/bench/collected/$NAME.env.json" <<ENVJSON
   "git_commit": "$(cd "$ROOT" && git rev-parse HEAD)",
   "git_dirty": $(cd "$ROOT" && [ -z "$(git status --porcelain)" ] && echo false || echo true),
   "cdp_agent": $([ -n "$CDP_Q" ] && echo true || echo false),
+  "agent": "$AGENT_NAME",
+  "agent_note": "$AGENT_NOTE",
+  "loadavg_start": "$(cat /proc/loadavg)",
+  "load_max": "${LOAD_MAX:-}",
   "gc_log": "$([ -n "$CDP_Q" ] && echo "bench/collected/$NAME.gc.jsonl" || echo "")",
   "url": "$URL"
 }
@@ -262,8 +279,8 @@ rm -f "$MEMF"
       /^MemAvailable:/ {a=$2}
       /^SwapTotal:/    {st=$2}
       /^SwapFree:/     {sf=$2}
-      END {printf "{\"t\": %d, \"mem_avail_mb\": %d, \"swap_used_mb\": %d}\n", t, a/1024, (st-sf)/1024}
-    ' /proc/meminfo >> "$MEMF"
+      END {printf "{\"t\": %d, \"mem_avail_mb\": %d, \"swap_used_mb\": %d, \"load1\": %s}\n", t, a/1024, (st-sf)/1024, l}
+    ' l="$(cut -d' ' -f1 /proc/loadavg)" /proc/meminfo >> "$MEMF"
     sleep 30
   done
 ) &
@@ -357,5 +374,20 @@ for p in parts:
 json.dump({"track_l": track_l, "track_t": track_t}, open(sys.argv[2], "w"), indent=1)
 print(f"  합침: 그룹 {len(parts)}개 → 트랙 L {len(track_l)} 레코드, 트랙 T {len(track_t)} 레코드")
 PYEOF
+# **병합 뒤 GC 통제 검사(개정 #10 후속 3)**: 루프 안 검사는 셀 시작 실패만 보고, 그것도 다음 반복에서야 본다 —
+# 그룹 하나짜리 수집(collect-per-cell.sh)은 마지막 조각이 오자마자 루프를 빠져나와 그 검사를 지나친다. 측정 끝
+# 실패(`measure-end-*`)도 여기서 드러낸다. 데이터는 이미 합쳐 뒀으므로 버리지 않고, 실패 코드로만 알린다.
+if [ -n "$CDP_Q" ]; then
+  BAD=$(python3 -c '
+import json, sys, collections
+c = collections.Counter(r["gc"]["control"] for r in json.load(open(sys.argv[1]))["track_l"])
+bad = {k: v for k, v in c.items() if k != "cdp"}
+print(" ".join(f"{k}={v}" for k, v in sorted(bad.items())))
+' "$OUT")
+  if [ -n "$BAD" ]; then
+    echo "[collect-stock] **GC 통제가 정상(cdp)이 아닌 레코드가 있다** — $BAD (데이터는 $OUT에 합쳐 둠)" >&2
+    exit 1
+  fi
+fi
 echo "[collect-stock] $NAME 완료 ($((($(date +%s)-START)/60))분) → $OUT"
 exit 0
