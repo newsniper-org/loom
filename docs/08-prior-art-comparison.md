@@ -68,6 +68,8 @@
    Solid/Qwik 둘 다 안 하는 선택. 이게 resumability 직렬화를 크게 단순화시킨다는 게 이
    프로젝트의 핵심 가설 (아직 실측 안 됨).
 2. **PatchTable 패턴** (02): Component를 POD로 유지하면서도 "패치 행동"을 표현하는 방법.
+   *(2026-10-17 병익님 결정: 정수 opcode 형태는 채택하지 않고 재개 조건부 대안으로 강등. 같은 원리를
+   monomorphize된 제네릭 System + 닫힌 열거형 `match`로 지킨다 — docs/02 "PatchTable 결정 (2026-10-17)".)*
    정수 opcode + 컴파일러 생성 정적 디스패치 테이블. 알려진 선례를 찾지 못함.
    **(2026-10-17 정정: 이 패턴은 구현되지 않았다.** Phase 1이 opcode 디스패치 대신 제네릭 Rust System
    (`patch_text_system::<T>` 등, 타입별 monomorphize)으로 갔고, "Phase 2에서 opcode로 전환"하겠다는

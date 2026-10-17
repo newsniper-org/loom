@@ -287,8 +287,9 @@ loom-research/
   별개로, 트랙 N 불변식 4의 진짜 형태를 재려면 컴파일러가 F 계열을 낼 수 있어야 한다.
 - Resumability 페이로드의 스키마·버저닝(RQ2. 잠정 포맷 `chunk|symbol|key:value`)
 - Island 세분화가 실제로 이득인 경우의 프로파일링(docs/04)
-- 컴파일러 표면: 삼항 조건부, 조건부 안의 조건부, props 실제 resolve, PatchTable(opcode) 전환. Phase 1은
-  PatchTable 대신 제네릭 Rust System으로 구현했고 아직 전환하지 않았다(docs/07).
+- 컴파일러 표면: 삼항 조건부, 조건부 안의 조건부, props 실제 resolve. (PatchTable(opcode) 전환은 2026-10-17 병익님
+  결정으로 종결 — 제네릭 Rust System + 닫힌 열거형이 정본, opcode는 런타임 binding 종류가 필요해질 때의 재개
+  조건부 대안. docs/02 "PatchTable 결정 (2026-10-17)")
 - FIC `assets` 매니페스트(현재 항상 빈 배열), `request_context`, sidecar 콜드 스타트
 - wasm panic 봉쇄(조건 C는 stable 채널에서 미검증), 비동기 정리 타임아웃 시 강제 drop
 - LIS 최적성 증명, 입력 사전조건 4개의 검증

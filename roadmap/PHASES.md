@@ -72,7 +72,8 @@ GC 통제(M-15), B arm 중복 `set_text` 수리, J-a on/off 재정의(v3 사전 
 **아직 결정 기록이 없는 것**: 컴파일러가 내는 조건부는 "첫 spawn 지연 + CSS 은닉(`SetVisible`, 숨긴 동안
 patch 게이팅 없음)"으로, 정상 상태 토글은 트랙 T의 CSS 은닉 대조 arm과 같은 알고리즘이다(SSR-false 사이트의 첫 spawn 지연은 lazy arm의 앞 절반, F 계열 아님). 트랙 T 판정은 B 유지이고
 CSS 은닉은 대조군이라(원칙 5) 판정이 채택하지 않았다 — §9 K-3은 "CSS가 F를 지배하더라도 자동 채택은 아니다"라는 보강 조항이고, v2에서는 그 지배도 깨졌다(K-3 (1) 미발동) — 의미론 반박 답변 기록도, B 전환 결정도 없다. 별개로 트랙 N 불변식 4의
-진짜 형태는 F 계열(fragment 분리 + `Frozen`) 출력을 요구한다. (2026-10-17 재정정: 같은 날 첫 판은 이것을 "F 계열/F 기반"이라 적었다. 코드젠에는 F 계열의 장치 — fragment 분리, `CondEffective`, `Frozen` 게이팅, catch-up — 가 하나도 없고, `cond.rs`가 "F"라고 부르는 `cond_reconcile_f_system`은 스스로 "CSS-hide preserve variant"이자 프로토콜의 CSS 은닉 대조 arm이라고 밝힌다. Phase 1(07-24) 시절의 이름표를 그대로 옮긴 오류였다.) PatchTable(opcode) 전환도 Phase 1 이래 이행되지 않았다(docs/07).
+진짜 형태는 F 계열(fragment 분리 + `Frozen`) 출력을 요구한다. (2026-10-17 재정정: 같은 날 첫 판은 이것을 "F 계열/F 기반"이라 적었다. 코드젠에는 F 계열의 장치 — fragment 분리, `CondEffective`, `Frozen` 게이팅, catch-up — 가 하나도 없고, `cond.rs`가 "F"라고 부르는 `cond_reconcile_f_system`은 스스로 "CSS-hide preserve variant"이자 프로토콜의 CSS 은닉 대조 arm이라고 밝힌다. Phase 1(07-24) 시절의 이름표를 그대로 옮긴 오류였다.) PatchTable(opcode) 전환도 Phase 1 이래 이행되지 않았다(docs/07) — **2026-10-17 병익님 결정으로 종결**: 제네릭
+System + 닫힌 열거형이 정본이고 opcode는 재개 조건부 대안(docs/02 "PatchTable 결정 (2026-10-17)").
 
 ## Phase 0 — 리서치 수렴 (완료 2026-07-23)
 
@@ -101,7 +102,7 @@ CSS 은닉은 대조군이라(원칙 5) 판정이 채택하지 않았다 — §9
 
 **범위**: Island/Resumability/backend-agnostic 전부 제외. 단일 앱, 단일 IslandWorld,
 client=server 동일 프로세스(Node나 WASM 테스트 하네스) 가정.
-- JSX → Entity graph + PatchTable 컴파일 (02)
+- JSX → Entity graph + PatchTable 컴파일 (02) *(2026-10-17: 실제는 제네릭 System + 닫힌 열거형 — 그것이 정본으로 결정됨, docs/02)*
 - `Changed<T>` 게이팅 patch system 동작 확인 (03)
 - RQ1 벤치마크 프로토콜(사전 등록 v1.1)의 공통 기반(§2) 구축 + 트랙 L/T 핵심 격자 실측
   (2026-07-23 갱신 — 초판 "RQ1 잠정안으로 동적 리스트 하나" 문구를 프로토콜 체제로 대체)

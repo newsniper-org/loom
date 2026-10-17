@@ -30,7 +30,8 @@ Svelte(컴파일러)가 VDOM 없이 동작하는 원리이고, 여기서는 그 
 
 1. `Signal<T>` Component가 값과 dirty flag를 가짐
 2. 컴파일러가 생성한 patch System이 `Query<Changed<Signal<T>>>`로 게이팅
-3. 조건 충족 시 `DomBinding` Component(02의 PatchTable 참고)를 통해 opcode 기반 정적
+3. *(2026-10-17 결정: 아래 `DomBinding`/opcode 형태는 채택하지 않음 — 정본은 monomorphize된 제네릭 patch System +
+   닫힌 열거형 `match`, docs/02 "PatchTable 결정 (2026-10-17)")* 조건 충족 시 `DomBinding` Component(02의 PatchTable 참고)를 통해 opcode 기반 정적
    디스패치 → 최소 DOM 연산 1회
 
 이 파이프라인 어디에도 "이전 트리와 새 트리를 비교"하는 단계가 없음 — 애초에 "새 트리"가

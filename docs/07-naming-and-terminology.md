@@ -43,6 +43,9 @@
   페이지 전체 하나이고, 첫 클릭의 전역 위임이 유일한 트리거다(docs/04 2026-10-17 현황 확인 3).
 - **PatchTable/DomBinding**: 2026-10-17에도 미구현 그대로다. Phase 1의 "Phase 2에서 opcode로 전환" 계획은
   이행되지 않았고, Phase 2 resumability는 LRef + 생성된 정적 `dispatch(symbol, value)`로 구현됐다.
+  **같은 날 병익님 결정으로 정본이 바뀌었다**: 정본 용어는 "정적 디스패치 = monomorphize된 제네릭 System + 닫힌
+  열거형 `match`"이고, PatchTable/DomBinding은 **재개 조건부 대안**(런타임 데이터로 binding 종류가 정해지는 기능이
+  명세될 때)이다. 새 코드에서 이 두 이름의 타입을 만들지 말 것(docs/02 "PatchTable 결정 (2026-10-17)").
 
 ### 추가 용어 (2026-10-17 등재)
 

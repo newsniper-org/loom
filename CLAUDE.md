@@ -51,7 +51,14 @@
    **2026-10-17 주기**: 금지 자체는 그대로다. 다만 PatchTable(opcode 테이블)은 **아직 구현되지
    않았다** — Phase 1 이래 컴파일러는 같은 성질("정적 디스패치, Component엔 클로저 없음")을 제네릭
    Rust System(`patch_text_system::<T>` 등)과 닫힌 열거형으로 지킨다(docs/07 용어표, PHASES Phase 1
-   축소 1번). opcode 전환 여부는 결정 기록이 없는 열린 항목이다.
+   축소 1번). ~~opcode 전환 여부는 결정 기록이 없는 열린 항목이다.~~
+   **2026-10-17 병익님 결정**: "행동"은 **컴파일러가 생성한 정적 코드**에 둔다 — 타입별로 monomorphize된
+   System(`patch_text_system::<T>` 등)과 닫힌 열거형의 정적 `match`(생성된 `Action`/`apply_action`/
+   `resume_action_by_symbol`, `DomWrite`)가 정본이다. Component와 직렬화 페이로드에는 데이터와 심볼만 둔다.
+   정수 opcode PatchTable은 **재개 조건부 대안**으로 강등한다: "binding 종류가 런타임 데이터로 정해지는
+   기능이 명세되면 다시 연다 — 1차 후보는 닫힌 `BindingKind` 열거형 Component + 그것을 `match`하는 System,
+   정수 opcode 테이블은 2차 후보". 근거는 docs/02 "PatchTable 결정(2026-10-17)" 절. 위 금지(클로저/함수
+   포인터 저장 금지)는 그대로이고, 새 코드에서 `DomBinding`/opcode 테이블을 새로 만들지 말 것.
 
 ## 언어/툴체인 기본값 (변경 가능, 근거 있으면)
 
