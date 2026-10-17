@@ -1987,6 +1987,7 @@ Firefox의 게이트 결론은 Chromium과 같다. C는 채택 불가이고(기�
    제출로 다시 판정해야 한다. 이 재심사를 실행한 기록은 이 문서와 프로토콜에서 찾지 못했다. G2
    재인증은 G2만 다뤘다(프로토콜 "§5 재인증 결과": "G0 심사 기록·G1은 범위 밖"). E 기각 (iii)과
    D 기각 (ii)가 여기에 걸려 있다.
+   **2026-10-17 G0 실행**: D·D-LIS·E·E-LIS 모두 조문상 **기각**(P1: `String` key 비교, P3: `match_keys` Θ(n·m)) — "VDOM이다"가 아니라 HEAD 구현 변형이 형식 요건을 못 채운 것. 확정 vs 수리 후 재심사는 병익님 확인 대기. 상세: RQ1 문서 끝 "G0 — D·E No-VDOM 구현 재심사 기록".
 2. **G1(트랙별 정합성 게이트)의 판정 기록**: 판정기는 G0~G2 상태를 입력으로 받지 않는다. G1 통과를
    v22 기반에서 따로 기록한 절도 찾지 못했다.
 3. **D 기각 (iii) 뒷항(M4 이중 저장 / M7 resume walk / M3)은 미계측**이다. 지금은 앞항이 불성립이라
@@ -2003,3 +2004,151 @@ Firefox의 게이트 결론은 Chromium과 같다. C는 채택 불가이고(기�
    — §9 판정과는 무관), 트랙 T GC 통제.
 
 §5 FV 계류는 이 목록에 없다 — 2026-08-11에 소진됐다(위 정정들).
+
+---
+
+## G0 — D·E No-VDOM 구현 재심사 기록 (2026-10-17) — **병익님 확인 대기**
+
+> **상태**: 심사는 실행됐고 조문 적용 결과는 아래 라벨이다. 다만 이 결과를 **확정할지**, 아니면
+> `match_keys`·key 표현을 수리한 새 변형을 **재심사에 올릴지**(N5 구현 특정성), P1 범주를 개정할지,
+> 수리가 §2.5 재측정 사유인지는 병익님 결정 사항이다. 결정 전까지 아래 "프로토콜상 결과"(C-4 기준선 이동
+> 등)는 **조문이 기계적으로 가리키는 귀결**로만 기록하고, 판정·채택 상태 변경으로 쓰지 않는다.
+> 심사 지시(2026-10-17 병익님): "D·E 둘 다 통과하면 직접 들여다보고 결정" — 둘 다 통과하지 못했으므로
+> 선택 문제는 생기지 않았다.
+
+**이 절이 하는 일**: 프로토콜 §3.5·§9 서두의 G0(No-VDOM 구현 재심사)를 처음으로 실행한
+기록이다. 지금까지 D·E에 대한 No-VDOM 판정은 산문 명세 단계의 잠정 판정(이 문서
+:139-143 D, :200-205 E, docs/03 판정례 1·2)뿐이었고, 위 "채택까지 남은 것" 1번이 이를
+미이행으로 적어 두었다. 이전 서술(:901-902 "설계 단계에서 이미 다뤄졌으나 재확인하지
+않음", :1424, :1986)은 지우지 않는다 — 당시 사실로 남기고 이 절이 그것을 대체한다.
+
+**심사 대상(코드 기준점)**: HEAD b30251f. `git diff --stat 32d94b0 HEAD -- crates/`의
+변경은 crates/loom-rq6-fixture-gen뿐이어서 런타임 줄 번호는 32d94b0과 같다. 심사 방법은
+docs/03 "No-VDOM 판별 기준" 조문(P1–P3 타입·시그니처·호출부 검사, N1–N4, N5)이다. 독립
+리뷰 6건(D·E × 엄격/검사관/판례 렌즈)을 받고, 결정적 근거는 심사자가 코드를 직접 열어
+재확인했다. **v21/v22 성능 데이터는 근거로 쓰지 않았다**(G0와 §9는 독립 게이트,
+docs/03:486-491). P3의 Θ(n²)는 루프 구조에서 도출했다.
+
+### 변형 축 (N5 구현 특정성 — 이 판정은 아래 변형에만 적용된다)
+
+| 축 | D / D-LIS | E / E-LIS |
+|---|---|---|
+| 순서 저장 | 컨트롤러 `ListRows(Vec<Entity>)` + 행마다 `RowKey(String)`(명세의 "컨트롤러 keys+rows Vec"과 다른 혼합형) | 행마다 `OrderKey(u64)`, 매 갱신 `sort_by_key`로 재구성(:701/:798). 단 `OrderKeyMembers`도 목표 순서 그대로 대입됨(:766/:859, 주석의 "비순서"와 다름) |
+| key 표현 | `T::to_string()`의 `String`(:480/:577) | 같음(:694/:791, `OrderedKey(String)`). 명세의 `key_hash u64`는 구현되지 않음 |
+| 매칭 | `match_keys` 선형 pool + `Vec::remove`(:226-242) | 같은 함수 공유 |
+| 이동 최소화 | D: `plan_from_selection`, D-LIS: `lis_keep` | E: `plan_from_selection`, E-LIS: `plan_lis_from_selection_auto` |
+| retain 쓰기 | `WriteVariant` Conditional(출력 0) / Unconditional(`SetText` 직접, :345-370) | 쓰기 변형 축 없음, retain 출력 0 |
+| OrderKey 방식 | — | 0..n-1 밀집 재태깅(:744-752). fractional·Relabel·Move patch System 없음 |
+| 값 채널 | 없음(key == 표시 텍스트) | 없음 |
+
+산문 잠정 통과의 대상(해시 매칭 + u64 key, E는 Move patch System + Relabel)과 HEAD가
+다르므로 **잠정 통과는 승계되지 않는다**(docs/03 "판정의 대상과 시점").
+
+### 심사 단위
+매칭 입력 준비(`to_string`, 이전 순서 조립·정렬)부터 4연산 발행과 순서 상태 대입까지:
+d_body(465-555) / d_lis_body(562-650) / e_body(675-768) / e_lis_body(777-861),
+`match_keys`, `selection_preconditions_hold`(debug 전용), `emit_plan`(372-390),
+`emit_unconditional_text`, flush-core의 `plan_inputs`(2835)·`plan_from_selection`(3147)·
+`lis_keep`(3437)·`lower_bound`(3316)·`plan_lis_from_selection_auto`(3653), 진입 래퍼
+`keyed_candidate_systems!`(990-1081). 단위 밖: R2 `patch_row_binding_system`,
+`RowSpawner::emit`(판정례 9(가)), Reposition 적용부(lib.rs:1451-1462, web.rs:474-493 —
+노드 내용을 읽지 않음). D Unconditional의 `SetText` 적용부(web.rs:350-360)는 행 루트
+자식을 순회하며 `node_type`으로 분기하므로 P2 경계 주석에 따라 단위에 합산된다.
+
+### P1–P3 근거 (N5-(i))
+
+**P1 — 불충족(D·E 모든 변형).** 비교 지점 전수: list.rs:234 `k == key`(String==String)만
+4범주 밖이다. (i) 고정 폭 POD가 아니고, (ii) 시그니처상 피연산자는 `T`가 아니라
+`T::to_string()`의 산출물이다. 측정 하네스의 실제 인스턴스 `T=ItemId(u32)`(loom-bench
+lib.rs:157-158)에서 비교 대상은 Display 문자열이다. 나머지 지점(인덱스·길이 :489-502,
+:715 / OrderKey 정렬·재태깅 :701, :748 / debug HashSet<u64|usize> / flush-core의
+u64·usize)은 (iii)·(iv) 안이다. 렌더 출력 기술 값이 피연산자로 쓰인 곳은 없다.
+
+**P2 — D Conditional·E: 충족. D Unconditional: 불충족.** 단위 안에 재귀나 워크리스트가
+없다. 읽는 행 Component는 정체성·순서용(RowKey/OrderedKey/OrderKey)과 삭제 대상 루트
+핸들(DomTarget, :524/:611/:735/:831)뿐이다. 출력: insert = spawn + SpawnRow, delete =
+RemoveNode + `despawn()`(linked_spawn 연쇄, 문언의 despawn_subtree와 실질 동치), move =
+Reposition(+E는 OrderKey 쓰기). D Unconditional은 :367에서 retained 행에 `SetText`를
+직접 발행한다 — retain의 정의(값 채널 Signal write → Changed 파이프라인) 밖이므로
+(iii) 위반이고, 그 적용부의 자식 순회·분기가 합산되면 (i)도 해당한다(판정례 7(ii)와 같은 형태).
+
+**P3 — 불충족(D·E 모든 변형, LIS 유무 무관).** 매칭 입력은 평평한 Vec(형상은 충족, 단
+원소 String은 POD 아님). 루프 구조: `match_keys`:233-240은 새 key n개 각각에
+`pool.iter().position`(O(m))과 `pool.remove`(O(m))를 하므로 O(n·m)이고, 완전 역순에서
+비교 n(n+1)/2회로 Θ(n²)다. 조문 상한 O(n log n)(docs/03 P3)을 넘는다. 나머지(정렬 재구성,
+`plan_inputs`, Chain, `lis_keep`)는 상한 안이다. 같은 형태의 O(n²)를 `place_in_order`에서
+"고쳐야 하는 버그"로 판정·수정한 선례(:427-439)가 있으나, 그 수정은 `match_keys`에 미치지
+않았고 이 사실은 지금까지 기록되지 않았다.
+
+**N1–N4 — 모든 변형에서 저촉 없음.** RowKey/OrderedKey는 spawn 시점에 사용자 데이터에서
+유도한 key이며 DOM read-back이나 출력 역캐시가 아니다(판정례 8의 출처 특정). 진입은
+`Changed<Signal<Vec<T>>>`로 게이팅된다(N3). retain 값 전수 비교가 없다(N4).
+
+### bypass-change-detection 별도 심사 (조문 관할 밖, docs/03 부기)
+**대상 부재.** crates/ 전체에 `bypass_change_detection`·Relabel System·`Changed<OrderKey>`
+소비자가 0건이고, E의 OrderKey 쓰기(:748/:841)는 보통의 `Mut` 쓰기라 Changed를 트립한다.
+따라서 "Component 쓰기는 Changed를 트립한다"는 불변식의 예외가 HEAD에는 없다. **이것은
+통과가 아니다** — 명세판 E의 bypass Relabel은 미심사로 남으며, fractional 태그·Relabel을
+구현하는 시점에 G0와 이 별도 심사를 새로 받아야 한다. D에는 해당 항목이 없다.
+
+### 라벨
+| 후보 | 라벨 | 근거 |
+|---|---|---|
+| D, D-LIS (Conditional) | **기각** | P1, P3 |
+| D, D-LIS (Unconditional) | **기각** | P1, P2-(iii), P3 |
+| E, E-LIS | **기각** | P1, P3 (bypass는 대상 부재) |
+
+"성능과 무관한 자격 탈락"(프로토콜 §3.5)이다. **"VDOM이다"라는 판정이 아니다** — 섀도
+트리, 출력 기술자, 트리 재귀, 크기 비례 순회는 찾지 못했다. 기각은 조문의 형식 요건(P1
+한정 열거, P3 루프 구조 상한)을 HEAD 구현이 채우지 못한 데서 나온다. 조문이 정도 판단과
+"비슷하다" 논변을 배제하고(docs/03 P절 서두, P1) 조용한 확대 해석을 위반으로 처리하므로
+(N5) 라벨은 기각이다.
+
+### 프로토콜상 결과
+- §9 D **기각 (ii)** 발동, §9 E **기각 (iii)** 발동(bypass 갈래가 아니라 G0 P1·P3 경로).
+- §9 C-4: 기준선 D→E→K에서 D·E가 빠져 **K**. 이에 따라 이 문서의 "채택까지 남은 것"
+  6번대로 **C 채택 (a)가 충족으로 바뀐다.** C 채택 자체는 아니다 — (b)·(c)와 G1이 남는다.
+- D·E 둘 다 통과한 경우가 아니므로 둘 사이의 선택은 생기지 않는다(병익님 지시: 둘 다
+  통과하면 직접 결정).
+
+### 이 기록이 정하지 **않는** 것
+- **G1**(트랙별 정합성 게이트)의 판정 — 범위 밖, 여전히 기록 없음.
+- **어느 후보의 채택** — D·E·K·C 무엇도 채택하지 않는다. C-4 결과는 조건 (a)의 상태
+  변화일 뿐이다.
+- **D·E 설계의 영구 기각** — 기각 대상은 HEAD 구현 변형이다. `match_keys`를 해시 매칭
+  (first-match-wins와 중복 키 소비 보존, 예: key→VecDeque<idx>)으로, key를 고정 폭
+  key_op로 바꾸면 N5상 새 변형이 되어 재심사 대상이다. 수리 여부·방향, P1 조문 개정 여부,
+  수리가 §2.5 재측정 사유인지는 **병익님 결정 사항**이다. 수리 시 match-keys-exhaustive.py로
+  매칭 결과 동치를 재확인해야 한다.
+- **성능 판정에의 영향** — `match_keys`의 Θ(n²)가 v21/v22 수치에 섞였을 가능성은 §9 쪽
+  별도 확인 사항이다.
+
+### §9 성능 데이터와의 관계 (가설, 미검증 — G0 판정과 별개)
+`match_keys`의 Θ(n·m) 문자열 매칭은 측정된 D/E 실행 경로 안에 있다. 판정 셀(n=1,000, 셔플)에서도 갱신당
+문자열 비교가 수십만 회 규모일 수 있으므로, **v21/v22의 D/E 수치에 이 이차 비용이 섞였을 가능성**이 있다.
+또 개정 #10 후속 3의 부하 스모크(그룹 11, n=10,000)에서 D/E 계열만 K·C보다 2배가량 더 감속한 현상
+(D-LIS/K 10.2→20.7)도, 메모리를 훑는 이차 비교가 캐시 경합에 민감하다는 설명과 맞는다. 둘 다 **추론**이다.
+확인 방법: 비교 횟수 구조 단언 테스트(n·m 형태인지)와, 해시 매칭 변형과의 같은 셀 대조(측정은 §2.5·§11
+절차를 따라 별도 사전 등록).
+
+### 한계
+- P3의 Θ(n²)는 루프 구조에서 도출했다. 비교 횟수 구조 단언 테스트는 아직 없다(필요하면
+  docs/03 판정례 9(다)처럼 추가할 것).
+- P1의 `T=String` 인스턴스(컴파일러 산출물, codegen.rs:1101)를 (ii)로 볼지는 판정례로
+  정하지 않은 상태다. 이 판정은 측정된 인스턴스(`ItemId`)와 제네릭 시그니처 기준이다.
+- 심사자는 리뷰 6건의 결정적 근거만 재확인했다. 모든 보조 인용을 한 줄씩 대조하지는 않았다.
+
+### 판정례 등재 후보 (docs/03, N5-(ii) — 아직 등재 안 함)
+(a) 우발적 이차 매칭이 P3 자격 탈락인지, 아니면 조문 개정으로 "설계 상한"과 "구현 결함"을
+구분할지 / (b) `T=String`에서 Display key를 (ii)로 인정할지 / (c) 설정 enum 비교
+(list.rs:353)가 (iv)에 들어가는지 / (d) 삭제 대상 행 루트 DomTarget 읽기와 RemoveNode
+직접 발행(K의 lib.rs:1203에도 같은 패턴) / (e) retain을 `SetText` 직접 발행으로 하는 경우와
+적용부 합산 / (f) 새로 만든 빈 노드에 SpawnRow를 적용할 때의 `set_text_content` 분기
+(판정례 9(가)는 apply 경로를 보지 않음) / (g) E의 move 이중 발행(Reposition + OrderKey) /
+(h) Changed로 트립된 사이트 안의 초선형 비용은 N3가 아니라 P3에서 판정한다는 독해.
+
+### 따라 갱신할 곳 (이 기록과 함께)
+docs/03:17-18 배너와 :428-440 정정 블록, 이 문서 :1986 1번·:1997 6번, roadmap/PHASES.md:53-54,
+프로토콜 :1743/:1764의 "G0 미입력" 노트와 §10:367(D Unconditional의 G0 지위). 부수 정정:
+:370-371의 "98f2d3d와 차이 0줄"은 코드 기준으로만 참이고(5a7cef6 주석 추가),
+list.rs:665-668의 OrderKeyMembers "비순서" 주석은 실제 동작과 다르다.
