@@ -63,7 +63,7 @@ use crate::ir::{
     RowSlice, SharedBinding, SignalDecl, SignalInit,
 };
 use std::collections::HashSet;
-use swc_common::{Span, Spanned};
+use swc_common::{BytePos, Span, Spanned};
 use swc_ecma_ast::*;
 
 /// 7a 이전부터 있던 "지원 범위 밖" 거부의 공용 코드.
@@ -92,6 +92,23 @@ pub struct SpanTable {
     pub bindings: Vec<BindingSite>,
     /// 이벤트 attr(`onClick`/`onInput`) 사이트.
     pub events: Vec<EventSite>,
+    /// 7a C3: IR 노드별 위치. `nodes[i]`는 `ComponentGraph::components[i]`의
+    /// 루트 트리를 **pre-order**(자신 → `Element` 자식들 / `ListBinding` row /
+    /// `CondBinding` then 가지; `ComponentRef`는 내려가지 않음)로 훑은 순서와
+    /// 1:1이다. check.rs가 같은 순서로 IR을 훑어 짝짓는다(IR에 span을 넣지
+    /// 않는다는 §3.3 결정을 지키면서 노드 단위 진단 위치를 얻는 방법).
+    pub nodes: Vec<Vec<NodeSpan>>,
+}
+
+/// IR 노드 하나의 소스 위치(7a C3).
+#[derive(Debug, Clone, Copy)]
+pub struct NodeSpan {
+    /// 노드를 대표하는 짧은 구문: 엘리먼트·`<input>`·컴포넌트 참조는 태그 이름,
+    /// `{s()}`·`{s() && …}`는 `s()`, `{xs().map(…)}`은 `xs()`, 정적 텍스트는
+    /// 앞뒤 공백을 뺀 텍스트, `{item}`은 그 식별자, `sharedValue(…)`는 호출 전체.
+    pub span: Span,
+    /// `Element`에 `onClick`이 있으면 그 attr 전체 span.
+    pub event: Option<Span>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +169,19 @@ impl Cx<'_> {
             in_row: row_var.is_some(),
             span,
         });
+    }
+
+    /// 노드 하나를 pre-order로 기록하고 그 위치를 돌려준다(7a C3). 노드를
+    /// 만드는 경로마다 **자식을 lower하기 전에** 정확히 한 번 부른다.
+    fn node(&mut self, span: Span) -> usize {
+        let list = self.spans.nodes.last_mut().expect("lower_component_fn opens a node list first");
+        list.push(NodeSpan { span, event: None });
+        list.len() - 1
+    }
+
+    fn node_event(&mut self, idx: usize, span: Span) {
+        let list = self.spans.nodes.last_mut().expect("lower_component_fn opens a node list first");
+        list[idx].event = Some(span);
     }
 
     fn event(&mut self, signal: &str, attr: &'static str, span: Span) {
@@ -308,6 +338,7 @@ fn lower_component_fn(
 ) -> LResult<Component> {
     let component_name = fn_decl.ident.sym.to_string();
     spans.components.push((component_name.clone(), fn_decl.ident.span));
+    spans.nodes.push(Vec::new());
     let body = fn_decl
         .function
         .body
@@ -342,6 +373,11 @@ fn lower_component_fn(
                 let Expr::JSXElement(el) = jsx else {
                     return Err(unsupported(jsx.span(), "component must `return` a single JSX element"));
                 };
+                // `return`이 둘 이상이면(R22, 이후 커밋에서 거부) 마지막 것이
+                // 루트가 된다 — 노드 위치 표도 그 루트에 맞춰 비운다.
+                if let Some(list) = spans.nodes.last_mut() {
+                    list.clear();
+                }
                 let mut cx = Cx {
                     component: &component_name,
                     signals: &signals,
@@ -501,6 +537,7 @@ fn lower_element(el: &JSXElement, cx: &mut Cx<'_>, row_var: Option<&str>) -> LRe
         return Err(unsupported(el.opening.name.span(), "only plain tag names are supported"));
     };
     let tag = tag.to_string();
+    let node_idx = cx.node(*tag_span);
 
     if tag.chars().next().is_some_and(|c| c.is_uppercase()) {
         if !cx.known_components.contains(&tag) {
@@ -545,6 +582,7 @@ fn lower_element(el: &JSXElement, cx: &mut Cx<'_>, row_var: Option<&str>) -> LRe
             "onClick" => {
                 let a = lower_click_action(attr, cx)?;
                 cx.event(a.signal_name(), "onClick", attr.span);
+                cx.node_event(node_idx, attr.span);
                 action = Some(a);
             }
             other => {
@@ -972,6 +1010,10 @@ fn lower_child(child: &JSXElementChild, cx: &mut Cx<'_>, row_var: Option<&str>) 
             if trimmed.is_empty() {
                 Ok(None)
             } else {
+                let raw: &str = &text.raw;
+                let lead = (raw.len() - raw.trim_start().len()) as u32;
+                let trail = (raw.len() - raw.trim_end().len()) as u32;
+                cx.node(Span::new(text.span.lo + BytePos(lead), text.span.hi - BytePos(trail)));
                 Ok(Some(JsxNode::StaticText(trimmed.to_string())))
             }
         }
@@ -987,7 +1029,10 @@ fn lower_child(child: &JSXElementChild, cx: &mut Cx<'_>, row_var: Option<&str>) 
 fn lower_expr_container(expr: &Expr, cx: &mut Cx<'_>, row_var: Option<&str>) -> LResult<JsxNode> {
     match unwrap_paren(expr) {
         // `{item}` inside a list row template.
-        Expr::Ident(Ident { sym, .. }) if row_var == Some(sym.as_ref()) => Ok(JsxNode::RowItemText),
+        Expr::Ident(Ident { sym, span, .. }) if row_var == Some(sym.as_ref()) => {
+            cx.node(*span);
+            Ok(JsxNode::RowItemText)
+        }
 
         // `{sharedValue("cartCount", 0)}` — read-only cross-widget display,
         // no local signal lookup at all (unlike every other binding here) —
@@ -1017,6 +1062,7 @@ fn lower_expr_container(expr: &Expr, cx: &mut Cx<'_>, row_var: Option<&str>) -> 
                     "sharedValue() requires a string key and an integer initial value, e.g. sharedValue(\"cartCount\", 0)",
                 ));
             };
+            cx.node(*call_span);
             Ok(JsxNode::SharedValueBinding {
                 key: key.value.to_string_lossy().into_owned(),
                 initial: *value as i32,
@@ -1093,6 +1139,7 @@ fn lower_expr_container(expr: &Expr, cx: &mut Cx<'_>, row_var: Option<&str>) -> 
             let Expr::JSXElement(then_el) = unwrap_paren(right) else {
                 return Err(unsupported(right.span(), "conditional's right side must be a single JSX element"));
             };
+            cx.node(cond_call_span);
             let then_branch = lower_element(then_el, cx, row_var)?;
             // 7a C2: 옛 `unreachable!()`. `<Widget client:load/>`나 `<input>`을
             // 오른쪽에 쓰면 사용자가 실제로 도달하므로 정식 진단으로 바꿨다.
@@ -1149,6 +1196,7 @@ fn lower_expr_container(expr: &Expr, cx: &mut Cx<'_>, row_var: Option<&str>) -> 
             };
             let name = sym.to_string();
             if cx.find_signal(&name).is_some() {
+                cx.node(*call_span);
                 cx.binding(&name, BindingKind::Text, row_var, *call_span);
                 Ok(JsxNode::TextBinding { signal: name })
             } else {
@@ -1201,6 +1249,7 @@ fn lower_expr_container(expr: &Expr, cx: &mut Cx<'_>, row_var: Option<&str>) -> 
             let Expr::Call(CallExpr {
                 callee: Callee::Expr(inner_callee),
                 args: inner_args,
+                span: list_read_span,
                 ..
             }) = obj
             else {
@@ -1254,6 +1303,7 @@ fn lower_expr_container(expr: &Expr, cx: &mut Cx<'_>, row_var: Option<&str>) -> 
             let Expr::JSXElement(row_el) = unwrap_paren(row_expr) else {
                 return Err(unsupported(row_expr.span(), "`.map(...)` row template must be a JSX element"));
             };
+            cx.node(*list_read_span);
             let row = lower_element(row_el, cx, Some(&row_var_name))?;
             cx.binding(&signal_name, BindingKind::List, row_var, *map_call_span);
 

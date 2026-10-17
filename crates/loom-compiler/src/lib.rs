@@ -1,4 +1,5 @@
 pub mod build_support;
+mod check;
 mod codegen;
 pub mod diag;
 mod ir;
@@ -44,14 +45,31 @@ pub fn parse_tsx(file_name: &str, source: &str) -> Result<(Lrc<SourceMap>, Modul
     }
 }
 
+fn single(cm: &Lrc<SourceMap>, d: Diagnostic) -> Diagnostics {
+    let mut ds = Diagnostics::new(cm.clone());
+    ds.push(d);
+    ds
+}
+
 /// lower 단계(7a C2부터 `Result`)를 공개 API의 `Diagnostics`로 감싼다.
-/// `SpanTable`은 그래프 검사가 쓰고, 여기서는 IR만 넘긴다.
-fn lower_graph(cm: &Lrc<SourceMap>, module: &Module) -> Result<ir::ComponentGraph, Diagnostics> {
-    lower::lower_module(module).map(|(graph, _spans)| graph).map_err(|d| {
-        let mut ds = Diagnostics::new(cm.clone());
-        ds.push(d);
-        ds
-    })
+/// `SpanTable`은 7a C3부터 `check`가 진단 위치를 찾는 데 쓴다.
+fn lower_graph(
+    cm: &Lrc<SourceMap>,
+    module: &Module,
+) -> Result<(ir::ComponentGraph, lower::SpanTable), Diagnostics> {
+    lower::lower_module(module).map_err(|d| single(cm, d))
+}
+
+/// 7a C3: codegen이 패닉으로 거부하던 사용자 도달 입력을 codegen **앞에서**
+/// 진단으로 돌려준다(`check.rs`). codegen 자체는 바꾸지 않았으므로, 이 검사를
+/// 통과한 입력의 산출물 바이트는 7a 이전과 같다.
+fn check_graph(
+    cm: &Lrc<SourceMap>,
+    graph: &ir::ComponentGraph,
+    spans: &lower::SpanTable,
+    target: check::Target<'_>,
+) -> Result<(), Diagnostics> {
+    check::check(graph, spans, target).map_err(|d| single(cm, d))
 }
 
 /// docs/02's whole compile pipeline in one call: real SWC parse → IR lower
@@ -70,7 +88,8 @@ fn lower_graph(cm: &Lrc<SourceMap>, module: &Module) -> Result<ir::ComponentGrap
 /// `Compiled::rust`는 이전 `String` 반환값과 바이트 단위로 같다.
 pub fn compile_tsx_to_rust(file_name: &str, source: &str) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let graph = lower_graph(&cm, &module)?;
+    let (graph, spans) = lower_graph(&cm, &module)?;
+    check_graph(&cm, &graph, &spans, check::Target::RootOnly)?;
     let rust = codegen::generate(graph.root_component());
     Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
@@ -92,7 +111,8 @@ pub fn compile_tsx_to_rust_with_candidate(
     candidate: ListCandidate,
 ) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let graph = lower_graph(&cm, &module)?;
+    let (graph, spans) = lower_graph(&cm, &module)?;
+    check_graph(&cm, &graph, &spans, check::Target::RootOnly)?;
     let rust = codegen::generate_with_candidate(graph.root_component(), candidate);
     Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
@@ -107,7 +127,8 @@ pub fn compile_tsx_to_rust_graph(
     mode: GraphMode,
 ) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let graph = lower_graph(&cm, &module)?;
+    let (graph, spans) = lower_graph(&cm, &module)?;
+    check_graph(&cm, &graph, &spans, check::Target::Graph(&mode))?;
     let rust = codegen::generate_graph(&graph, mode);
     Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
@@ -127,7 +148,8 @@ pub fn compile_tsx_to_single_island_rust(
     island_component_name: &str,
 ) -> Result<Compiled, Diagnostics> {
     let (cm, module) = parse_tsx(file_name, source)?;
-    let graph = lower_graph(&cm, &module)?;
+    let (graph, spans) = lower_graph(&cm, &module)?;
+    check_graph(&cm, &graph, &spans, check::Target::SingleIsland(island_component_name))?;
     let rust = codegen::generate_single_island_client(&graph, island_component_name);
     Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
@@ -148,6 +170,10 @@ mod tests {
     // 문제 구문을 정확히 가리키는지)을 함께 단언한다. codegen이 거부하는
     // `should_panic` 3개(mixes a dynamic binding / may not carry its own /
     // globally unique)는 C3(check.rs 사전 검사)에서 다룬다.
+    //
+    // 7a C3(2026-10-17): 그 3개도 `assert_check_diag`로 바꿨다 — 공개 API가
+    // codegen 패닉 대신 check.rs의 진단을 돌려준다. codegen 패닉이 실제로
+    // 백스톱으로 남아 있는지는 `check_backstop` 모듈이 따로 단언한다.
     const TEST_FILE: &str = "test.tsx";
 
     /// parse + lower만 돌려 lower 진단을 받는다(성공하면 테스트 실패).
@@ -175,6 +201,35 @@ mod tests {
         assert!(r.contains(&format!("--> {TEST_FILE}:{line}:{col}")), "{r}");
         d
     }
+    /// `assert_lower_diag`의 일반판: 이미 받은 진단 묶음에 같은 단언을 한다.
+    /// `token`이 `None`이면 소스 밖 진단(span 없음)이다.
+    fn assert_diag(d: Diagnostics, code: &str, needle: &str, token: Option<&str>) -> Diagnostics {
+        assert_eq!(d.items().len(), 1, "{d}");
+        let item = &d.items()[0];
+        assert_eq!(item.code, code, "{d}");
+        assert_eq!(item.severity, Severity::Error, "{d}");
+        assert!(item.message.contains(needle), "message {:?} lacks {needle:?}", item.message);
+        let r = d.render();
+        assert!(r.contains(&format!("error[{code}]: ")), "{r}");
+        match token {
+            Some(token) => {
+                assert_eq!(d.source_text(item.span).as_deref(), Some(token), "{d}");
+                let (line, col) = d.line_col(item.span);
+                assert!(r.contains(&format!("--> {TEST_FILE}:{line}:{col}")), "{r}");
+            }
+            None => assert!(item.span.is_dummy(), "{d}"),
+        }
+        d
+    }
+
+    /// 공개 API 결과가 check.rs 진단 1건인지 단언한다(패닉이면 테스트 실패).
+    fn assert_check_diag(result: Result<Compiled, Diagnostics>, needle: &str, token: Option<&str>) -> Diagnostics {
+        match result {
+            Ok(_) => panic!("expected a check diagnostic, but compilation succeeded"),
+            Err(d) => assert_diag(d, lower::L00, needle, token),
+        }
+    }
+
     fn parse_tsx(source: &str) -> Module {
         super::parse_tsx(TEST_FILE, source).unwrap().1
     }
@@ -400,7 +455,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "mixes a dynamic binding")]
     fn rejects_mixed_static_and_dynamic_children() {
         let source = r#"
             export function App() {
@@ -408,9 +462,10 @@ mod tests {
               return <span>count: {count()}</span>;
             }
         "#;
-        let module = parse_tsx(source);
-        let graph = lower::lower_module(&module).unwrap().0;
-        codegen::generate(graph.root_component());
+        let d = assert_check_diag(super::compile_tsx_to_rust(TEST_FILE, source), "mixes a dynamic binding", Some("span"));
+        // 보조 label이 동적 자식을 가리킨다.
+        assert_eq!(d.items()[0].labels.len(), 1);
+        assert_eq!(d.source_text(d.items()[0].labels[0].0).as_deref(), Some("count()"));
     }
 
     /// row 템플릿의 사이트별 monomorphize (2026-08-07). 동작 확인은
@@ -706,7 +761,6 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "may not carry its own")]
         fn rejects_an_onclick_on_the_conditionals_own_wrapper() {
             let source = r#"
                 export function App() {
@@ -719,9 +773,11 @@ mod tests {
                   );
                 }
             "#;
-            let module = parse_tsx(source);
-            let graph = lower::lower_module(&module).unwrap().0;
-            codegen::generate(graph.root_component());
+            assert_check_diag(
+                super::super::compile_tsx_to_rust(TEST_FILE, source),
+                "may not carry its own",
+                Some("onClick={() => count.increment()}"),
+            );
         }
     }
 
@@ -1053,7 +1109,6 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "requires every signal name to be globally unique")]
         fn graph_mode_flatten_rejects_colliding_signal_names_across_components() {
             let source = r#"
                 function Widget() {
@@ -1070,7 +1125,15 @@ mod tests {
                   );
                 }
             "#;
-            compile_tsx_to_rust_graph(source, GraphMode::Flatten);
+            let d = assert_check_diag(
+                super::super::compile_tsx_to_rust_graph(TEST_FILE, source, GraphMode::Flatten),
+                "requires every signal name to be globally unique",
+                Some("Widget"),
+            );
+            // label이 충돌한 둘째 선언(Widget 안의 `count`)을 가리킨다.
+            let (label_span, _) = &d.items()[0].labels[0];
+            assert_eq!(d.source_text(*label_span).as_deref(), Some("count"));
+            assert_eq!(d.line_col(*label_span).0, 3);
         }
 
         #[test]
@@ -1504,6 +1567,513 @@ mod tests {
                     ("outer", BindingKind::List, false),
                 ]
             );
+        }
+    }
+
+    /// Phase 7a C3(2026-10-17) — codegen 백스톱 테스트(design-7a §3.3).
+    ///
+    /// codegen의 **사용자 도달** 패닉마다 한 행이다. 각 행은 세 가지를 단언한다.
+    /// 1. **존재 단언**: check를 건너뛰고 codegen을 직접 부르면 그 패닉이 실제로
+    ///    난다(입력이 정말 그 거부에 도달한다 — 아니면 아래 단언은 공허하다).
+    /// 2. 공개 API는 **패닉 없이** check.rs의 진단 1건을 돌려주고, 그 진단이 문제
+    ///    구문을 가리킨다(강조 토큰 + 렌더된 `파일:줄:열`).
+    /// 3. 최소 차이 양성 짝은 공개 API로 끝까지 컴파일된다(check가 codegen보다
+    ///    넓게 거부하지 않는다).
+    ///
+    /// codegen에 사용자 도달 거부가 새로 생기면 check.rs와 여기에 행을 더한다.
+    /// 의도적으로 뺀 것: 1271(R07U, C7), lower가 이미 막는 것(2017·2820·3000·
+    /// 3059·3295), 앞선 검사에 가려지는 것(2172 ← 2023, 2481 ← 2290).
+    mod check_backstop {
+        use super::*;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        #[derive(Clone, Copy, Debug)]
+        enum Api {
+            Root,
+            Flatten,
+            Islands,
+            Single(&'static str),
+        }
+
+        fn run_api(api: Api, src: &str) -> Result<Compiled, Diagnostics> {
+            match api {
+                Api::Root => super::super::compile_tsx_to_rust(TEST_FILE, src),
+                Api::Flatten => super::super::compile_tsx_to_rust_graph(TEST_FILE, src, GraphMode::Flatten),
+                Api::Islands => super::super::compile_tsx_to_rust_graph(TEST_FILE, src, GraphMode::Islands),
+                Api::Single(name) => super::super::compile_tsx_to_single_island_rust(TEST_FILE, src, name),
+            }
+        }
+
+        /// check를 건너뛰고 lower → codegen을 직접 부른다. 패닉 메시지를 돌려준다.
+        fn codegen_panic(api: Api, src: &str) -> Option<String> {
+            let (_cm, module) = super::super::parse_tsx(TEST_FILE, src).unwrap();
+            let (graph, _spans) = lower::lower_module(&module).expect("backstop inputs must pass lower");
+            let r = catch_unwind(AssertUnwindSafe(|| match api {
+                Api::Root => drop(codegen::generate(graph.root_component())),
+                Api::Flatten => drop(codegen::generate_graph(&graph, GraphMode::Flatten)),
+                Api::Islands => drop(codegen::generate_graph(&graph, GraphMode::Islands)),
+                Api::Single(name) => drop(codegen::generate_single_island_client(&graph, name)),
+            }));
+            r.err().map(|e| {
+                e.downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_default()
+            })
+        }
+
+        fn backstop(api: Api, src: &str, codegen_needle: &str, needle: &str, token: Option<&str>) -> Diagnostics {
+            let msg = codegen_panic(api, src)
+                .unwrap_or_else(|| panic!("존재 단언 실패: codegen이 이 입력을 받아들였다({api:?}) — 행이 공허하다"));
+            assert!(msg.contains(codegen_needle), "codegen panicked elsewhere: {msg}");
+            let result = catch_unwind(AssertUnwindSafe(|| run_api(api, src)))
+                .unwrap_or_else(|_| panic!("공개 API가 패닉했다 — check.rs가 이 codegen 거부를 복제하지 않았다({codegen_needle})"));
+            assert_check_diag(result, needle, token)
+        }
+
+        fn accepted(api: Api, src: &str) {
+            if let Err(d) = run_api(api, src) {
+                panic!("양성 짝이 거부됐다({api:?}):\n{d}");
+            }
+        }
+
+        fn sub(template: &str, key: &str, value: &str) -> String {
+            assert_eq!(template.matches(key).count(), 1, "{key}");
+            template.replace(key, value)
+        }
+
+        // ---- 모드 거부 ----
+
+        const FLAT: &str = r#"
+            function Widget() {
+              const @W@ = signal(0);
+              return <button onClick={() => @W@.increment()}>{@W@()}</button>;
+            }
+            export function App() {
+              const count = signal(0);
+              return (
+                <div>
+                  <span>{count()}</span>
+                  <Widget client:load />
+                </div>
+              );
+            }
+        "#;
+
+        #[test]
+        fn flatten_signal_name_collision_552() {
+            let neg = FLAT.replace("@W@", "count");
+            backstop(Api::Flatten, &neg, "globally unique", "globally unique", Some("Widget"));
+            accepted(Api::Flatten, &FLAT.replace("@W@", "wcount"));
+            // 같은 입력이 Islands에서는 정상이다(모드 거부).
+            accepted(Api::Islands, &neg);
+        }
+
+        #[test]
+        fn flatten_double_reference_to_a_signal_bearing_component_552() {
+            // 같은 컴포넌트를 두 번 펼치면 자기 signal과 충돌한다(design-7a R16:
+            // signal 없는 컴포넌트는 Flatten에서 두 번 참조해도 무해).
+            let neg = sub(&FLAT.replace("@W@", "w"), "<Widget client:load />", "<Widget client:load /><Widget client:visible />");
+            let d = backstop(Api::Flatten, &neg, "globally unique", "second declaration of `w`", Some("Widget"));
+            // 주 span은 **둘째** 참조다.
+            assert!(d.render().contains(":11:"), "{d}");
+        }
+
+        #[test]
+        fn islands_unreferenced_helper_625() {
+            let src = r#"
+                function Unused() {
+                  const u = signal(0);
+                  return <button onClick={() => u.increment()}>{u()}</button>;
+                }
+                export function App() {
+                  const c = signal(0);
+                  return <div><p>{c()}</p>@REF@</div>;
+                }
+            "#;
+            let neg = sub(src, "@REF@", "");
+            backstop(Api::Islands, &neg, "never referenced", "never referenced", Some("Unused"));
+            accepted(Api::Islands, &sub(src, "@REF@", "<Unused client:load />"));
+            accepted(Api::Root, &neg); // 루트만 생성하는 경로는 헬퍼를 생성하지 않는다
+        }
+
+        #[test]
+        fn islands_input_binding_634() {
+            let src = r#"
+                function Form() {
+                  const t = signal("");
+                  return <div><input value={t()} onInput={(e) => t.set(e.target.value)} /></div>;
+                }
+                export function App() {
+                  return <div><Form client:load /></div>;
+                }
+            "#;
+            let d = backstop(Api::Islands, src, "<input> two-way binding", "<input> two-way binding", Some("input"));
+            assert_eq!(d.source_text(d.items()[0].labels[0].0).as_deref(), Some("Form"));
+            accepted(Api::Flatten, src);
+        }
+
+        const SINGLE: &str = r#"
+            function W() {
+              const n = signal(0);
+              return <button onClick={() => n.increment()}>{n()}</button>;
+            }
+            export function App() {
+              return <div><W client:load /></div>;
+            }
+        "#;
+
+        #[test]
+        fn single_island_unknown_target_848() {
+            backstop(Api::Single("Nope"), SINGLE, "no component named `Nope`", "no component named `Nope`", None);
+            accepted(Api::Single("W"), SINGLE);
+        }
+
+        #[test]
+        fn single_island_target_not_activated_851() {
+            backstop(Api::Single("App"), SINGLE, "is not Island-activated", "is not Island-activated", Some("App"));
+        }
+
+        #[test]
+        fn fully_static_island_1196() {
+            let src = r#"
+                function Badge() {
+                  return <span>static</span>;
+                }
+                export function App() {
+                  const c = signal(0);
+                  return <div><button onClick={() => c.increment()}>{c()}</button><Badge client:load /></div>;
+                }
+            "#;
+            backstop(Api::Islands, src, "has no dynamic content at all", "has no dynamic content at all", Some("Badge"));
+            backstop(Api::Single("Badge"), src, "has no dynamic content at all", "has no dynamic content at all", Some("Badge"));
+            accepted(Api::Flatten, src);
+        }
+
+        // ---- 노드 모양 거부: eager 경로와 조건부 ----
+
+        const NODE: &str = r#"
+            function W() {
+              const w = signal(0);
+              return <b>{w()}</b>;
+            }
+            export function App() {
+              const o = signal(false);
+              const n = signal(0);
+              const xs = signal(["a"]);
+              return (
+                <div>
+                  <button onClick={() => o.toggle()}>t</button>
+                  <p>{n()}</p>
+                  <ul>{xs().map((x) => <li>{x}</li>)}</ul>
+                  <aside>{o() && <i>o</i>}</aside>
+                  <section>@C@</section>
+                </div>
+              );
+            }
+        "#;
+
+        fn node_case(api: Api, neg: &str, pos: &str, codegen_needle: &str, needle: &str, token: &str) -> Diagnostics {
+            let d = backstop(api, &sub(NODE, "@C@", neg), codegen_needle, needle, Some(token));
+            accepted(api, &sub(NODE, "@C@", pos));
+            d
+        }
+
+        #[test]
+        fn eager_text_binding_requires_i32_2798() {
+            node_case(Api::Root, "<p>{xs()}</p>", "<p>{n()}</p>", "requires an I32 signal", "requires an I32 signal", "xs()");
+        }
+
+        #[test]
+        fn eager_list_row_must_be_an_element_2811() {
+            node_case(
+                Api::Root,
+                "<ol>{xs().map((x) => <W client:load />)}</ol>",
+                "<ol>{xs().map((x) => <li>{x}</li>)}</ol>",
+                "list row template must be a single element",
+                "list row template must be a single element",
+                "W",
+            );
+        }
+
+        #[test]
+        fn eager_mixed_children_3336() {
+            node_case(Api::Root, "<p>count: {n()}</p>", "<p>{n()}</p>", "mixes a dynamic binding", "mixes a dynamic binding", "p");
+        }
+
+        #[test]
+        fn conditional_wrapper_onclick_3040() {
+            let d = node_case(
+                Api::Root,
+                "{o() && <button onClick={() => n.increment()}>go</button>}",
+                "{o() && <button>go</button>}",
+                "may not carry its own",
+                "may not carry its own",
+                "onClick={() => n.increment()}",
+            );
+            assert_eq!(d.source_text(d.items()[0].labels[0].0).as_deref(), Some("o()"));
+        }
+
+        #[test]
+        fn conditional_text_binding_requires_i32_2003() {
+            node_case(
+                Api::Root,
+                "{o() && <div><p>{xs()}</p></div>}",
+                "{o() && <div><p>{n()}</p></div>}",
+                "requires an I32 signal",
+                "requires an I32 signal",
+                "xs()",
+            );
+        }
+
+        #[test]
+        fn conditional_list_row_must_be_an_element_2009() {
+            node_case(
+                Api::Root,
+                "{o() && <div><ul>{xs().map((x) => <W client:load />)}</ul></div>}",
+                "{o() && <div><ul>{xs().map((x) => <li>{x}</li>)}</ul></div>}",
+                "list row template must be a single element",
+                "list row template must be a single element",
+                "W",
+            );
+        }
+
+        #[test]
+        fn conditional_list_row_must_be_item_only_2012() {
+            node_case(
+                Api::Root,
+                "{o() && <div><ul>{xs().map((x) => <li>{x} !</li>)}</ul></div>}",
+                "{o() && <div><ul>{xs().map((x) => <li>{x}</li>)}</ul></div>}",
+                "only supports list rows shaped exactly",
+                "only supports list rows shaped exactly",
+                "li",
+            );
+        }
+
+        #[test]
+        fn conditional_inner_element_onclick_2023() {
+            node_case(
+                Api::Root,
+                "{o() && <div><button onClick={() => n.increment()}>+</button></div>}",
+                "{o() && <div><button>+</button></div>}",
+                "자기 `onClick`을 가질 수 없다",
+                "자기 `onClick`을 가질 수 없다",
+                "onClick={() => n.increment()}",
+            );
+        }
+
+        #[test]
+        fn conditional_unsupported_node_2031() {
+            node_case(
+                Api::Root,
+                r#"{o() && <div>{sharedValue("k", 0)}</div>}"#,
+                "{o() && <div>k</div>}",
+                "안에서 아직 지원하지 않는 노드다",
+                "안에서 아직 지원하지 않는 노드다",
+                r#"sharedValue("k", 0)"#,
+            );
+            // lower는 then 가지의 **직계** 조건부만 막는다 — 한 겹 아래는 여기서.
+            node_case(
+                Api::Root,
+                "{o() && <div><p>{o() && <b>y</b>}</p></div>}",
+                "{o() && <div><p><b>y</b></p></div>}",
+                "안에서 아직 지원하지 않는 노드다",
+                "안에서 아직 지원하지 않는 노드다",
+                "o()",
+            );
+        }
+
+        #[test]
+        fn conditional_component_ref_is_mode_dependent_2031() {
+            // Islands에서는 조건부 안의 참조가 미지원 노드지만, Flatten에서는 참조가
+            // 펼쳐져(`<b>{w()}</b>`) 평범한 지연 내용이 된다 — check도 펼친 뒤 판정한다.
+            let neg = sub(NODE, "@C@", "{o() && <div><W client:load /></div>}");
+            backstop(Api::Islands, &neg, "안에서 아직 지원하지 않는 노드다", "안에서 아직 지원하지 않는 노드다", Some("W"));
+            accepted(Api::Flatten, &neg);
+        }
+
+        #[test]
+        fn conditional_binding_with_siblings_2222() {
+            node_case(
+                Api::Root,
+                "{o() && <div><p>{n()} x</p></div>}",
+                "{o() && <div><p>{n()}</p></div>}",
+                "안에서 아직 지원하지 않는 노드다",
+                "유일한 자식이어야 한다",
+                "n()",
+            );
+            node_case(
+                Api::Root,
+                "{o() && <div>{n()} x</div>}",
+                "{o() && <div>{n()}</div>}",
+                "안에서 아직 지원하지 않는 노드다",
+                "유일한 자식이어야 한다",
+                "n()",
+            );
+        }
+
+        // ---- row 템플릿 ----
+
+        const ROW: &str = r#"
+            function W() {
+              const w = signal(0);
+              return <b>{w()}</b>;
+            }
+            export function App() {
+              const outer = signal(["a", "bb"]);
+              const open = signal(false);
+              const shut = signal(false);
+              const inner = signal(["p", "q"]);
+              const inner2 = signal(["r"]);
+              const n = signal(0);
+              return (
+                <div>
+                  <button onClick={() => open.toggle()}>t</button>
+                  <p>{n()}</p>
+                  <section>{shut() && <i>s</i>}</section>
+                  <ol>{inner2().map((y) => <li>{y}</li>)}</ol>
+                  <ul>{outer().map((it) => <li>@HEAD@@ROW@</li>)}</ul>
+                </div>
+              );
+            }
+        "#;
+
+        const ROW_OK: &str = r#"{open() && <div class="panel"><ul>{inner().map((x) => <li>{x}</li>)}</ul></div>}"#;
+
+        fn row_src(head: &str, row: &str) -> String {
+            sub(&sub(ROW, "@HEAD@", head), "@ROW@", row)
+        }
+
+        fn row_case(neg_row: &str, pos_row: &str, codegen_needle: &str, needle: &str, token: &str) -> Diagnostics {
+            let d = backstop(Api::Root, &row_src("{it}", neg_row), codegen_needle, needle, Some(token));
+            accepted(Api::Root, &row_src("{it}", pos_row));
+            d
+        }
+
+        #[test]
+        fn row_template_baseline_compiles() {
+            accepted(Api::Root, &row_src("{it}", ROW_OK));
+        }
+
+        #[test]
+        fn row_must_start_with_item_2263() {
+            backstop(Api::Root, &row_src("x", ROW_OK), "`{item}`으로 시작해야 한다", "`{item}`으로 시작해야 한다", Some("li"));
+        }
+
+        #[test]
+        fn row_second_conditional_2273() {
+            let d = row_case(
+                &format!("{ROW_OK}{{shut() && <div><b>x</b></div>}}"),
+                ROW_OK,
+                "조건부는 아직 하나만 지원한다",
+                "조건부는 아직 하나만 지원한다",
+                "shut()",
+            );
+            assert_eq!(d.source_text(d.items()[0].labels[0].0).as_deref(), Some("open()"));
+        }
+
+        #[test]
+        fn row_conditional_wrapper_is_a_binding_2281() {
+            row_case(
+                "{open() && <ul>{inner().map((x) => <li>{x}</li>)}</ul>}",
+                "{open() && <div><ul>{inner().map((x) => <li>{x}</li>)}</ul></div>}",
+                "binding 노드로 바로 쓸 수는 없다",
+                "binding 노드로 바로 쓸 수는 없다",
+                "ul",
+            );
+        }
+
+        #[test]
+        fn row_unsupported_child_2290() {
+            row_case(
+                &format!("{ROW_OK}<b>{{it}}</b>"),
+                &format!("{ROW_OK}<b>x</b>"),
+                "row 템플릿에서 아직 지원하지 않는 노드다",
+                "row 템플릿에서 아직 지원하지 않는 노드다",
+                "b",
+            );
+        }
+
+        #[test]
+        fn row_nested_list_row_must_be_an_element_2307() {
+            row_case(
+                "{open() && <div><ul>{inner().map((x) => <W client:load />)}</ul></div>}",
+                ROW_OK,
+                "list row template must be a single element",
+                "list row template must be a single element",
+                "W",
+            );
+        }
+
+        #[test]
+        fn row_nested_list_row_must_be_item_only_2310() {
+            row_case(
+                "{open() && <div><ul>{inner().map((x) => <li>{x} !</li>)}</ul></div>}",
+                ROW_OK,
+                "`<tag>{item}</tag>` 형태여야 한다",
+                "`<tag>{item}</tag>` 형태여야 한다",
+                "li",
+            );
+        }
+
+        #[test]
+        fn row_second_nested_list_2313() {
+            let d = row_case(
+                "{open() && <div><ul>{inner().map((x) => <li>{x}</li>)}</ul><ol>{inner2().map((y) => <li>{y}</li>)}</ol></div>}",
+                ROW_OK,
+                "리스트는 아직 하나만 지원한다",
+                "리스트는 아직 하나만 지원한다",
+                "inner2()",
+            );
+            assert_eq!(d.source_text(d.items()[0].labels[0].0).as_deref(), Some("inner()"));
+        }
+
+        #[test]
+        fn row_conditional_element_onclick_2319() {
+            row_case(
+                "{open() && <div><button onClick={() => open.toggle()}>x</button><ul>{inner().map((x) => <li>{x}</li>)}</ul></div>}",
+                "{open() && <div><button>x</button><ul>{inner().map((x) => <li>{x}</li>)}</ul></div>}",
+                "자기 `onClick`을 가질 수 없다",
+                "자기 `onClick`을 가질 수 없다",
+                "onClick={() => open.toggle()}",
+            );
+        }
+
+        #[test]
+        fn row_conditional_unsupported_node_2325() {
+            row_case(
+                "{open() && <div><p>{it}</p><ul>{inner().map((x) => <li>{x}</li>)}</ul></div>}",
+                "{open() && <div><p>x</p><ul>{inner().map((x) => <li>{x}</li>)}</ul></div>}",
+                "row 안 조건부에서 아직 지원하지 않는 노드다",
+                "row 안 조건부에서 아직 지원하지 않는 노드다",
+                "it",
+            );
+        }
+
+        #[test]
+        fn row_conditional_list_with_siblings_2560() {
+            row_case(
+                "{open() && <div><ul>{inner().map((x) => <li>{x}</li>)} tail</ul></div>}",
+                ROW_OK,
+                "unexpected conditional child",
+                "유일한 자식이어야 한다",
+                "inner()",
+            );
+        }
+
+        #[test]
+        fn node_span_table_is_aligned_with_the_ir_for_every_backstop_source() {
+            // check.rs의 노드 → span 대응은 lower의 pre-order 기록과 IR 순회가
+            // 같은 순서라는 데 기대고, 어긋나면 내부 오류로 멈춘다. 위 원본들이
+            // 전부 그 단언을 통과한다는 것 자체가 이 테스트다(여러 return(R22)도 포함).
+            let two_returns = r#"
+                export function App() {
+                  const n = signal(0);
+                  return <p>{n()}</p>;
+                  return <div><span>{n()}</span></div>;
+                }
+            "#;
+            accepted(Api::Root, two_returns);
         }
     }
 }
