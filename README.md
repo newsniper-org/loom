@@ -189,7 +189,8 @@ loom-research/
 │   ├── 05-backend-agnostic-integration.md
 │   ├── 06-lifecycle-actor-layer.md
 │   ├── 07-naming-and-terminology.md
-│   └── 08-prior-art-comparison.md
+│   ├── 08-prior-art-comparison.md
+│   └── 09-authoring-surface-inventory.md ← 컴파일러 저작 표면 격차·조용한 오컴파일 47건(2026-10-17 감사)
 ├── research-questions/            ← RQ1–RQ6, RQ1 사전 등록 프로토콜, RQ6 검증 계획
 │   ├── analysis/                   판정 스크립트(rq1-verdicts.py 등) + fixtures/(합성 픽스처·selfcheck)
 │   └── data/                       실측 원시 데이터(append-only), verdicts/(판정문), raw/(GC 로그·환경).
@@ -288,7 +289,7 @@ loom-research/
   별개로, 트랙 N 불변식 4의 진짜 형태를 재려면 컴파일러가 F 계열을 낼 수 있어야 한다.
 - Resumability 페이로드의 스키마·버저닝(RQ2. 잠정 포맷 `chunk|symbol|key:value`)
 - Island 세분화가 실제로 이득인 경우의 프로파일링(docs/04)
-- 컴파일러 표면: 삼항 조건부, 조건부 안의 조건부, props 실제 resolve. (PatchTable(opcode) 전환은 2026-10-17 병익님
+- 컴파일러 표면: **연구용 좁은 부분집합**이다. 전수 감사(docs/09, 2026-10-17)는 지원·거부·부재와 함께 **패닉 없이 의미가 바뀌는 조용한 오컴파일 47건**(S1: props/children 증발, 같은 signal 두 사이트, row onClick 소실, JSX 공백 소실, Flatten `<input>` 소거 등)을 찾았다. 진단 체계 없음(전부 panic). 수리 순서(Phase 7 후보)는 병익님 결정 대기. 그 밖에 삼항 조건부, 조건부 안의 조건부, props 실제 resolve. (PatchTable(opcode) 전환은 2026-10-17 병익님
   결정으로 종결 — 제네릭 Rust System + 닫힌 열거형이 정본, opcode는 런타임 binding 종류가 필요해질 때의 재개
   조건부 대안. docs/02 "PatchTable 결정 (2026-10-17)")
 - FIC `assets` 매니페스트(현재 항상 빈 배열), `request_context`, sidecar 콜드 스타트
