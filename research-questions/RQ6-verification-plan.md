@@ -1277,6 +1277,16 @@ N에 비례해 실제로 증가 — "N개의 같은-타입 인스턴스가 하�
    이미 컴파일된 청크를 가리키는 HTML 반복일 뿐이라는 판단. **병익님께 아직 명시적
    으로 확인받지 않은 판단**. 원본 앱 규모 축(§4.4)은 실제 컴파일이 필요하므로 이
    대체가 적용되지 않고 별도 Rust 툴로 처리함.
+   **2026-10-17 병익님 결정 — 생성기 대체 건 종결**: 두 생성기를 **공존**시키고 어느 쪽을 쓸지는 설정으로
+   고른다. Rust 판 `crates/loom-rq6-fixture-gen`(bin `gen_nscaling`)을 새로 만들었고, Node 판
+   (`bench/e2e/fixtures/gen-nscaling-page.mjs`)은 그대로 둔다. 선택은 `bench/e2e/fixtures/gen-nscaling.sh`의
+   `LOOM_NSCALING_GEN=node|rust`(기본 node — Task #27이 실제로 쓴 쪽)다. **마커 어긋남 가드**
+   (`cargo test -p loom-rq6-fixture-gen`, 테스트 3개)가 다음을 지킨다: (1) Rust 출력 = 커밋된 n{1,10,50}.html
+   (바이트 단위), (2) Node 출력 = Rust 출력(바이트 단위 — Node가 없으면 실패하고 건너뛰지 않는다), (3) 블록의
+   Island 마커(activation·chunk·ctor·lref·data-loom-id)가 컴파일러 산출물(`loom-widget-embed`의
+   GraphMode::Islands SSR)의 QuantityPicker 마커와 일치(존재 단언 먼저). 음성 대조: 생성기의 lref를
+   `Action1`로 바꾸면 세 테스트가 모두 실패했다. 두 생성기로 각각 재생성해도 커밋된 픽스처에 diff가 없었다.
+   이 결정은 이 픽스처로 얻은 M4·M6 결합 셀 데이터(위)를 바꾸지 않는다 — 산출물이 바이트 단위로 같기 때문이다.
 3. M1(H-Qwik 팔 실제 빌드+번들 비교)/M2/M3(TTI/wake-up payload)/원본 앱 규모 축/
    M10(기능 매트릭스) — 전부 Task #27의 나머지 몫, 이번 라운드 미착수.
 

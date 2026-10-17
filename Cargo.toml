@@ -21,6 +21,7 @@ members = [
     "crates/loom-fic",
     "crates/loom-nested-fixture",
     "crates/loom-track-n",
+    "crates/loom-rq6-fixture-gen",
 ]
 
 [workspace.package]

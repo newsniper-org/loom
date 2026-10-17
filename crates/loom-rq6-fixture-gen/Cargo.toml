@@ -1,0 +1,14 @@
+[package]
+name = "loom-rq6-fixture-gen"
+edition.workspace = true
+version.workspace = true
+# RQ6 §4.4 N-스케일링 픽스처(demo/islands/nscaling/n{1,10,50}.html)의 Rust 생성기.
+# Node 생성기(bench/e2e/fixtures/gen-nscaling-page.mjs)와 **바이트 단위로 같은 결과**를 내며
+# 둘이 공존한다 — 어느 쪽을 쓸지는 bench/e2e/fixtures/gen-nscaling.sh의 설정으로 고른다
+# (2026-10-17 병익님 결정: 두 생성기 공존 + 설정 선택 + 마커 어긋남 가드 필수).
+
+[dependencies]
+
+[dev-dependencies]
+# 마커 어긋남 가드: 컴파일러가 실제로 내는 QuantityPicker Island 마커와 대조한다(네이티브 SSR).
+loom-widget-embed = { path = "../loom-widget-embed" }

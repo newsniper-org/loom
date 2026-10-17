@@ -18,7 +18,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const outDir = join(__dirname, "..", "..", "..", "demo", "islands", "nscaling");
+// 2026-10-17: `LOOM_NSCALING_OUT`로 출력 디렉터리를 바꿀 수 있다 — Rust 생성기(crates/loom-rq6-fixture-gen)와의
+// 바이트 동일성 가드가 임시 디렉터리에 쓰게 하려는 것. 기본값(커밋 위치)과 출력 내용은 그대로다.
+// 두 생성기 중 무엇을 쓸지는 gen-nscaling.sh의 설정으로 고른다(병익님 결정).
+const outDir = process.env.LOOM_NSCALING_OUT ?? join(__dirname, "..", "..", "..", "demo", "islands", "nscaling");
 mkdirSync(outDir, { recursive: true });
 
 function quantityPickerBlock(i) {

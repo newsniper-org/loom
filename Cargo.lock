@@ -1049,6 +1049,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-rq6-fixture-gen"
+version = "0.0.1-phase1"
+dependencies = [
+ "loom-widget-embed",
+]
+
+[[package]]
 name = "loom-runtime"
 version = "0.0.1-phase1"
 dependencies = [

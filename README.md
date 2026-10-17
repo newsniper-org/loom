@@ -179,7 +179,7 @@ python3 research-questions/analysis/fixtures/selfcheck.py  → 판정기 합성 
 loom-research/
 ├── README.md                     ← 지금 읽는 파일
 ├── CLAUDE.md                     ← Claude Code 작업 지침 (반드시 먼저 읽을 것)
-├── Cargo.toml                    ← workspace 정의 (크레이트 20개, edition 2024, bevy_ecs 0.19)
+├── Cargo.toml                    ← workspace 정의 (크레이트 21개, edition 2024, bevy_ecs 0.19)
 ├── docs/                         ← 아키텍처 설계 문서 (결정 + 근거, 날짜 붙은 정정은 append-only)
 │   ├── 01-architecture-overview.md
 │   ├── 02-compiler-design.md
@@ -242,6 +242,8 @@ loom-research/
     ├── loom-widget-embed-island-*/   (×4) 위젯별 실제 per-Island 코드 분할(RQ6 M1)
     ├── loom-largeapp-axis-flat/      RQ6 "원본 앱 규모" 축, H-Qwik 팔
     ├── loom-largeapp-axis-island-target/  같은 축, Island 팔
+    ├── loom-rq6-fixture-gen/         RQ6 N-스케일링 픽스처 Rust 생성기 — Node 판과 바이트 동일, 설정으로 선택
+    │                                 (bench/e2e/fixtures/gen-nscaling.sh), 마커 어긋남 가드 테스트
     │  ─ Phase 4
     └── loom-fic/                     Framework Integration Contract(render_html) + C ABI shim,
                                       sidecar·isr-bench bin, examples/(Python ctypes·wasmtime, Node)
