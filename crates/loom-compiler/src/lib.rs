@@ -3220,4 +3220,81 @@ mod tests {
             assert_eq!(render(), render());
         }
     }
+
+    // 7a C9(2026-10-17): R12 텍스트 — 조건부 then 자식이 텍스트 binding 하나뿐인
+    // 직계형의 resume 대상 수정(이번 묶음에서 codegen을 바꾸는 유일한 커밋).
+    mod c9_r12_direct_text {
+        use super::*;
+
+        const IMPORT: &str = "import { signal } from \"loom\";\n";
+
+        fn app(then: &str) -> String {
+            format!(
+                "{IMPORT}export function App() {{\n  const details = signal(true);\n  const count = signal(7);\n  return <div><button onClick={{() => details.toggle()}}>t</button><button onClick={{() => count.increment()}}>+</button>{{details() && {then}}}</div>;\n}}\n"
+            )
+        }
+        const DIRECT: &str = "<p>{count()}</p>";
+        const WRAPPED: &str = "<p><b>{count()}</b></p>";
+
+        /// resume의 count I32 블록 — 직계형에서 기대하는 **정확한** 방출.
+        const DIRECT_BLOCK: &str = "    let count_entity = {
+        let value: i32 = captures.iter().find(|(k, _)| *k == \"count\").and_then(|(_, v)| v.parse().ok()).unwrap_or(7_i32);
+        if details_shown {
+            app.world.spawn((::loom_runtime::Signal(value), ::loom_runtime::DomTarget(find_node(\"details\")))).id()
+        } else {
+            app.world.spawn((::loom_runtime::Signal(value),)).id()
+        }
+    };
+";
+
+        fn resume_of(rust: &str) -> &str {
+            let start = rust.find("pub fn resume(").expect("resume");
+            &rust[start..]
+        }
+
+        #[test]
+        fn direct_text_resumes_onto_the_wrapper_node() {
+            let ok = super::super::compile_tsx_to_rust(TEST_FILE, &app(DIRECT)).unwrap_or_else(|d| panic!("{d}"));
+            assert!(ok.warnings.is_empty(), "{}", ok.warnings);
+            let rust = ok.rust;
+            let resume = resume_of(&rust);
+            // count I32 블록 전체가 정확히 이 모양이다(1회).
+            assert_eq!(resume.matches(DIRECT_BLOCK).count(), 1, "{resume}");
+            // `find_node("details")` 출현 = Bool 패스 1 + count 사이트 1. Bool 패스
+            // 때문에 "있는가"만 보면 공허하므로 횟수로 단언한다.
+            assert_eq!(rust.matches("find_node(\"details\")").count(), 2, "{rust}");
+            assert_eq!(resume.matches("let details_node = find_node(\"details\");").count(), 1, "{resume}");
+            // 존재하지 않는 노드를 찾던 이전 방출이 없다.
+            assert!(!rust.contains("find_node(\"count\")"), "{rust}");
+            // setup 쪽은 그대로다: 같은 wrapper(anchor)에 DomTarget, CondBlock 크기 1.
+            assert!(rust.contains("::loom_runtime::CondBlock::with_size(1)"), "{rust}");
+            assert!(rust.contains("commands.entity(slot_0).insert(::loom_runtime::DomTarget(anchor.0));"), "{rust}");
+        }
+
+        #[test]
+        fn wrapped_text_still_resumes_onto_its_own_node() {
+            // 최소 차이 대조: 한 겹 더 감싸면 텍스트 binding은 자기 노드(`data-loom-id`
+            // = count)를 가지므로 `find_node("count")`가 맞고, 바뀌지 않아야 한다.
+            let rust = super::super::compile_tsx_to_rust(TEST_FILE, &app(WRAPPED)).unwrap_or_else(|d| panic!("{d}")).rust;
+            let resume = resume_of(&rust);
+            assert_eq!(resume.matches(DIRECT_BLOCK).count(), 0, "{resume}");
+            assert_eq!(resume.matches(&DIRECT_BLOCK.replace("find_node(\"details\")", "find_node(\"count\")")).count(), 1, "{resume}");
+            assert_eq!(rust.matches("find_node(\"details\")").count(), 1, "{rust}");
+        }
+
+        #[test]
+        fn every_public_api_emits_the_same_fix() {
+            let src = app(DIRECT);
+            let outs = [
+                super::super::compile_tsx_to_rust(TEST_FILE, &src).unwrap().rust,
+                super::super::compile_tsx_to_rust_with_candidate(TEST_FILE, &src, ListCandidate::K).unwrap().rust,
+                super::super::compile_tsx_to_rust_graph(TEST_FILE, &src, GraphMode::Flatten).unwrap().rust,
+            ];
+            assert_eq!(outs.len(), 3);
+            for rust in outs {
+                assert_eq!(resume_of(&rust).matches(DIRECT_BLOCK).count(), 1, "{rust}");
+                assert!(!rust.contains("find_node(\"count\")"), "{rust}");
+            }
+        }
+    }
 }

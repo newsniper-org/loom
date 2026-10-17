@@ -1502,11 +1502,17 @@ fn generate_resume(
                     // 조건부가 처음 열릴 때 `SpawnElement`가 노드를 만들며
                     // `DomTarget`을 붙인다.
                     Some(cond) => {
+                        // 직계 단일 텍스트이면 wrapper가 곧 binding 노드다
+                        // (`CondSite::direct_text`). Bool 패스가 adopt하는 것은
+                        // 그 안의 텍스트 노드 하나뿐이라 `CondBlock` 크기 1과
+                        // 맞고, 여기서는 wrapper 자체를 다시 찾아 붙인다.
+                        let direct_text = cond_site_fn_names.iter().any(|site| site.signal == cond && site.direct_text);
+                        let node_id = if direct_text { cond } else { s.name.as_str() };
                         writeln!(out, "        if {cond}_shown {{").unwrap();
                         writeln!(
                             out,
                             "            app.world.spawn((::loom_runtime::Signal(value), ::loom_runtime::DomTarget(find_node({:?})))).id()",
-                            s.name
+                            node_id
                         )
                         .unwrap();
                         writeln!(out, "        }} else {{").unwrap();
@@ -1968,6 +1974,13 @@ struct CondSite {
     marker: String,
     /// `CondNested`의 순서와 정확히 같다.
     nested: Vec<LazySlot>,
+    /// then 자식이 텍스트 binding 하나뿐인 직계형(`{c() && <p>{n()}</p>}`)인가.
+    /// 이때 wrapper가 곧 binding 노드라 텍스트 노드에 `data-loom-id`가 따로
+    /// 없다 — `generate_resume`은 그 signal의 노드를 `find_node({cond})`로
+    /// 찾아야 한다(setup이 `DomTarget(anchor.0)`을 붙이는 것과 같은 모양).
+    /// (7a C9, 2026-10-17 — docs/09 R12. 이전에는 `find_node({n})`를 방출해
+    /// SSR 시점에 열린 채 resume하면 존재하지 않는 노드를 찾았다.)
+    direct_text: bool,
 }
 
 /// 조건부 wrapper의 자식들을 pre-order로 훑어 `LazySlot`을 모은다.
@@ -3275,6 +3288,8 @@ fn lower_node(
                 fn_name: fn_name.clone(),
                 marker: marker_name.clone(),
                 nested: slots,
+                // 위 `match children.as_slice()`의 `[TextBinding]` arm과 같은 판정.
+                direct_text: matches!(children.as_slice(), [JsxNode::TextBinding { .. }]),
             });
 
             writeln!(out, "    app.add_systems({fn_name});").unwrap();
