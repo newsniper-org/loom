@@ -319,6 +319,9 @@ impl ComponentGraph {
     /// anywhere names this component (e.g. it's the graph's own root, or an
     /// unreferenced helper function — see `lower_module`'s doc comment for
     /// why unreferenced helpers are accepted rather than lint-rejected).
+    /// (2026-10-17 정정, 7a C7: 도달할 수 없는 헬퍼는 이제 lower가 `LOOM-R47`로
+    /// 거부한다 — 그래서 루트가 아닌 컴포넌트에 대해 `None`이 나오는 경로는
+    /// 공개 API에서는 없다.)
     /// Phase 3 증분 4 scope: a component definition is only ever referenced
     /// from at most one `ComponentRef` site, so the first match found is the
     /// only one that matters — this is not re-validated here (a stricter

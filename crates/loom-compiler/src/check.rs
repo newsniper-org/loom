@@ -18,11 +18,30 @@
 //! 더하면 이 모듈과 그 테스트에 행을 더해야 한다(docs/02 진단 절의 규칙).
 //!
 //! **이 모듈이 다루지 않는 것(숨기지 않음).**
-//! - 7a가 새로 더하는 거부(R15·R16·G01·R46(c)·R12 리스트 등)는 C7·C8에서 이
-//!   모듈에 더한다. 여기 있는 것은 7a 이전부터 codegen이 패닉으로 거부하던
+//! - 7a가 새로 더하는 거부 중 G01·R46(c)는 C7에서 더했고(아래), R15·R16·R12
+//!   리스트는 C8에서 이 모듈에 더한다. 여기 있는 것은 7a 이전부터 codegen이 패닉으로 거부하던
 //!   것뿐이며, 판정 범위를 넓히지 않았다(넓히면 지금 컴파일되는 입력이 거부된다).
 //! - codegen.rs:1271 "signal `…` was never spawned"(선언만 하고 표시하지 않은
-//!   signal)도 사용자가 도달하지만, design-7a §1.1 R07U로 C7에서 다룬다.
+//!   signal)도 사용자가 도달하지만, design-7a §1.1 R07U로 C7에서 lower 그래프
+//!   검사가 막는다(lower.rs `check_binding_sites`).
+//! - codegen.rs:620-627(Islands의 미참조 헬퍼)은 C7부터 lower의 R47(모드 무관
+//!   도달성 검사)이 먼저 막는다. 그래서 C3에서 여기 복제했던 같은 판정은 걷었다
+//!   — 루트에서 도달할 수 있는 헬퍼는 반드시 어떤 `ComponentRef`가 참조하므로
+//!   `activation_for`가 `None`일 수 없다.
+//!
+//! **C7(2026-10-17)에서 더한 7a 거부.**
+//! - `LOOM-G01`: 단일 컴포넌트 경로(`compile_tsx_to_rust`/`_with_candidate`)의
+//!   루트에 `ComponentRef`가 있으면 오류다. codegen은 이것을 받아
+//!   `super::{c}_generated::…`를 부르는 코드를 내지만 그 모듈은 생성되지 않아
+//!   rustc 단계에서야 실패했다.
+//! - `LOOM-R46`(c): Islands·단일 Island 경로에서 루트가 아닌 두 컴포넌트 이름이
+//!   codegen의 `sanitize_mod_name`을 거쳐 같은 모듈 이름이 되면 오류다(예:
+//!   `ProductCard`와 `Product_card` → `product_card`). design-7a는 "check.rs에서
+//!   같은 함수를 호출"이라 했지만, 그 함수는 codegen.rs의 private 함수라 부르려면
+//!   codegen.rs의 가시성을 바꿔야 한다(C3의 "codegen 소스 무변경"이 깨진다). 그래서
+//!   `mod_name`으로 **같은 규칙을 다시 구현**했고, 표류는 lib.rs의
+//!   `c7_graph_rejections` 테스트가 codegen이 실제로 방출한 `pub mod …_generated`
+//!   이름과 대조해 막는다.
 //! - lower가 이미 막아 codegen에서 도달할 수 없는 거부(signal 종류 검사 2017·
 //!   2820·3059·3295·3000, `unknown signal` 조회 등)와 앞선 검사에 가려지는
 //!   거부(2172는 2023에, 2481은 2290에)는 복제하지 않는다.
@@ -41,7 +60,27 @@ use swc_common::{Span, DUMMY_SP};
 use crate::codegen::GraphMode;
 use crate::diag::Diagnostic;
 use crate::ir::{Component, ComponentGraph, JsxNode, SignalDecl, SignalInit};
-use crate::lower::{NodeSpan, SpanTable, L00};
+use crate::lower::{NodeSpan, SpanTable, L00, R46};
+
+/// 단일 컴포넌트 경로의 컴포넌트 참조(7a C7).
+pub(crate) const G01: &str = "LOOM-G01";
+
+/// codegen.rs `sanitize_mod_name`과 **같은 규칙**(PascalCase → snake_case:
+/// 둘째 글자부터 대문자 앞에 `_`, 대문자는 소문자로). 위 모듈 문서의 R46(c) 참고.
+pub(crate) fn mod_name(component_name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in component_name.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
 
 type CResult = Result<(), Diagnostic>;
 
@@ -62,6 +101,20 @@ pub(crate) fn check(graph: &ComponentGraph, spans: &SpanTable, target: Target<'_
     match target {
         Target::RootOnly => {
             let root = graph.root_component();
+            // G01: 이 경로는 루트 하나만 생성한다 — 참조된 컴포넌트의 모듈이 없다.
+            let mut order = Vec::new();
+            preorder(&root.root, &mut order);
+            if let Some(r @ JsxNode::ComponentRef { component, .. }) =
+                order.into_iter().find(|n| matches!(n, JsxNode::ComponentRef { .. }))
+            {
+                return Err(Diagnostic::error(
+                    G01,
+                    cx.sp(r),
+                    format!(
+                        "단일 컴포넌트 경로는 컴포넌트 참조를 컴파일하지 않습니다(`<{component}>`). `compile_tsx_to_rust_graph`를 쓰십시오"
+                    ),
+                ));
+            }
             cx.component(root, false)
         }
         Target::Graph(GraphMode::Flatten) => {
@@ -75,22 +128,14 @@ pub(crate) fn check(graph: &ComponentGraph, spans: &SpanTable, target: Target<'_
             cx.component(root, false)
         }
         Target::Graph(GraphMode::Islands) => {
+            cx.mod_name_collision()?;
             // codegen의 `generate_islands`와 같은 순서: 컴포넌트 선언 순으로,
-            // 루트는 Island 아님, 나머지는 625 → 634 → 생성.
+            // 루트는 Island 아님, 나머지는 (625 — C7부터 lower의 R47이 흡수) →
+            // 634 → 생성.
             for (i, component) in graph.components.iter().enumerate() {
                 if component.name == graph.root {
                     cx.component(component, false)?;
                     continue;
-                }
-                if graph.activation_for(&component.name).is_none() {
-                    return Err(Diagnostic::error(
-                        L00,
-                        cx.component_span(i),
-                        format!(
-                            "component `{}` is declared but never referenced via a `client:load`/`client:visible` reference — 증분 4 scope: every non-root component in `GraphMode::Islands` must be Island-activated",
-                            component.name
-                        ),
-                    ));
                 }
                 if let Some(input) = first_input_binding(&component.root) {
                     return Err(Diagnostic::error(
@@ -108,6 +153,7 @@ pub(crate) fn check(graph: &ComponentGraph, spans: &SpanTable, target: Target<'_
             Ok(())
         }
         Target::SingleIsland(name) => {
+            cx.mod_name_collision()?;
             let Some((i, component)) = graph.components.iter().enumerate().find(|(_, c)| c.name == name) else {
                 // 소스 안의 위치가 아니라 호출 인자(build.rs의 대상 이름) 오류다.
                 return Err(Diagnostic::error(
@@ -183,6 +229,29 @@ impl<'g> Cx<'g> {
 
     fn component_span(&self, index: usize) -> Span {
         self.spans.components.get(index).map(|(_, s)| *s).unwrap_or(DUMMY_SP)
+    }
+
+    /// R46(c): 루트가 아닌 컴포넌트들의 모듈 이름 충돌(선언 순으로 첫 충돌).
+    fn mod_name_collision(&self) -> CResult {
+        let named: Vec<(usize, &'g Component, String)> = self
+            .graph
+            .components
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.name != self.graph.root)
+            .map(|(i, c)| (i, c, mod_name(&c.name)))
+            .collect();
+        for (k, (i, c, m)) in named.iter().enumerate() {
+            if let Some((j, first, _)) = named[..k].iter().find(|(_, _, m0)| m0 == m) {
+                return Err(Diagnostic::error(
+                    R46,
+                    self.component_span(*i),
+                    format!("`{}`와 `{}`가 같은 모듈 이름 `{m}`으로 변환됩니다", first.name, c.name),
+                )
+                .with_label(self.component_span(*j), format!("`{}`도 `{m}`", first.name)));
+            }
+        }
+        Ok(())
     }
 
     fn find_component(&self, name: &str) -> &'g Component {

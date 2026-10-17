@@ -875,6 +875,7 @@ mod tests {
                   return (
                     <div>
                       {details() && <button onClick={() => count.increment()}>go</button>}
+                      <p>{count()}</p>
                     </div>
                   );
                 }
@@ -1800,10 +1801,24 @@ mod tests {
                   return <div><p>{c()}</p>@REF@</div>;
                 }
             "#;
+            // 7a C7: 이 거부는 lower의 R47(모드 무관 도달성)이 흡수했다 — check.rs의
+            // 625 복제는 걷었다. lower가 먼저 막으므로 `backstop`(lower 통과 전제)을
+            // 쓸 수 없고, codegen 패닉의 존재는 IR을 직접 만들어 단언한다.
             let neg = sub(src, "@REF@", "");
-            backstop(Api::Islands, &neg, "never referenced", "never referenced", Some("Unused"));
+            for api in [Api::Islands, Api::Flatten, Api::Root] {
+                let e = run_api(api, &neg).err().unwrap_or_else(|| panic!("{api:?}가 받아 버림"));
+                assert_diag(e, lower::R47, "헬퍼 `Unused`가 루트에서 도달할 수 없습니다", Some("Unused"));
+            }
             accepted(Api::Islands, &sub(src, "@REF@", "<Unused client:load />"));
-            accepted(Api::Root, &neg); // 루트만 생성하는 경로는 헬퍼를 생성하지 않는다
+            // 존재 단언: 참조를 뺀 그래프를 codegen(Islands)에 직접 넣으면 625가 난다.
+            let (_cm, module) = super::super::parse_tsx(TEST_FILE, &sub(src, "@REF@", "<Unused client:load />")).unwrap();
+            let (mut graph, _, _) = lower::lower_module(&module).unwrap();
+            let app = graph.components.iter_mut().find(|c| c.name == "App").unwrap();
+            let ir::JsxNode::Element { children, .. } = &mut app.root else { panic!() };
+            children.retain(|c| !matches!(c, ir::JsxNode::ComponentRef { .. }));
+            let r = catch_unwind(AssertUnwindSafe(|| codegen::generate_graph(&graph, GraphMode::Islands)));
+            let msg = r.err().and_then(|e| e.downcast_ref::<String>().cloned()).expect("625 패닉이 나야 한다");
+            assert!(msg.contains("never referenced"), "{msg}");
         }
 
         #[test]
@@ -1861,30 +1876,60 @@ mod tests {
 
         // ---- 노드 모양 거부: eager 경로와 조건부 ----
 
+        // 7a C7: 템플릿에서 헬퍼 `W`를 뺐다 — 참조되지 않는 헬퍼는 이제 R47이고,
+        // 단일 컴포넌트 경로(Root)의 참조는 G01이다. `W`가 필요한 행은 `with_w`로
+        // 붙이고 Islands 경로로 판정한다(같은 codegen 패닉에 닿는다).
         const NODE: &str = r#"
-            function W() {
-              const w = signal(0);
-              return <b>{w()}</b>;
-            }
             export function App() {
               const o = signal(false);
+              const q = signal(false);
               const n = signal(0);
               const xs = signal(["a"]);
               return (
                 <div>
                   <button onClick={() => o.toggle()}>t</button>
-                  <p>{n()}</p>
-                  <ul>{xs().map((x) => <li>{x}</li>)}</ul>
-                  <aside>{o() && <i>o</i>}</aside>
+                  @BASE@
                   <section>@C@</section>
                 </div>
               );
             }
         "#;
 
+        const W_DEF: &str = "function W() {\n  const w = signal(0);\n  return <b>{w()}</b>;\n}\n";
+        fn with_w(src: &str) -> String {
+            format!("{W_DEF}{src}")
+        }
+
+        /// 7a C7(R07/R07U): signal마다 binding 사이트가 정확히 1곳이어야 한다. 그래서
+        /// 템플릿의 기본 표시(`@BASE@`)는 **스니펫이 읽지 않는** signal만 표시한다.
+        fn base_for(snippet: &str, displays: &[(&str, &str)]) -> String {
+            displays
+                .iter()
+                .filter(|(name, _)| !reads(snippet, name))
+                .map(|(_, markup)| *markup)
+                .collect::<Vec<_>>()
+                .join("")
+        }
+        /// `snippet`이 `{name}()`을 읽는가(앞 글자가 식별자 문자가 아닐 때만).
+        fn reads(snippet: &str, name: &str) -> bool {
+            let pat = format!("{name}()");
+            snippet.match_indices(&pat).any(|(i, _)| {
+                !snippet[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+            })
+        }
+        const NODE_DISPLAYS: &[(&str, &str)] = &[
+            ("n", "<p>{n()}</p>"),
+            ("xs", "<ul>{xs().map((x) => <li>{x}</li>)}</ul>"),
+            ("o", "<aside>{o() && <i>o</i>}</aside>"),
+            ("q", "<aside>{q() && <i>q</i>}</aside>"),
+        ];
+        fn node_src(snippet: &str) -> String {
+            sub(&sub(NODE, "@BASE@", &base_for(snippet, NODE_DISPLAYS)), "@C@", snippet)
+        }
+
         fn node_case(api: Api, neg: &str, pos: &str, codegen_needle: &str, needle: &str, token: &str) -> Diagnostics {
-            let d = backstop(api, &sub(NODE, "@C@", neg), codegen_needle, needle, Some(token));
-            accepted(api, &sub(NODE, "@C@", pos));
+            let d = backstop(api, &node_src(neg), codegen_needle, needle, Some(token));
+            accepted(api, &node_src(pos));
             d
         }
 
@@ -1895,14 +1940,13 @@ mod tests {
 
         #[test]
         fn eager_list_row_must_be_an_element_2811() {
-            node_case(
-                Api::Root,
-                "<ol>{xs().map((x) => <W client:load />)}</ol>",
-                "<ol>{xs().map((x) => <li>{x}</li>)}</ol>",
-                "list row template must be a single element",
-                "list row template must be a single element",
-                "W",
-            );
+            // 7a C7: Root 경로에서는 이 입력이 G01(컴포넌트 참조)로 먼저 막힌다 —
+            // 같은 codegen 거부에 닿는 Islands 경로로 판정한다. 양성 짝은 `W`를
+            // row 밖에서 한 번 참조한다(R47 회피, 참조 1회 유지).
+            let neg = with_w(&node_src("<ol>{xs().map((x) => <W client:load />)}</ol>"));
+            backstop(Api::Islands, &neg, "list row template must be a single element", "list row template must be a single element", Some("W"));
+            accepted(Api::Islands, &with_w(&node_src("<ol>{xs().map((x) => <li>{x}</li>)}</ol><W client:load />")));
+            assert_eq!(run_api(Api::Root, &neg).err().expect("G01").items()[0].code, check::G01);
         }
 
         #[test]
@@ -1937,13 +1981,12 @@ mod tests {
 
         #[test]
         fn conditional_list_row_must_be_an_element_2009() {
-            node_case(
-                Api::Root,
-                "{o() && <div><ul>{xs().map((x) => <W client:load />)}</ul></div>}",
-                "{o() && <div><ul>{xs().map((x) => <li>{x}</li>)}</ul></div>}",
-                "list row template must be a single element",
-                "list row template must be a single element",
-                "W",
+            // 7a C7: 2811과 같은 이유로 Islands 경로.
+            let neg = with_w(&node_src("{o() && <div><ul>{xs().map((x) => <W client:load />)}</ul></div>}"));
+            backstop(Api::Islands, &neg, "list row template must be a single element", "list row template must be a single element", Some("W"));
+            accepted(
+                Api::Islands,
+                &with_w(&node_src("<div>{o() && <div><ul>{xs().map((x) => <li>{x}</li>)}</ul></div>}</div><W client:load />")),
             );
         }
 
@@ -1984,11 +2027,12 @@ mod tests {
             // lower는 then 가지의 **직계** 조건부만 막는다 — 한 겹 아래는 여기서.
             node_case(
                 Api::Root,
-                "{o() && <div><p>{o() && <b>y</b>}</p></div>}",
+                // (7a C7: 안쪽 조건부는 `q`다 — 같은 `o`를 두 번 읽으면 이제 R07이 먼저다.)
+                "{o() && <div><p>{q() && <b>y</b>}</p></div>}",
                 "{o() && <div><p><b>y</b></p></div>}",
                 "안에서 아직 지원하지 않는 노드다",
                 "안에서 아직 지원하지 않는 노드다",
-                "o()",
+                "q()",
             );
         }
 
@@ -1996,7 +2040,7 @@ mod tests {
         fn conditional_component_ref_is_mode_dependent_2031() {
             // Islands에서는 조건부 안의 참조가 미지원 노드지만, Flatten에서는 참조가
             // 펼쳐져(`<b>{w()}</b>`) 평범한 지연 내용이 된다 — check도 펼친 뒤 판정한다.
-            let neg = sub(NODE, "@C@", "{o() && <div><W client:load /></div>}");
+            let neg = with_w(&node_src("{o() && <div><W client:load /></div>}"));
             backstop(Api::Islands, &neg, "안에서 아직 지원하지 않는 노드다", "안에서 아직 지원하지 않는 노드다", Some("W"));
             accepted(Api::Flatten, &neg);
         }
@@ -2024,10 +2068,6 @@ mod tests {
         // ---- row 템플릿 ----
 
         const ROW: &str = r#"
-            function W() {
-              const w = signal(0);
-              return <b>{w()}</b>;
-            }
             export function App() {
               const outer = signal(["a", "bb"]);
               const open = signal(false);
@@ -2038,9 +2078,7 @@ mod tests {
               return (
                 <div>
                   <button onClick={() => open.toggle()}>t</button>
-                  <p>{n()}</p>
-                  <section>{shut() && <i>s</i>}</section>
-                  <ol>{inner2().map((y) => <li>{y}</li>)}</ol>
+                  @BASE@
                   <ul>{outer().map((it) => <li>@HEAD@@ROW@</li>)}</ul>
                 </div>
               );
@@ -2050,7 +2088,14 @@ mod tests {
         const ROW_OK: &str = r#"{open() && <div class="panel"><ul>{inner().map((x) => <li>{x}</li>)}</ul></div>}"#;
 
         fn row_src(head: &str, row: &str) -> String {
-            sub(&sub(ROW, "@HEAD@", head), "@ROW@", row)
+            const ROW_DISPLAYS: &[(&str, &str)] = &[
+                ("n", "<p>{n()}</p>"),
+                ("shut", "<section>{shut() && <i>s</i>}</section>"),
+                ("inner2", "<ol>{inner2().map((y) => <li>{y}</li>)}</ol>"),
+                ("open", "<aside>{open() && <i>o</i>}</aside>"),
+                ("inner", "<ol>{inner().map((z) => <li>{z}</li>)}</ol>"),
+            ];
+            sub(&sub(&sub(ROW, "@BASE@", &base_for(row, ROW_DISPLAYS)), "@HEAD@", head), "@ROW@", row)
         }
 
         fn row_case(neg_row: &str, pos_row: &str, codegen_needle: &str, needle: &str, token: &str) -> Diagnostics {
@@ -2105,13 +2150,10 @@ mod tests {
 
         #[test]
         fn row_nested_list_row_must_be_an_element_2307() {
-            row_case(
-                "{open() && <div><ul>{inner().map((x) => <W client:load />)}</ul></div>}",
-                ROW_OK,
-                "list row template must be a single element",
-                "list row template must be a single element",
-                "W",
-            );
+            // 7a C7: 2811과 같은 이유로 Islands 경로.
+            let neg = with_w(&row_src("{it}", "{open() && <div><ul>{inner().map((x) => <W client:load />)}</ul></div>}"));
+            backstop(Api::Islands, &neg, "list row template must be a single element", "list row template must be a single element", Some("W"));
+            accepted(Api::Root, &row_src("{it}", ROW_OK));
         }
 
         #[test]
@@ -2621,6 +2663,355 @@ mod tests {
             assert_eq!(s.warnings.items().len(), 1);
             let g = super::super::compile_tsx_to_rust_graph(TEST_FILE, isl, GraphMode::Islands).unwrap();
             assert_eq!(g.warnings.items().len(), 1);
+        }
+    }
+
+    /// 7a C7(2026-10-17, design-7a §1.1·§3.4·§4): 그래프 묶음 R07·R07U·R08·R44·R46·R47·G01과
+    /// 결정성. 행마다 다음을 단언한다.
+    /// - 진단이 정확히 1건이고 코드·문구·**강조 토큰**·렌더 `파일:줄:열`이 맞다.
+    /// - (lower 거부) 공개 API(Flatten)도 같은 코드의 진단을 돌려준다.
+    /// - 최소 차이 양성 짝이 경고 없이 끝까지 컴파일된다.
+    /// 그리고 거부하는 결함이 **실제로 있었다**는 존재 단언을 따로 둔다(검사를
+    /// 건너뛴 IR을 codegen에 직접 넣어 본다) — 부정 단언만으로는 공허할 수 있다.
+    mod c7_graph_rejections {
+        use super::*;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        const IMPORT: &str = "import { signal, sharedSignal } from \"loom\";\n";
+        fn app(body: &str) -> String {
+            format!("{IMPORT}export function App() {{\n{body}\n}}\n")
+        }
+        /// 헬퍼들(`helpers`) + App 본문.
+        fn graph(helpers: &str, body: &str) -> String {
+            format!("{IMPORT}{helpers}export function App() {{\n{body}\n}}\n")
+        }
+        const W: &str = "function W() {\n  const w = signal(0);\n  return <button onClick={() => w.increment()}>{w()}</button>;\n}\n";
+
+        const ONINPUT: &str = "onInput={(e) => t.set(e.target.value)}";
+        const ROW_COND: &str = "{open() && <div><ul>{inner().map((x) => <li>{x}</li>)}</ul></div>}";
+
+        /// (코드, 부정 소스, 문구 부분 문자열, 강조 토큰, 양성 짝 소스) — lower 거부.
+        fn lower_cases() -> Vec<(&'static str, String, &'static str, &'static str, String)> {
+            let nested = |outer: &str| {
+                app(&format!(
+                    "  const outer = signal([\"a\"]);\n  const open = signal(false);\n  const inner = signal([\"p\"]);\n  return <div><button onClick={{() => open.toggle()}}>t</button><ul>{{outer().map((it) => <li>{{it}}{ROW_COND}</li>)}}</ul>{outer}</div>;"
+                ))
+            };
+            let r44 = |outer: &str, inner: &str| {
+                app(&format!(
+                    "  const a = signal(0);\n  const b = signal(0);\n  const t = signal(\"\");\n  return <div><p>{{a()}}</p><div {outer}>{inner}</div></div>;"
+                ))
+            };
+            let r44_inner_button = "<button onClick={() => b.increment()}>{b()}</button><input value={t()} onInput={(e) => t.set(e.target.value)} />";
+            let r44_w = |outer: &str| {
+                graph(W, &format!("  const a = signal(0);\n  return <div><p>{{a()}}</p><div {outer}><W client:load /></div></div>;"))
+            };
+            let named = |name: &str| {
+                app(&format!("  const {name} = signal(0);\n  return <button onClick={{() => {name}.increment()}}>{{{name}()}}</button>;"))
+            };
+            let comp = |name: &str| graph(&W.replace("function W", &format!("function {name}")), &format!("  return <div><{name} client:load /></div>;"));
+            vec![
+                // R07 — {n()} 두 번(주 span은 소스 순 첫 사이트), {o()&&…} 두 번, row 원본 + 바깥 binding
+                (
+                    "LOOM-R07",
+                    app("  const n = signal(0);\n  return <div><p>{n()}</p><p>{n()}</p></div>;"),
+                    "signal `n`가 binding 사이트 2곳에 쓰였습니다",
+                    "n()",
+                    app("  const n = signal(0);\n  return <div><p>{n()}</p><p>n</p></div>;"),
+                ),
+                (
+                    "LOOM-R07",
+                    app("  const o = signal(false);\n  return <div><button onClick={() => o.toggle()}>t</button><div>{o() && <i>a</i>}</div><div>{o() && <i>b</i>}</div></div>;"),
+                    "signal `o`가 binding 사이트 2곳에",
+                    "o()",
+                    app("  const o = signal(false);\n  return <div><button onClick={() => o.toggle()}>t</button><div>{o() && <i>a</i>}</div><div><i>b</i></div></div>;"),
+                ),
+                ("LOOM-R07", nested("<aside>{open() && <i>o</i>}</aside>"), "signal `open`가 binding 사이트 2곳에", "open()", nested("")),
+                // R07U — 표시 없는 signal
+                (
+                    "LOOM-R07U",
+                    app("  const n = signal(0);\n  const m = signal(0);\n  return <button onClick={() => m.increment()}>{n()}</button>;"),
+                    "signal `m`가 선언됐지만 표시되는 곳이 없습니다",
+                    "m",
+                    app("  const n = signal(0);\n  const m = signal(0);\n  return <button onClick={() => m.increment()}><b>{n()}</b><i>{m()}</i></button>;"),
+                ),
+                // R08 — row 루트 onClick(직접, 조건부 안 리스트)
+                (
+                    "LOOM-R08",
+                    app("  const xs = signal([\"a\"]);\n  return <ul>{xs().map((x) => <li onClick={() => xs.rotate()}>{x}</li>)}</ul>;"),
+                    "리스트 row 루트 `<li>`의 `onClick`은 지금 조용히 사라집니다",
+                    "onClick={() => xs.rotate()}",
+                    app("  const xs = signal([\"a\"]);\n  return <div><button onClick={() => xs.rotate()}>r</button><ul>{xs().map((x) => <li>{x}</li>)}</ul></div>;"),
+                ),
+                (
+                    "LOOM-R08",
+                    app("  const o = signal(true);\n  const xs = signal([\"a\"]);\n  return <div><button onClick={() => o.toggle()}>t</button>{o() && <div><ul>{xs().map((x) => <li onClick={() => xs.rotate()}>{x}</li>)}</ul></div>}</div>;"),
+                    "리스트 row 루트 `<li>`의",
+                    "onClick={() => xs.rotate()}",
+                    app("  const o = signal(true);\n  const xs = signal([\"a\"]);\n  return <div><button onClick={() => o.toggle()}>t</button>{o() && <div><ul>{xs().map((x) => <li>{x}</li>)}</ul></div>}</div>;"),
+                ),
+                // R44 — onClick 안의 onClick, onClick 안의 <input>, onClick 안의 컴포넌트 참조
+                (
+                    "LOOM-R44",
+                    r44("onClick={() => a.increment()}", r44_inner_button),
+                    "이벤트를 받는 요소 안에 또 이벤트를 받는 요소가 있습니다(<button>의 `onClick`)",
+                    "onClick={() => b.increment()}",
+                    r44("", r44_inner_button),
+                ),
+                (
+                    "LOOM-R44",
+                    r44("onClick={() => a.increment()}", &format!("<b>{{b()}}</b><input value={{t()}} {ONINPUT} />")),
+                    "(<input>의 `onInput`)",
+                    ONINPUT,
+                    r44("", &format!("<b>{{b()}}</b><input value={{t()}} {ONINPUT} />")),
+                ),
+                ("LOOM-R44", r44_w("onClick={() => a.increment()}"), "(컴포넌트 참조 `<W>`)", "W", r44_w("")),
+                // R46 — Rust 키워드, `$`, ZWJ(U+200D), 비ASCII, 컴포넌트 이름 키워드
+                ("LOOM-R46", named("type"), "signal 이름 `type`은 Rust 키워드이거나", "type", named("kind")),
+                ("LOOM-R46", named("$c"), "(ASCII 영숫자·`_` 이외 문자 U+0024)", "$c", named("c")),
+                ("LOOM-R46", named("c\u{200D}"), "U+200D", "c\u{200D}", named("c")),
+                ("LOOM-R46", named("cafe\u{301}"), "U+0301", "cafe\u{301}", named("cafe")),
+                (
+                    "LOOM-R46",
+                    app("  const type = sharedSignal(\"k\", 0);\n  return <button onClick={() => type.increment()}>{type()}</button>;"),
+                    "signal 이름 `type`은",
+                    "type",
+                    app("  const kind = sharedSignal(\"k\", 0);\n  return <button onClick={() => kind.increment()}>{kind()}</button>;"),
+                ),
+                ("LOOM-R46", comp("Self"), "컴포넌트 이름 `Self`은 Rust 키워드", "Self", comp("Selfie")),
+                // R47 — 도달할 수 없는 헬퍼(단독, 서로만 참조하는 둘)
+                (
+                    "LOOM-R47",
+                    graph(W, "  const c = signal(0);\n  return <p>{c()}</p>;"),
+                    "헬퍼 `W`가 루트에서 도달할 수 없습니다",
+                    "W",
+                    graph(W, "  const c = signal(0);\n  return <div><p>{c()}</p><W client:load /></div>;"),
+                ),
+                (
+                    "LOOM-R47",
+                    graph(
+                        "function A() {\n  return <div><B client:load /></div>;\n}\nfunction B() {\n  const b = signal(0);\n  return <div><p>{b()}</p><A client:load /></div>;\n}\n",
+                        "  const c = signal(0);\n  return <p>{c()}</p>;",
+                    ),
+                    "헬퍼 `A`가 루트에서 도달할 수 없습니다",
+                    "A",
+                    graph(
+                        "function A() {\n  return <div><B client:load /></div>;\n}\nfunction B() {\n  const b = signal(0);\n  return <div><p>{b()}</p></div>;\n}\n",
+                        "  const c = signal(0);\n  return <div><p>{c()}</p><A client:load /></div>;",
+                    ),
+                ),
+            ]
+        }
+
+        #[test]
+        fn each_graph_rejection_points_at_the_offending_syntax_and_has_a_compiling_positive_pair() {
+            let cases = lower_cases();
+            // 개수 단언: R07 3, R07U 1, R08 2, R44 3, R46 6, R47 2.
+            assert_eq!(cases.len(), 17);
+            for (code, neg, needle, token, pos) in &cases {
+                assert_lower_diag(neg, code, needle, token);
+                let e = super::super::compile_tsx_to_rust_graph(TEST_FILE, neg, GraphMode::Flatten)
+                    .err()
+                    .unwrap_or_else(|| panic!("공개 API가 받아 버림:\n{neg}"));
+                assert_diag(e, code, needle, Some(token));
+                let ok = super::super::compile_tsx_to_rust_graph(TEST_FILE, pos, GraphMode::Flatten)
+                    .unwrap_or_else(|d| panic!("양성 짝이 실패:\n{pos}\n{d}"));
+                assert!(ok.warnings.is_empty(), "{pos}\n{}", ok.warnings);
+            }
+        }
+
+        #[test]
+        fn r07_labels_every_binding_site_and_the_declaration() {
+            let d = lower_diag(&app(
+                "  const n = signal(0);\n  return (\n    <div>\n      <p>{n()}</p>\n      <b>{n()}</b>\n      <i>{n()}</i>\n    </div>\n  );",
+            ));
+            let item = &d.items()[0];
+            assert_eq!(item.code, "LOOM-R07");
+            assert!(item.message.contains("3곳"), "{d}");
+            // 사이트마다 label(소스 순) + 선언 label.
+            let sites: Vec<(usize, usize)> = item.labels.iter().map(|(s, _)| d.line_col(*s)).collect();
+            assert_eq!(sites, vec![(6, 11), (7, 11), (8, 11), (3, 9)], "{d}");
+            for (s, _) in &item.labels[..3] {
+                assert_eq!(d.source_text(*s).as_deref(), Some("n()"));
+            }
+            assert_eq!(item.labels[2].1, "binding 사이트 3/3");
+            let r = d.render();
+            assert!(r.contains(&format!("--> {TEST_FILE}:6:11")), "{r}");
+            for line in ["6 |", "7 |", "8 |"] {
+                assert!(r.contains(line), "{r}");
+            }
+        }
+
+        #[test]
+        fn r44_labels_the_outer_handler() {
+            let src = app("  const a = signal(0);\n  const b = signal(0);\n  return <div onClick={() => a.increment()}><p>{a()}</p><button onClick={() => b.increment()}>{b()}</button></div>;");
+            let d = assert_lower_diag(&src, "LOOM-R44", "또 이벤트를 받는 요소", "onClick={() => b.increment()}");
+            let labels = &d.items()[0].labels;
+            assert_eq!(labels.len(), 1);
+            assert_eq!(d.source_text(labels[0].0).as_deref(), Some("onClick={() => a.increment()}"));
+        }
+
+        // ---- check.rs의 모드 거부: G01, R46(c) ----
+
+        #[test]
+        fn g01_single_component_path_rejects_component_references() {
+            let neg = graph(W, "  const c = signal(0);\n  return <div><p>{c()}</p><W client:load /></div>;");
+            for result in [
+                super::super::compile_tsx_to_rust(TEST_FILE, &neg),
+                super::super::compile_tsx_to_rust_with_candidate(TEST_FILE, &neg, ListCandidate::K),
+            ] {
+                let e = result.err().expect("G01");
+                assert_diag(e, check::G01, "단일 컴포넌트 경로는 컴포넌트 참조를 컴파일하지 않습니다(`<W>`)", Some("W"));
+            }
+            // 같은 소스가 그래프 경로에서는 정상이다(모드 거부).
+            super::super::compile_tsx_to_rust_graph(TEST_FILE, &neg, GraphMode::Flatten).unwrap();
+            super::super::compile_tsx_to_rust_graph(TEST_FILE, &neg, GraphMode::Islands).unwrap();
+            // 양성 짝: 참조 없는 단일 컴포넌트.
+            super::super::compile_tsx_to_rust(TEST_FILE, &app("  const c = signal(0);\n  return <div><p>{c()}</p></div>;")).unwrap();
+        }
+
+        fn two_cards(second: &str) -> String {
+            let card = |name: &str, s: &str| {
+                format!("function {name}() {{\n  const {s} = signal(0);\n  return <button onClick={{() => {s}.increment()}}>{{{s}()}}</button>;\n}}\n")
+            };
+            graph(
+                &format!("{}{}", card("ProductCard", "a"), card(second, "b")),
+                &format!("  return <div><ProductCard client:load /><{second} client:visible /></div>;"),
+            )
+        }
+
+        #[test]
+        fn r46c_module_name_collision_is_rejected_where_modules_are_generated() {
+            let neg = two_cards("Product_card");
+            for result in [
+                super::super::compile_tsx_to_rust_graph(TEST_FILE, &neg, GraphMode::Islands),
+                super::super::compile_tsx_to_single_island_rust(TEST_FILE, &neg, "ProductCard"),
+            ] {
+                let d = assert_diag(
+                    result.err().expect("R46(c)"),
+                    "LOOM-R46",
+                    "`ProductCard`와 `Product_card`가 같은 모듈 이름 `product_card`으로 변환됩니다",
+                    Some("Product_card"),
+                );
+                assert_eq!(d.source_text(d.items()[0].labels[0].0).as_deref(), Some("ProductCard"));
+            }
+            // Flatten은 모듈을 만들지 않는다(모드 거부).
+            super::super::compile_tsx_to_rust_graph(TEST_FILE, &neg, GraphMode::Flatten).unwrap();
+            // 양성 짝.
+            super::super::compile_tsx_to_rust_graph(TEST_FILE, &two_cards("ProductCard2"), GraphMode::Islands).unwrap();
+        }
+
+        #[test]
+        fn r46c_mod_name_matches_what_codegen_actually_emits() {
+            // check.rs의 `mod_name`은 codegen의 private `sanitize_mod_name`을 다시
+            // 구현한 것이다 — 표류하면 이 대조가 깨진다(codegen이 방출한 이름과 비교).
+            for name in ["Product_card", "ProductCardX", "ABC", "X1y", "Card", "Qq_R"] {
+                let src = two_cards(name).replace("function ProductCard()", "function Zz()").replace("<ProductCard ", "<Zz ");
+                let out = super::super::compile_tsx_to_rust_graph(TEST_FILE, &src, GraphMode::Islands)
+                    .unwrap_or_else(|d| panic!("{name}: {d}"))
+                    .rust;
+                let m = check::mod_name(name);
+                assert!(out.contains(&format!("pub mod {m}_generated {{")), "{name} → {m}");
+                assert!(out.contains(&format!("pub mod {}_generated {{", check::mod_name("Zz"))));
+            }
+        }
+
+        // ---- 존재 단언: 막는 결함이 검사 없이는 실제로 생긴다 ----
+
+        fn lowered(src: &str) -> ir::ComponentGraph {
+            let (_cm, module) = super::super::parse_tsx(TEST_FILE, src).unwrap();
+            lower::lower_module(&module).unwrap_or_else(|d| panic!("{d:?}")).0
+        }
+        fn children(c: &mut ir::Component) -> &mut Vec<ir::JsxNode> {
+            let ir::JsxNode::Element { children, .. } = &mut c.root else { panic!("root is not an element") };
+            children
+        }
+        fn panic_msg(f: impl FnOnce() -> String) -> Option<String> {
+            catch_unwind(AssertUnwindSafe(f)).err().map(|e| {
+                e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default()
+            })
+        }
+
+        #[test]
+        fn the_rejected_defects_exist_without_the_checks() {
+            // R07: 사이트 둘 → `let n_entity`가 두 번 방출되어 앞 것이 가려진다.
+            let mut g = lowered(&app("  const n = signal(0);\n  return <div><p>{n()}</p><p>n</p></div>;"));
+            let ir::JsxNode::Element { children: p, .. } = &mut children(&mut g.components[0])[1] else { panic!() };
+            p[0] = ir::JsxNode::TextBinding { signal: "n".into() };
+            let out = codegen::generate(&g.components[0]);
+            assert_eq!(out.matches("let n_entity = app.world.spawn(").count(), 2, "{out}");
+
+            // R07U: 표시 없는 signal → codegen.rs:1271 내부 오류 패닉.
+            let mut g = lowered(&app("  const n = signal(0);\n  return <div><p>{n()}</p></div>;"));
+            let ir::JsxNode::Element { children: p, .. } = &mut children(&mut g.components[0])[0] else { panic!() };
+            p[0] = ir::JsxNode::StaticText("x".into());
+            let msg = panic_msg(|| codegen::generate(&g.components[0])).expect("never spawned 패닉");
+            assert!(msg.contains("was never spawned"), "{msg}");
+
+            // R08: row 루트에 액션을 붙여도 산출물이 **한 바이트도** 다르지 않다(조용히 사라짐).
+            let src = app("  const xs = signal([\"a\"]);\n  return <div><button onClick={() => xs.rotate()}>r</button><ul>{xs().map((x) => <li>{x}</li>)}</ul></div>;");
+            let base = codegen::generate(&lowered(&src).components[0]);
+            let mut g = lowered(&src);
+            let ir::JsxNode::Element { children: ul, .. } = &mut children(&mut g.components[0])[1] else { panic!() };
+            let ir::JsxNode::ListBinding { row, .. } = &mut ul[0] else { panic!() };
+            let ir::JsxNode::Element { action, .. } = row.as_mut() else { panic!() };
+            *action = Some(ir::ClickAction::Rotate { signal: "xs".into() });
+            assert_eq!(codegen::generate(&g.components[0]), base);
+
+            // R44: 바깥 요소에 액션을 붙인 중첩도 codegen은 진단 없이 받는다.
+            let mut g = lowered(&app("  const a = signal(0);\n  const b = signal(0);\n  return <div><p>{a()}</p><button onClick={() => b.increment()}>{b()}</button></div>;"));
+            let ir::JsxNode::Element { action, .. } = &mut g.components[0].root else { panic!() };
+            *action = Some(ir::ClickAction::Increment { signal: "a".into() });
+            assert!(panic_msg(|| codegen::generate(&g.components[0])).is_none());
+
+            // R46: 키워드 이름이 그대로 Rust 필드 이름으로 방출된다(rustc에서 실패).
+            let mut g = lowered(&app("  const kind = signal(0);\n  return <p>{kind()}</p>;"));
+            g.components[0].signals[0].name = "type".into();
+            let ir::JsxNode::Element { children: p, .. } = &mut g.components[0].root else { panic!() };
+            p[0] = ir::JsxNode::TextBinding { signal: "type".into() };
+            assert!(codegen::generate(&g.components[0]).contains("    pub type: ::bevy_ecs::entity::Entity,"));
+
+            // R47: Flatten은 도달할 수 없는 헬퍼를 진단 없이 버린다.
+            let mut g = lowered(&graph(W, "  const c = signal(0);\n  return <div><p>{c()}</p><W client:load /></div>;"));
+            children(g.components.iter_mut().find(|c| c.name == "App").unwrap()).pop();
+            let out = codegen::generate_graph(&g, GraphMode::Flatten);
+            assert!(!out.contains("w_entity"), "{out}");
+
+            // G01: 단일 컴포넌트 경로는 생성되지 않는 모듈을 부르는 코드를 낸다.
+            let g = lowered(&graph(W, "  const c = signal(0);\n  return <div><p>{c()}</p><W client:load /></div>;"));
+            let out = codegen::generate(g.root_component());
+            assert!(out.contains("w_generated::setup("), "{out}");
+            assert!(!out.contains("pub mod w_generated"), "{out}");
+        }
+
+        // ---- 결정성(§3.4) ----
+
+        /// 이 묶음의 모든 부정 입력(lower + 모드 거부)의 렌더와, 양성 짝의 산출물.
+        fn transcript() -> String {
+            let mut t = String::new();
+            for (code, neg, _, _, pos) in lower_cases() {
+                let e = super::super::compile_tsx_to_rust_graph(TEST_FILE, &neg, GraphMode::Flatten).err().unwrap();
+                t.push_str(&format!("== {code}\n{}", e.render()));
+                t.push_str(&super::super::compile_tsx_to_rust_graph(TEST_FILE, &pos, GraphMode::Flatten).unwrap().rust);
+            }
+            let cards = two_cards("Product_card");
+            let e = super::super::compile_tsx_to_rust_graph(TEST_FILE, &cards, GraphMode::Islands).err().unwrap();
+            t.push_str(&e.render());
+            let g01 = graph(W, "  const c = signal(0);\n  return <div><p>{c()}</p><W client:load /></div>;");
+            t.push_str(&super::super::compile_tsx_to_rust(TEST_FILE, &g01).err().unwrap().render());
+            t
+        }
+
+        #[test]
+        fn diagnostics_and_outputs_are_deterministic() {
+            let a = transcript();
+            let b = transcript();
+            assert_eq!(a, b);
+            // 별도 프로세스 대조(design-7a §3.4): `LOOM_DET_OUT`이 있으면 기록한다 —
+            // `cargo test`를 두 번 돌려 두 파일을 비교한다(C7 커밋 메시지에 결과 기록).
+            if let Ok(path) = std::env::var("LOOM_DET_OUT") {
+                std::fs::write(path, &a).unwrap();
+            }
         }
     }
 }

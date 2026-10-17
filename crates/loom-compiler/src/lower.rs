@@ -74,6 +74,15 @@
 //! (`component_ref_prop_cannot_carry_a_live_signal_value`, RQ6-verification-plan
 //! 인용)의 관측 메커니즘과 문구가 바뀌지 않는다.
 //!
+//! **Phase 7a C7 (2026-10-17)**: 그래프 묶음 거부를 더했다 — `LOOM-R07`(한
+//! signal이 binding 사이트 2곳 이상: 생성 코드의 `{s}_entity`가 가려져 앞
+//! 사이트가 갱신되지 않는다), `LOOM-R07U`(표시되는 곳이 없는 signal — codegen의
+//! "never spawned" 내부 오류를 승격), `LOOM-R08`(리스트 row 루트의 `onClick` —
+//! 조용히 사라졌다), `LOOM-R44`(이벤트를 받는 요소 안의 이벤트 수신자·컴포넌트
+//! 참조), `LOOM-R46`(Rust 키워드·`_`·ASCII 영숫자/`_` 밖 문자가 든 signal·컴포넌트
+//! 이름), `LOOM-R47`(루트에서 도달할 수 없는 헬퍼 — 모드 무관). R46의 모듈 이름
+//! 충돌과 G01(단일 컴포넌트 경로의 컴포넌트 참조)은 모드에 따라 달라 check.rs가 낸다.
+//!
 //! 함께 `SpanTable`을 돌려준다. IR(`ir.rs`)에 span을 넣지 않는 이유는 IR의
 //! `derive(PartialEq)`와 codegen의 구조체 생성을 건드리지 않기 위해서다
 //! (design-7a §3.3). 그래프 검사(single-writer, 이후 커밋의 R07/R44 등)는 이
@@ -125,6 +134,53 @@ pub(crate) const R25: &str = "LOOM-R25";
 pub(crate) const R27: &str = "LOOM-R27";
 /// **경고**: 쓴 callee를 `"loom"`에서 import하지 않음.
 pub(crate) const W25: &str = "LOOM-W25";
+
+// 7a C7(2026-10-17, design-7a §1.1): 그래프 묶음.
+/// 한 signal이 binding 사이트 2곳 이상에 쓰임(지금은 생성 코드의 `{s}_entity`가
+/// 가려져 첫 사이트가 갱신되지 않는다 — 사이트별 entity 미구현).
+pub(crate) const R07: &str = "LOOM-R07";
+/// 선언됐지만 표시되는 곳이 없는 signal(옛 codegen "never spawned" 내부 오류의 승격).
+pub(crate) const R07U: &str = "LOOM-R07U";
+/// 리스트 row 루트의 `onClick`(지금은 조용히 사라진다 — `enum Action {}`).
+pub(crate) const R08: &str = "LOOM-R08";
+/// 이벤트를 받는 요소 안에 또 이벤트를 받는 요소/컴포넌트 참조.
+pub(crate) const R44: &str = "LOOM-R44";
+/// 생성 Rust에서 쓸 수 없는 이름(Rust 키워드·예약어·`_`, ASCII 영숫자·`_` 밖의 문자).
+/// 컴포넌트 이름의 모듈 이름 충돌(R46(c))은 모드 검사라 check.rs가 같은 코드로 낸다.
+pub(crate) const R46: &str = "LOOM-R46";
+/// 루트에서 도달할 수 없는 헬퍼 컴포넌트.
+pub(crate) const R47: &str = "LOOM-R47";
+
+/// R46(a): Rust 2024의 strict·reserved 키워드(그리고 `_`). 약한 키워드(`union`,
+/// `raw`, `safe`, `macro_rules`)는 식별자로 쓸 수 있으므로 넣지 않는다. 조회 전용.
+const RUST_KEYWORDS: &[&str] = &[
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false",
+    "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+    "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where",
+    "while", "abstract", "become", "box", "do", "final", "macro", "override", "priv", "try", "typeof",
+    "unsized", "virtual", "yield", "_",
+];
+
+/// R46(a)(b): 이름이 생성 Rust의 식별자로 그대로 쓰일 수 있는지. signal 이름은
+/// `Signals` 필드·`{s}_entity` 변수로, 컴포넌트 이름은 `{C}Island`·모듈 이름으로
+/// 방출된다. `$`와 비ASCII 문자(U+200C/U+200D, 비-NFC 형태 포함)는 JS 식별자로는
+/// 유효하지만 rustc가 받지 않거나(`$`) 같은 이름이 다르게 정규화된다.
+fn check_rust_name(what: &str, name: &str, span: Span) -> LResult<()> {
+    let bad_char = name.chars().find(|c| !(c.is_ascii_alphanumeric() || *c == '_'));
+    let why = match (RUST_KEYWORDS.contains(&name), bad_char) {
+        (true, _) => "Rust 키워드".to_string(),
+        (false, Some(c)) => format!("ASCII 영숫자·`_` 이외 문자 U+{:04X}", c as u32),
+        (false, None) => return Ok(()),
+    };
+    Err(Diagnostic::error(
+        R46,
+        span,
+        format!(
+            "{what} 이름 `{}`은 Rust 키워드이거나 ASCII 영숫자·`_` 이외 문자를 포함해 생성 코드가 rustc에서 실패합니다({why})",
+            name.escape_default()
+        ),
+    ))
+}
 
 /// `"loom"`에서 import할 수 있는 이름(= 저작 표면의 callee 전부).
 const LOOM_EXPORTS: [&str; 3] = ["signal", "sharedSignal", "sharedValue"];
@@ -271,6 +327,9 @@ struct Cx<'a> {
     signals: &'a [SignalDecl],
     known_components: &'a HashSet<String>,
     spans: &'a mut SpanTable,
+    /// 7a C7(R44): 지금 lower 중인 노드를 감싸는, 이벤트를 받는 가장 가까운
+    /// 요소의 `onClick` attr span.
+    event_ancestor: Option<Span>,
 }
 
 impl Cx<'_> {
@@ -331,6 +390,8 @@ pub fn lower_module(module: &Module) -> LResult<(ComponentGraph, SpanTable, Vec<
     }
 
     check_one_action_per_signal(&components, &spans)?;
+    check_reachable(&components, &spans)?;
+    check_binding_sites(&components, &spans)?;
     let warnings = missing_import_warnings(&imported, &spans);
 
     Ok((
@@ -429,6 +490,105 @@ fn check_one_action_per_signal(components: &[Component], spans: &SpanTable) -> L
     Ok(())
 }
 
+/// R47(7a C7): 루트에서 `ComponentRef`를 따라 도달할 수 없는 헬퍼는 오류다
+/// (모드 무관). 지금까지 Flatten·단일 컴포넌트 경로에서는 조용히 컴파일되지
+/// 않았고, Islands에서만 codegen.rs:620-627이 패닉으로 거부했다 — 이 검사가 그
+/// 거부를 흡수한다. 도달성은 선언 순서의 `Vec<bool>`과 작업 스택으로 판정하고,
+/// 첫 미도달 헬퍼(선언 순)를 가리킨다(§3.4 결정성 — 해시 순회 없음).
+fn check_reachable(components: &[Component], spans: &SpanTable) -> LResult<()> {
+    fn refs<'a>(node: &'a JsxNode, out: &mut Vec<&'a str>) {
+        match node {
+            JsxNode::ComponentRef { component, .. } => out.push(component),
+            JsxNode::Element { children, .. } => children.iter().for_each(|c| refs(c, out)),
+            JsxNode::ListBinding { row, .. } => refs(row, out),
+            JsxNode::CondBinding { then_branch, .. } => refs(then_branch, out),
+            JsxNode::StaticText(_)
+            | JsxNode::TextBinding { .. }
+            | JsxNode::RowItemText
+            | JsxNode::InputBinding { .. }
+            | JsxNode::SharedValueBinding { .. } => {}
+        }
+    }
+    // `lower_module`은 루트를 먼저 lower한다 — components[0]이 루트다.
+    let mut seen = vec![false; components.len()];
+    let mut stack = vec![0usize];
+    seen[0] = true;
+    while let Some(i) = stack.pop() {
+        let mut out = Vec::new();
+        refs(&components[i].root, &mut out);
+        for name in out {
+            for (j, c) in components.iter().enumerate() {
+                if c.name == name && !seen[j] {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+    }
+    match seen.iter().position(|s| !s) {
+        None => Ok(()),
+        Some(j) => Err(Diagnostic::error(
+            R47,
+            spans.components.get(j).map(|(_, s)| *s).unwrap_or_default(),
+            format!(
+                "헬퍼 `{}`가 루트에서 도달할 수 없습니다(Flatten에서는 조용히 컴파일되지 않습니다)",
+                components[j].name
+            ),
+        )),
+    }
+}
+
+/// R07/R07U(7a C7): signal마다 binding 사이트(`SpanTable::bindings` — Text,
+/// Cond의 조건, List, Input, row 템플릿 안의 cond/list 원본)를 센다. codegen은
+/// 사이트마다 `let {s}_entity = …`를 방출하고 `Signals`는 마지막 것을 가리키므로,
+/// 2곳 이상이면 앞 사이트들은 갱신되지 않는다(R07). 0곳이면 codegen.rs:1271의
+/// "never spawned" 내부 오류에 닿는다(R07U — 사용자 오류로 승격). 순회는 컴포넌트·
+/// signal 선언 순서와 `Vec`뿐이다(§3.4).
+fn check_binding_sites(components: &[Component], spans: &SpanTable) -> LResult<()> {
+    for component in components {
+        for signal in &component.signals {
+            let mut sites: Vec<Span> = spans
+                .bindings
+                .iter()
+                .filter(|b| b.component == component.name && b.signal == signal.name)
+                .map(|b| b.span)
+                .collect();
+            sites.sort_by_key(|s| s.lo);
+            let decl = spans
+                .signals
+                .iter()
+                .find(|(c, n, _)| *c == component.name && *n == signal.name)
+                .map(|(_, _, s)| *s)
+                .unwrap_or_default();
+            match sites.len() {
+                0 => {
+                    return Err(Diagnostic::error(
+                        R07U,
+                        decl,
+                        format!("signal `{}`가 선언됐지만 표시되는 곳이 없습니다", signal.name),
+                    ))
+                }
+                1 => {}
+                n => {
+                    let mut d = Diagnostic::error(
+                        R07,
+                        sites[0],
+                        format!(
+                            "signal `{}`가 binding 사이트 {n}곳에 쓰였습니다. 지금은 첫 사이트가 갱신되지 않습니다(사이트별 entity 미구현)",
+                            signal.name
+                        ),
+                    );
+                    for (k, site) in sites.iter().enumerate() {
+                        d = d.with_label(*site, format!("binding 사이트 {}/{n}", k + 1));
+                    }
+                    return Err(d.with_label(decl, "선언"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Replaces the Phase 1 bug where only the first exported function was kept
 /// and every other top-level declaration was silently discarded with no
 /// diagnostic. Scans every top-level `function` declaration in the module:
@@ -441,6 +601,11 @@ fn check_one_action_per_signal(components: &[Component], spans: &SpanTable) -> L
 /// unreferenced helpers are accepted, not lint-rejected (this narrow
 /// compiler doesn't dead-code-eliminate; a stated scope cut, not an
 /// oversight).
+///
+/// (2026-10-17 정정, 7a C7: 위 "unreferenced helpers are accepted"는 더 이상
+/// 참이 아니다 — 루트에서 도달할 수 없는 헬퍼는 `check_reachable`이 `LOOM-R47`로
+/// 거부한다. Flatten·단일 컴포넌트 경로에서 그런 헬퍼가 진단 없이 컴파일되지
+/// 않던 것이 docs/09 R47이다.)
 ///
 /// 7a C6(R25): 옛 `_ => {}`(그 밖의 최상위 항목을 진단 없이 버림)를 명시적
 /// match로 바꿨다. 받는 것은 `import {…} from "loom"`(이름 지정자만, 별칭 없이,
@@ -578,6 +743,7 @@ fn lower_component_fn(
     let component_name = fn_decl.ident.sym.to_string();
     spans.components.push((component_name.clone(), fn_decl.ident.span));
     spans.nodes.push(Vec::new());
+    check_rust_name("컴포넌트", &component_name, fn_decl.ident.span)?;
     // R01(매개변수): props는 아직 전달되지 않는다 — 매개변수를 받아 두면 저작자는
     // 값이 온다고 믿지만 실제로는 아무것도 오지 않는다.
     if let Some(first) = fn_decl.function.params.first() {
@@ -629,11 +795,13 @@ fn lower_component_fn(
                 }
                 for decl in &var_decl.decls {
                     if let Some((signal, shared)) = try_lower_shared_signal_decl(decl)? {
+                        check_rust_name("signal", &signal.name, decl.name.span())?;
                         spans.signals.push((component_name.clone(), signal.name.clone(), decl.name.span()));
                         spans.loom_calls.push(("sharedSignal", callee_span(decl)));
                         signals.push(signal);
                         shared_bindings.push(shared);
                     } else if let Some(signal) = try_lower_signal_decl(decl)? {
+                        check_rust_name("signal", &signal.name, decl.name.span())?;
                         spans.signals.push((component_name.clone(), signal.name.clone(), decl.name.span()));
                         spans.loom_calls.push(("signal", callee_span(decl)));
                         signals.push(signal);
@@ -657,6 +825,7 @@ fn lower_component_fn(
                     signals: &signals,
                     known_components,
                     spans,
+                    event_ancestor: None,
                 };
                 root = Some(lower_element(el, &mut cx, None)?);
             }
@@ -862,6 +1031,9 @@ fn lower_element(el: &JSXElement, cx: &mut Cx<'_>, row_var: Option<&str>) -> LRe
                 ),
             ));
         }
+        if let Some(outer) = cx.event_ancestor {
+            return Err(r44(*tag_span, outer, &format!("컴포넌트 참조 `<{tag}>`")));
+        }
         let node = lower_component_ref(el, &tag)?;
         cx.spans
             .component_refs
@@ -922,6 +1094,9 @@ fn lower_element(el: &JSXElement, cx: &mut Cx<'_>, row_var: Option<&str>) -> LRe
                     .with_label(first, "첫 번째 `onClick`"));
                 }
                 onclick_at = Some(attr.span);
+                if let Some(outer) = cx.event_ancestor {
+                    return Err(r44(attr.span, outer, &format!("<{tag}>의 `onClick`")));
+                }
                 let a = lower_click_action(attr, cx)?;
                 cx.event(a.signal_name(), "onClick", attr.span);
                 cx.node_event(node_idx, attr.span);
@@ -937,11 +1112,16 @@ fn lower_element(el: &JSXElement, cx: &mut Cx<'_>, row_var: Option<&str>) -> LRe
     }
 
     let mut children = Vec::new();
+    let outer_event = cx.event_ancestor;
+    if onclick_at.is_some() {
+        cx.event_ancestor = onclick_at;
+    }
     for child in &el.children {
         if let Some(node) = lower_child(child, cx, row_var)? {
             children.push(node);
         }
     }
+    cx.event_ancestor = outer_event;
 
     Ok(JsxNode::Element {
         tag,
@@ -949,6 +1129,18 @@ fn lower_element(el: &JSXElement, cx: &mut Cx<'_>, row_var: Option<&str>) -> LRe
         action,
         children,
     })
+}
+
+/// R44: 이벤트를 받는 요소 안의 이벤트 수신자. 주 span은 안쪽, 바깥 `onClick`에 label.
+fn r44(inner: Span, outer: Span, what: &str) -> Diagnostic {
+    Diagnostic::error(
+        R44,
+        inner,
+        format!(
+            "이벤트를 받는 요소 안에 또 이벤트를 받는 요소가 있습니다({what}). 진입점마다 의미가 다릅니다(bootstrap은 가장 안쪽 하나만, Island 진입점은 버블링으로 둘 다)"
+        ),
+    )
+    .with_label(outer, "바깥 `onClick`")
 }
 
 /// R06: 같은 attr가 두 번(`class`/`className`은 같은 attr로 센다). 주 span은
@@ -1148,6 +1340,9 @@ fn lower_input_binding(el: &JSXElement, cx: &mut Cx<'_>) -> LResult<JsxNode> {
     // 말고는(`{/* 주석 */}` 포함) 모두 거부한다 — R02와 같은 경계.
     if let Some(child) = el.children.iter().find(|c| !matches!(c, JSXElementChild::JSXText(t) if t.value.trim().is_empty())) {
         return Err(Diagnostic::error(R26, child.span(), "<input>은 자식을 가질 수 없습니다(지금은 자식이 조용히 사라집니다)"));
+    }
+    if let Some(outer) = cx.event_ancestor {
+        return Err(r44(oninput_span, outer, "<input>의 `onInput`"));
     }
     cx.event(&oninput_signal, "onInput", oninput_span);
     Ok(JsxNode::InputBinding { signal: value_signal })
@@ -1740,6 +1935,29 @@ fn lower_expr_container(expr: &Expr, cx: &mut Cx<'_>, row_var: Option<&str>) -> 
             let Expr::JSXElement(row_el) = unwrap_paren(row_expr) else {
                 return Err(unsupported(row_expr.span(), "`.map(...)` row template must be a JSX element"));
             };
+            // R08: row 루트의 `onClick`은 지금 조용히 사라진다(row 템플릿의 액션은
+            // 생성되지 않아 `enum Action {}`가 된다). row 안쪽 요소의 `onClick`은
+            // check.rs(codegen.rs:2319 복제)와 R44가 따로 막는다.
+            if let Some(onclick) = row_el.opening.attrs.iter().find_map(|a| match a {
+                JSXAttrOrSpread::JSXAttr(attr)
+                    if matches!(&attr.name, JSXAttrName::Ident(IdentName { sym, .. }) if sym == "onClick") =>
+                {
+                    Some(attr.span)
+                }
+                _ => None,
+            }) {
+                let tag = match &row_el.opening.name {
+                    JSXElementName::Ident(Ident { sym, .. }) => sym.to_string(),
+                    _ => "…".to_string(),
+                };
+                return Err(Diagnostic::error(
+                    R08,
+                    onclick,
+                    format!(
+                        "리스트 row 루트 `<{tag}>`의 `onClick`은 지금 조용히 사라집니다(`enum Action {{}}`). row 안 이벤트는 key 표면(G0 P1) 이후 7d에서 다룹니다"
+                    ),
+                ));
+            }
             cx.node(*list_read_span);
             let row = lower_element(row_el, cx, Some(&row_var_name))?;
             cx.binding(&signal_name, BindingKind::List, row_var, *map_call_span);
