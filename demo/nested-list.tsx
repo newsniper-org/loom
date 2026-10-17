@@ -8,6 +8,13 @@
 // 부모 entity별 파티션)는 그대로 성립하지만, 구간 크기가 row마다 같아서
 // "구간 크기를 엉뚱한 데서 계산하는" 결함 중 균일 구간에서 상쇄되는 부류는
 // 이 픽스처가 못 잡는다. roadmap 참고.
+//
+// **2026-10-17 정정**: "row 스코프 파생 signal이 IR에 없다"는 같은 날
+// (2026-08-07, commit 5c37d1b) 해소됐다 — 닫힌 형태 두 개
+// (`{open() && item.length > n && ...}`, `{xs().slice(0, item.length).map(...)}`,
+// ir.rs의 RowPredicate/RowSlice)가 들어갔고, 그것을 쓰는 판본이
+// demo/nested-list-derived.tsx다. 트랙 N(crates/loom-track-n)의 픽스처는 그
+// 판본이다. 이 파일 자체의 한계(구간 균일)는 이 파일에 대해서는 여전히 사실이다.
 import { signal } from "loom";
 
 export function App() {

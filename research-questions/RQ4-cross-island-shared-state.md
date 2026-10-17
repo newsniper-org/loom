@@ -83,3 +83,10 @@ partition"이라는 원 전제의 부분 수정이지만, 공개 표면이 폐�
 값 공유만 다루고 crash/상태 변화 통지는 다루지 않음. **저작 표면(`sharedSignal()` 같은
 컴파일러 확장)도 스트레치로 미룸** — 이번엔 손코딩 레벨(`loom_shared_set` extern import
 직접 호출)까지만.
+
+**2026-10-17 — 현행 확인**: 상태는 그대로 **전면 폐기**(2026-07-28)다. 그 뒤 이 문서를 고친 커밋은 없고, 폐기를 되돌릴
+사실도 찾지 못했다. 위 "상태" 절에서 "미착수"로 적힌 항목 가운데 둘은 최상단 폐기 공지가 이미 이행으로 적고 있다.
+crash 통지 채널은 Task #28-b가 `window.__loomShared`의 `__island_state:<id>` 키로 이행했다. 저작 표면은 Task #26에서
+`sharedValue(...)`로 들어갔다. 공지에 인용된 `graph_mode_flatten_merges_nested_components_into_one_signals_and_action`
+테스트가 Flatten 쪽을 확인한다. 미착수로 남은 것은 문제 3번(백엔드 경유 대안)뿐이다. 기본 모델에서는 이 문제 자체가
+성립하지 않는다.

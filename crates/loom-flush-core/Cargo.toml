@@ -4,6 +4,9 @@
 # 전체를 검증 대상으로 보는데, loom-runtime은 bevy_ecs/web-sys와 얽혀 있어
 # Verus가 추론할 수 없는 코드가 대부분이다. 순수 알고리즘만 담은 크레이트를
 # 따로 두면 그 전체를 검증할 수 있고, loom-runtime은 이것을 호출만 한다.
+# (2026-10-17 주: 분리 근거는 그대로지만 명령은 바뀌었다 — 아래 [dependencies]
+# 주석대로 실제 검증은 `verus --crate-type=lib crates/loom-flush-core/src/lib.rs`이고
+# `cargo verus verify`는 쓰지 않는다. 기준선 2026-08-11: 90 verified, 0 errors.)
 #
 # vstd 의존은 wasm32-unknown-unknown에서도 문제없이 빌드된다(ghost 코드가
 # 컴파일 시점에 지워지므로 런타임 짐이 없음 — 실측 확인).

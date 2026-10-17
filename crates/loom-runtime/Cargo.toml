@@ -22,6 +22,9 @@ web-sys = { version = "0.3.103", features = ["Document", "Element", "Window", "N
 # Real-browser `DomOps` implementation (`loom_runtime::web::BrowserDom`),
 # shared by loom-demo and any future benchmark harness so neither has to
 # hand-roll its own copy.
+# (2026-10-17 갱신: "future benchmark harness"는 이제 실재한다 — loom-bench.
+# 그 밖에 resume-demo, island-*, widget-embed*, largeapp-axis-* 등 브라우저
+# 대상 크레이트 대부분이 이 feature를 켠다.)
 browser = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys"]
 
 [profile.release]

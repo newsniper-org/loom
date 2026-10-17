@@ -4,6 +4,19 @@
 // API 표면(함수 이름, import 경로, 데코레이터 형태)은 전부 확정 아님 — Phase 1에서
 // 실제 파서/컴파일러를 만들며 실험적으로 결정. 여기서는 docs/에서 설명한 개념들이
 // 저작자 입장에서 어떻게 보일지 감을 잡기 위한 목적만 있음.
+//
+// **2026-10-17 정정**: 이 목업은 RQ6 확정 이전(초기 설계 대화) 것이라 "Island이
+// 항상 있다"는 전제 위에 서 있다. 2026-07-28 RQ6가 H-Qwik(강한 형태)으로
+// 확정되면서 기본 모델은 페이지 전체가 하나의 World + 하나의 앱 청크 + 전역 위임
+// 리스너 하나이고, Island 경계는 "지연 activation 경계 세분화"를 선택할 때만 쓰는
+// 선택적 최적화가 됐다(docs/04, research-questions/RQ6-are-islands-necessary.md).
+// 따라서 아래 `island()` 래퍼는 기본 저작 형태가 아니다. 실제로 컴파일되는 저작
+// 표면은 이 파일과 다르다: 래퍼 함수가 아니라 컴포넌트 참조에 붙는
+// `client:load`/`client:visible` 지시자이고(demo/widget-embed.tsx,
+// demo/islands/product-card.tsx), 다중 컴포넌트 그래프를 기본 모델로 컴파일하는
+// `GraphMode::Flatten`은 그 경계를 지우고 하나의 World로 합친다(경계를 살리는 쪽이
+// `GraphMode::Islands`). 지원 범위의 정본은 crates/loom-compiler/src/lower.rs 모듈 문서다.
+// 최종 API 표면이 미정이라는 위 서술은 2026-10-17 현재도 그대로다.
 
 import { signal, island } from "loom"; // 가칭 API
 

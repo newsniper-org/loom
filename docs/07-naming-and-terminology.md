@@ -30,6 +30,34 @@
 | **Signal\<T\>** | 값 + dirty flag를 가진 Component. 반응성의 최소 단위 | Solid/Vue의 Signal, 단 저장소가 클로저가 아니라 ECS storage |
 | **FIC** (Framework Integration Contract) | `(component, props, request_context) -> (html, resumability_payload, assets)` 순수 함수 계약 | Astro SSR adapter의 언어 무관 확장판 |
 
+**2026-10-17 정정·보강 (위 표)**: 표를 코드와 대조한 결과 세 행이 현행과 다르다. 원래 정의는 그대로 두고
+여기 적는다.
+- **Signal\<T\>**: 실제 정의는 `pub struct Signal<T>(pub T)` — **값만** 가진 Component이고 dirty flag
+  필드는 없다(`crates/loom-runtime/src/lib.rs`). "바뀌었는가"는 Bevy의 change-detection tick이 System별로
+  추적하고, patch System은 `Changed<Signal<T>>` 쿼리로 그 변경만 받는다. 즉 dirty flag 역할은 Bevy가 맡는다.
+- **FIC**: 표의 시그니처는 목표 계약이다. 실제 `crates/loom-fic`의 `render_html()`/`render_html_full()`은
+  인자가 없다 — 컴포넌트 하나(`demo/counter-list.tsx`)에 고정, `props` 없음, `request_context` 비어 있음,
+  `assets`는 항상 빈 배열(docs/05 2026-10-17 현황).
+- **지연 activation 서브트리**: 정본 용어로서의 정의는 유효하지만, 기본 모델(Flatten) 구현에는
+  `client:load`/`client:visible` 트리거가 결선돼 있지 않다. 지금 기본 모델에서 실제로 지연되는 단위는
+  페이지 전체 하나이고, 첫 클릭의 전역 위임이 유일한 트리거다(docs/04 2026-10-17 현황 확인 3).
+- **PatchTable/DomBinding**: 2026-10-17에도 미구현 그대로다. Phase 1의 "Phase 2에서 opcode로 전환" 계획은
+  이행되지 않았고, Phase 2 resumability는 LRef + 생성된 정적 `dispatch(symbol, value)`로 구현됐다.
+
+### 추가 용어 (2026-10-17 등재)
+
+이 문서 초판 이후 다른 문서와 코드에서 쓰이기 시작했는데 이 표에 없던 용어들이다.
+
+| 이 프로젝트 용어 | 정의 | 출처 |
+|---|---|---|
+| **Layer 0 — Host Glue** | 어느 Island World에도 속하지 않는 상주 계층. 권위 있는 실물은 JS 쪽 `demo/resume/registry.js`(Island 6상태 추적, load/visible 트리거, 호스트발 제거 감지)와 `shared-store.js`(공유 값 저장소)다. Rust `crates/loom-runtime/src/island.rs`의 `NativeIslandRegistry`는 같은 상태기계의 네이티브 거울(테스트·증명 대응용, wasm 쪽 권위 레지스트리는 아님 — 모듈 헤더)이며 docs/04 원문은 이것도 Layer 0 실물로 든다. docs/01·06이 같은 6상태 기계를 "Layer 1 구현"으로 세는 것은 담당 관심사(supervision 생명주기) 기준이고, 여기의 Layer 0은 상주 위치 기준이다. 기본 모델에서는 `shared-store.js`와 전역 위임 `bootstrap*.js`만 쓰인다 | docs/04 "Layer 0" 절 (Phase 3 도입, 2026-07-28 지위 축소) |
+| **`GraphMode::Flatten`** | 여러 컴포넌트를 하나의 merged World(`ResumedApp`, 청크 `App_chunk` 하나)로 컴파일하는 모드. **기본 모델** | `crates/loom-compiler` (Task #26), RQ6 H-Qwik 팔 |
+| **`GraphMode::Islands`** | 컴포넌트마다 별도 Island 엔트리(컴포넌트별 생성자, 자기 호스트 스코프 안의 LRef에 직접 리스너)로 컴파일하는 모드. **선택적 최적화**("세분화를 선택했을 때") | `crates/loom-compiler` (Task #25), RQ6 Island 팔 |
+| **복수 anchor root** | 하나의 World가 호스트 페이지의 여러 DOM 좌표에 투사되는 기본 모델의 임베드 방식. 지금은 `data-loom-id`/`data-loom-lref` 마커로 느슨하게 충족하고, 전용 `anchor_id`나 anchor별 FIC 조각 계약은 없다 | docs/05 "복수 마운트 지점" |
+| **RQ1 후보 기호 (트랙 L)** | **K** = 대조군. §10 "K: 디스패치 규칙"대로 신·구 시퀀스를 O(n) 위치 대응 동등 스캔 → 완전 동등이면 no-op / 순수 append·truncate면 count-diff / 그 밖의 경우에만 전량 despawn+respawn(2026-09-22 e6bb644부터. 그 전 구현에는 마지막 분기만 있어 "허수아비 대조군" 지적을 받고 고쳐졌다 — `research-questions/RQ1-benchmark-protocol.md` §10) / **C** = 위치가 정체성, 값 비교 후 변경분만 write / **D** = `RowKey` + 컨트롤러 Vec / **E** = `OrderKey` + 순서 없는 멤버십 집합. **-LIS** 접미는 LIS 기반 최소 이동 변형이며 현행 판정 대상 D·E는 D-LIS·E-LIS를 가리킨다 | `research-questions/RQ1-dynamic-control-flow-scheduling.md`, `crates/loom-runtime/src/list.rs` |
+| **RQ1 후보 기호 (트랙 T)** | **B** = 조건이 꺼지면 despawn, 켜지면 respawn / **F** = 조건이 꺼져도 엔티티를 despawn하지 않는 계열 — F-i 값 필터(`CondEffective`) / F-ii 필터 없이 detached DOM에 계속 패치 / F-iii `Without<Frozen>` 마커. CSS 은닉(v-show형)과 lazy-spawn-then-hide는 F 변형이 아니라 별도 arm이다(RQ1-benchmark-protocol.md "구현 arm 6개"). 판정은 B 유지, F-i/ii/iii 기각(2026-08-07). 단 컴파일러가 실제로 내는 조건부 코드젠은 lazy-spawn-then-hide(`SetVisible`)다 | RQ1 트랙 T 절 |
+| **Chain** | `crates/loom-flush-core`의 flush 순서 재연결 자료구조. flush-core의 계획 함수(`plan_from_selection`·`plan_lis_from_selection_auto` → `plan_writes*`)가 내부에서 쓴다. `loom-runtime`은 2026-07-28부터 Chain을 직접 호출하지 않고 반환된 계획(PlanOp)을 `DomWrite`로 옮겨 적기만 한다(옛 `place_in_order`는 2026-08-11에 flush-core 안으로 흡수돼 사라졌다 — `crates/loom-runtime/src/list.rs` 314–320·395–401행 주석). Verus로 검증된 배포 코드다(LIS 쓰기 계획 포함 90 verified) | `crates/loom-flush-core/src/lib.rs`, RQ5 후보 #4 |
+
 ## 명명 시 유의
 
 - Qwik의 "QRL"과 혼동되지 않도록 이벤트/구독 지연 참조는 항상 **LRef**로 통일 표기

@@ -14,6 +14,21 @@
 //! also happens to double as RQ1-benchmark-protocol.md's required
 //! "CSS 은닉(v-show형)" control arm.
 //!
+//! **2026-10-17 정정**: 위 문단의 두 서술은 낡았다.
+//! - "loom-compiler has no conditional-JSX authoring surface yet": 컴파일러의
+//!   `{cond() && <X/>}` lowering은 **2026-07-24**에 들어갔다(commit fbb7d65,
+//!   codegen.rs 모듈 문서 "Conditionals (2026-07-24)"). 조건부 *안의* 중첩
+//!   binding(`{signal()}`/`{signal().map(...)}`)과 row 템플릿 안의 조건부는
+//!   **2026-08-07**(f0eaf6f, 1071c47). 컴파일러가 내는 조건부는 이 파일의 F
+//!   *알고리즘*(lazy-spawn-then-hide, `SetVisible`)을 사이트별 함수로 복제한
+//!   것이지 이 System 자체를 쓰지 않는다. 트랙 T 판정(B 유지, F-i/ii/iii 기각)과
+//!   어긋나는데, 어느 쪽으로 맞출지 결정 기록은 2026-10-17 현재 없다
+//!   (roadmap/PHASES.md).
+//! - "implements only the simplest one": 2026-07-31(4c633c6)에 fragment 분리
+//!   공통 코어 위의 F-i/F-ii/F-iii 3변형과, 2026-08-02(d798687)에 파생 체인
+//!   깊이 3 축이 아래 "F 계열 3변형" 절에 추가됐다. 위의
+//!   `cond_reconcile_f_system`(CSS 은닉)은 그대로 남아 CSS 은닉 대조 arm 역할을 한다.
+//!
 //! `CondBlock.size` (added 2026-07-24, RQ1 Track T subtree-size axis): the
 //! conditional's child is generalized from a single node to `size` sibling
 //! nodes sharing one wrapper — the block's own `DomTarget` anchor. This is

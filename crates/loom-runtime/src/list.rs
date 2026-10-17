@@ -7,6 +7,24 @@
 //! `crates/loom-demo/src/bin/list_bench.rs` for the measurement harness and
 //! `roadmap/PHASES.md`'s Phase 1 status for what's *not* covered (the
 //! protocol's full statistical treatment, N-scaling, multi-browser matrix).
+//!
+//! **2026-10-17 정정**: 위 문단의 경로와 "다루지 않는 것" 목록은 낡았다.
+//! - `crates/loom-demo/src/bin/list_bench.rs`는 존재하지 않는다(loom-demo에는
+//!   `src/lib.rs`뿐). 실제 측정 하네스는 `crates/loom-bench`(페이지는
+//!   `demo/list_bench.html`)이다.
+//! - N-스케일링(n∈{100, 1,000, 10,000}), row 깊이 R1/R2/R3 축, Chromium +
+//!   Firefox 교차 수집은 loom-bench와 `bench/` 수집 파이프라인에 이미 있다.
+//!   paired bootstrap 등 통계 처리는 하네스가 아니라
+//!   `research-questions/analysis/rq1-verdicts.py`가 원시 표본으로 한다.
+//! - 후보도 넷이 아니다: 이 파일에 D-LIS/E-LIS(LIS 변형)가 더해졌다. 순서
+//!   결정(쓰기 계획 계산)은 Verus 검증된 `loom-flush-core`로 통째로 옮겨 갔고
+//!   (2026-07-28~08-11 단계적 이관, 아래 `emit_plan` 앞 주석), 이 파일은 D/E가
+//!   `plan_from_selection`, D-LIS/E-LIS가 `plan_lis_from_selection_auto`로 받은
+//!   계획을 `emit_plan`으로 `DomWrite`에 옮겨 적기만 한다. `Chain`을 직접
+//!   호출하지 않으며, `place_in_order`/`place_in_order_lis`는 2026-08-11 제거됐다.
+//! - 현행 트랙 L 판정 근거는 개정 #10 하네스로 재수집한 v22뿐이다(개정 #9가
+//!   그 이전 판정을 전부 무효화, v21은 재검토 대상). 채택 후보는 2026-10-17
+//!   현재 미정 — `research-questions/RQ1-benchmark-protocol.md`가 계속 지배한다.
 
 use crate::{DomTarget, DomWrite, NodeHandle, PendingDomWrites, Signal};
 use bevy_ecs::prelude::*;
@@ -538,6 +556,9 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
 /// RQ1's "이동 최소화: LIS" variant, kept as a separate candidate from
 /// plain D (not a replacement) so the two can be measured against each
 /// other directly (research-questions/RQ1-dynamic-control-flow-scheduling.md).
+/// (**2026-10-17 정정**: 두 함수는 2026-08-11 제거됐다 — 지금 차이는 계획을
+/// `loom_flush_core::plan_from_selection` 대신 `plan_lis_from_selection_auto`로
+/// 받는다는 것뿐이고, 방출은 둘 다 `emit_plan`. `emit_plan` 앞 주석 참고.)
 fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), F>,
@@ -751,6 +772,8 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
 /// `place_in_order_lis` — see `list_reconcile_d_lis_system`'s doc comment
 /// for why this is a separate, directly-comparable candidate rather than a
 /// replacement.
+/// (**2026-10-17 정정**: `place_in_order_lis`는 2026-08-11 제거됐다 — 지금은
+/// `loom_flush_core::plan_lis_from_selection_auto` + `emit_plan`.)
 fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut OrderKeyMembers, &DomTarget), F>,

@@ -26,6 +26,12 @@ members = [
 [workspace.package]
 edition = "2024"
 rust-version = "1.96"
+# 2026-10-17 주: "-phase1"은 Phase 1 시절 붙인 이름표로 남은 것이다(Phase는
+# 0~6까지 진행됐다 — roadmap/PHASES.md). 일부러 바꾸지 않았다: 소스 어디에서도
+# CARGO_PKG_VERSION을 읽지 않지만, 이 값은 Cargo.lock(20개 항목)과 wasm-pack이
+# 내는 pkg/package.json에 들어가고 크레이트 메타데이터 해시에도 섞이므로, 바꾸면
+# 개정 #10으로 동결된 RQ1 하네스(loom-bench/loom-runtime, 프로토콜 §2.5)의 빌드
+# 산출물이 달라질 수 있다. Firefox GC 통제 재수집이 끝난 뒤에 정리할 것.
 version = "0.0.1-phase1"
 
 [profile.release]

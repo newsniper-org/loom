@@ -21,6 +21,18 @@
 //! module's types (all POD, all `NodeHandle`/`IslandId`-based, never an
 //! `Entity`) reflect that: nothing in here reaches into any Island's own
 //! `LoomApp`/`World` at all.
+//!
+//! **2026-10-17 정정(지위)**: 위 두 문단은 "Island이 항상 있다"는 Phase 3
+//! 전제 위에서 쓰였다. RQ6가 2026-07-28 H-Qwik(강한 형태)으로 확정되면서
+//! 기본 모델은 **페이지 전체가 하나의 World**이고(docs/04), Island 경계는
+//! "지연 activation 경계 세분화"를 선택했을 때만 생기는 선택적 최적화가 됐다.
+//! "Island마다 World 하나"라는 논증 자체(청크가 갈리면 wasm 인스턴스가 갈린다)는
+//! 여전히 맞지만, 그 전제인 "청크가 Island마다 갈린다"가 이제 기본값이 아니다.
+//! 첫 줄의 "RQ4 build on"도 낡았다 — RQ4는 같은 날 전면 폐기됐고, 이
+//! 레지스트리에서 남은 쓰임은 RQ3 쪽 supervision과 crash 통지 채널
+//! (`__island_state:<id>`, Task #28-b)이다. RQ3는 부분 폐기 상태라 여기 규칙들은
+//! 세분화를 택할 때 적용되고, 2단계 detach·promote-once-and-stay는 기본 모델에도
+//! 적용되지만 지위는 여전히 "잠정 규칙"이다.
 
 use crate::NodeHandle;
 use std::collections::HashMap;

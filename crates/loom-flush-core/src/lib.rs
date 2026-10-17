@@ -14,6 +14,27 @@
 //! **id 표현**: `bevy_ecs::entity::Entity`는 Verus가 다룰 수 없는 불투명
 //! 타입이므로, 호출부가 `Entity::to_bits()`로 `u64`를 만들어 넘긴다. 그
 //! 변환은 단사(injective)이므로 동일성·구별성이 보존된다.
+//!
+//! **2026-10-17 정정**: 위의 "`cargo verus verify`가 검증하는 코드다"는
+//! 명령이 낡았다. 2026-08-02 마이그레이션 이후 `cargo verus verify`는 vstd
+//! 불일치로 실행되지 않고(이 크레이트 Cargo.toml 주석과
+//! `formal-verification/verus/README.md`), 실제 검증 명령은
+//! `verus --crate-type=lib crates/loom-flush-core/src/lib.rs`다. 기준선은
+//! 2026-08-11의 **90 verified, 0 errors**(LIS 건전성 포함). 범위의 한계도 함께
+//! 적어 둔다: 덮는 것은 D/E 계열 경로뿐(C·K 제외)이고, 적용 루프는 spec
+//! 함수(`apply_ops`)로 모델링돼 있으며, 원시 입력의 구조적 사전조건 넷은
+//! 호출부(`list.rs`)의 `debug_assert!`로만 지켜진다(미검증). LIS 최적성은
+//! 증명하지 않았다.
+//!
+//! 또 위의 "`list.rs`의 `place_in_order`가 이 크레이트의 `Chain`을 호출한다"도
+//! 낡았다. 2026-07-28~08-11 단계적 이관으로 방출 루프(`plan_writes`/
+//! `plan_writes_converging`), `current`/`target` 조립(`plan_inputs`,
+//! `plan_from_selection`), LIS `keep` 조립(`lis_keep`,
+//! `plan_lis_from_selection_auto`)이 모두 이 크레이트 안으로 들어왔고,
+//! `place_in_order`/`place_in_order_lis`는 2026-08-11 사라졌다. `list.rs`는
+//! `Chain`을 직접 만지지 않고 이 크레이트가 돌려준 계획을 `emit_plan`으로
+//! `DomWrite`에 옮겨 적기만 한다. 아래 본문의 "`place_in_order`의 …" 표현은
+//! 이 코드가 **어디서 옮겨 왔는지**를 가리키는 출처 표기로 읽을 것.
 
 #![cfg_attr(verus_keep_ghost, allow(unused_imports))]
 
@@ -2442,6 +2463,9 @@ pub fn plan_writes(
         // 호출부(`list.rs`의 `place_in_order_lis`)가 `lis_indices`로 이것을
         // 세운다. 지금까지 디버그 빌드 `debug_assert!`로만 있던 것을 여기
         // **기계가 읽는 계약**으로 올렸다(2026-08-08).
+        // (2026-10-17 정정: 그 호출부는 2026-08-11 사라졌다 — 지금 P는 이
+        // 크레이트의 `lis_keep` 사후조건으로 증명되고, `plan_lis_from_selection`
+        // 이 같은 검증 단위 안에서 이 `requires`에 물린다.)
         kept_order_preserved(current@, target_ids@, target_fresh@, keep@),
         // **사전조건 Q** — `current`에 target 밖 원소(extras)가 없다 (2026-08-09 신설).
         //

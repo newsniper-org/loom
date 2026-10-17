@@ -55,5 +55,91 @@
 \*
 \* 상세 근거는 roadmap/PHASES.md Phase 5 절 + research-questions/
 \* RQ5-formal-verification-targets.md에도 기록.
+\*
+\* ## 2026-10-17 — 재검토 조건 이행: bevy_ecs 0.19.0 소스로 다시 읽음
+\*
+\* **이행 경위(정정 포함)**: 위 본문은 2026-07-24에 bevy_ecs 0.14.2 소스를 읽고
+\* 쓴 것이다. 2026-07-28 커밋 7e30659("의존성 업데이트")에서 Cargo.lock의
+\* bevy_ecs가 0.14.2 → 0.19.0으로 **메이저 업그레이드**됐고, 같은 커밋이 이 파일
+\* 10행의 버전 문자열만 `"0.14"` → `"0.19"`로 바꿨다. 위 재검토 조건이 요구한
+\* "해당 버전의 실행기 소스를 다시 읽기"는 그때 이행되지 않았다 — 그래서 약 석 달
+\* 동안 10행은 0.19를, 나머지 근거는 0.14.2의 파일:라인을 가리키는 혼합 상태였다.
+\* 아래가 그 재확인이다. 위 0.14.2 인용(schedule.rs:206, multi_threaded.rs:459/
+\* 503-504 등)은 **0.14.2 기준의 역사적 기록**으로 남겨 둔다 — 0.19에는
+\* `ExecutorKind`도 `archetype_component_access`도 없다.
+\*
+\* 확인 대상: Cargo.lock의 `bevy_ecs 0.19.0`(워크스페이스 `bevy_ecs = "0.19"`,
+\* Cargo.toml:41, default-features 그대로). 아래 경로는
+\* `~/.cargo/registry/src/index.crates.io-*/bevy_ecs-0.19.0/` 기준이다. 레지스트리에
+\* 있는 0.19.1의 `src/schedule/` 디렉터리는 0.19.0과 바이트 단위로 동일함을
+\* `diff -r`로 확인했다(그러므로 0.19.1로 올라가도 아래 결론은 그대로다).
+\*
+\* (a) `multi_threaded`는 0.19.0에서도 default feature가 아니다 — **성립 유지.**
+\*   - `Cargo.toml:63-68`: `default = ["std", "bevy_reflect", "async_executor",
+\*     "backtrace"]`. `multi_threaded = ["bevy_tasks/multi_threaded"]`(71행)는 별도
+\*     opt-in이다.
+\*   - 실제로 해석된 feature: `cargo tree --offline -e features -i bevy_ecs`
+\*     (호스트와 `--target wasm32-unknown-unknown` 둘 다)가 bevy_ecs에
+\*     `default, std, bevy_reflect, async_executor, backtrace`만, bevy_tasks에
+\*     `async_executor, futures-lite`만 보고한다. 다른 의존이 feature 통합으로
+\*     `multi_threaded`를 켜는 경로도 없다.
+\*
+\* (b) 이 프로젝트가 실제로 쓰는 실행기는 `SingleThreadedExecutor`다 — **성립 유지.**
+\*   - 0.19에서는 `ExecutorKind` 열거형이 사라지고 `Schedule::new`가
+\*     `executor: default_executor()`로 실행기를 고른다(`schedule/schedule.rs:405-416`,
+\*     특히 410행). `default_executor()`(`schedule/executor/mod.rs:45-65`)는
+\*     `cfg(all(not(target_arch = "wasm32"), feature = "std", feature =
+\*     "multi_threaded"))`일 때만 `MultiThreadedExecutor`를, 그 밖에는
+\*     `SingleThreadedExecutor`를 돌려준다. **wasm32 타깃에서는 feature와 무관하게
+\*     항상 SingleThreaded**다 — 이 프로젝트의 클라이언트 배포 타깃이 WASM이므로,
+\*     브라우저 쪽은 설령 `multi_threaded`를 켜도 바뀌지 않는다.
+\*   - 이 저장소의 스케줄 생성은 `crates/loom-runtime/src/lib.rs`의 `LoomApp::new`
+\*     안 `Schedule::default()` 하나뿐이고(`Schedule::default` → `Schedule::new`,
+\*     schedule.rs:393-401), `set_executor` 호출은 저장소 어디에도 없다
+\*     (`git grep` 확인). 실행은 `fn tick`과 테스트용 `fn run_schedule_for_test`의
+\*     `self.schedule.run`뿐이다. (줄 번호는 주석 추가로 쉽게 밀리므로 식별자로
+\*     가리킨다. 2026-10-17 작업 트리 기준 lib.rs:1272 / 1399·1405 / 1395-1396.)
+\*   - SingleThreaded 실행기는 `executor/single_threaded.rs:71`의
+\*     `for system_index in 0..schedule.systems.len()` 루프로 System을 한 스레드에서
+\*     순서대로 돈다. 따라서 위 "동시 실행 자체가 없다"는 논증은 0.19에서도 그대로다.
+\*   - 주의할 차이 하나: 0.19에서는 `MultiThreadedExecutor`가 `multi_threaded`가
+\*     아니라 `std` feature만으로 컴파일·공개된다(`executor/mod.rs:1-2, 11-12`).
+\*     즉 누군가 `schedule.set_executor(MultiThreadedExecutor::new())`를 쓰면 feature
+\*     없이도 다중 스레드 실행기로 갈 수 있다. 재검토 조건 (a)를 "feature가 꺼져
+\*     있다"에서 **"feature가 꺼져 있고 `set_executor`로 실행기를 바꾸지 않는다"**로
+\*     넓혀 읽어야 한다.
+\*
+\* (c) multi_threaded 실행기의 무충돌 보장(위 본문 (b)) — **성립 유지, 메커니즘은
+\*     바뀜.** 0.14.2의 "실행 직전에 `archetype_component_access().is_compatible
+\*     (&self.active_access)`를 검사"는 0.19에 없다. 대신:
+\*   - `executor/multi_threaded.rs:181-227`: 실행기 `init`에서 System마다
+\*     `system2.access.is_compatible(&system1.access)`(188행)로 **충돌 System 비트셋
+\*     (`conflicting_systems`)**을 미리 계산한다. run condition·set condition과의
+\*     충돌도 같은 방식으로 계산한다(196-227행). `access`는 `System::initialize`가
+\*     돌려준 `FilteredAccessSet`이다(`schedule/node.rs:36-42`) — archetype 단위가
+\*     아니라 컴포넌트·필터 단위 정적 접근 선언이다.
+\*   - `can_run`(multi_threaded.rs:543-577)은 System을 띄우기 직전에 그 비트셋이
+\*     현재 실행 중인 System 집합(`running_systems`)과 **disjoint하지 않으면 false**를
+\*     돌려준다(569-575행). exclusive System은 실행 중인 System이 하나라도 있으면
+\*     못 뜬다(545-547행). 호출부 `spawn_system_tasks`(440-540행)는 `can_run`이
+\*     false면 그 System을 건너뛰고(488-494행) 다음 기회에 다시 본다.
+\*   - 예외 한 줄: `can_run`의 충돌 검사는 `skipped_systems`에 든 System을 면제한다
+\*     (569행 `!self.skipped_systems.contains(..)`). 그런 System은 바로 뒤
+\*     `should_run`이 false가 되어 실행되지 않고 skip 처리되므로(501-512행, should_run 592행) 동시
+\*     접근이 생기지 않는다.
+\*   - `ambiguity_detection`은 0.19에서도 기본값 `LogLevel::Ignore`
+\*     (schedule.rs:1627)이고, 스케줄 빌드 때 순서가 정해지지 않은 충돌 쌍을
+\*     경고(Warn)하거나 빌드 오류(Error)로 바꾸는 진단일 뿐이다(schedule.rs:1253-1261).
+\*     실행기의 충돌 비트셋 계산·검사와는 독립이다 — 위 본문의 "로그 설정과 무관하게
+\*     항상 작동"은 0.19에서도 참이다.
+\*
+\* **결론(2026-10-17)**: 위 2026-07-24 결론 — TLA+ 모델체킹 없이 Bevy에 위임 — 은
+\* bevy_ecs 0.19.0에서도 유지된다. 근거 파일:라인은 이 절의 것으로 대체한다.
+\* **한계(숨기지 않음)**: (1) 이번 확인은 소스 읽기이지 실행 증거가 아니다 —
+\* 실행기 종류를 런타임에 단언하는 테스트는 없다(실행기 타입이 공개 API로 노출되지
+\* 않음). (2) Bevy의 `FilteredAccessSet::is_compatible`(query/access.rs:1153)
+\* 자체가 옳다는 것은 Bevy를 믿는 것이다 — 원래 결론과 같은 위임이다. (3) 다음
+\* 메이저 업그레이드(0.20 이상) 때 이 절을 다시 이행해야 한다. 이번처럼 버전 문자열만
+\* 바꾸고 넘어가지 말 것.
 
 ====

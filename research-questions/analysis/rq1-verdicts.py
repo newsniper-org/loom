@@ -806,7 +806,10 @@ def gate_d(idx, browser):
     # 결론 불가 셀이 있으면 판정 불가.
     w5_rider = resolve_any(w5_vs, lambda v: v == "열세")
     print(f"    ⇒ {say(w5_rider, '**부속 조건 발동**' + (' (' + ', '.join(w5_worse) + ' 대비 열세)' if w5_worse else ''), '미발동')}")
-    print("    ※ 범위 밖: §5 FV 계류(D·E 공통)·D 기각 (i)/(ii)(G0/트랙 N) — 채택은 그것까지 통과해야 한다.")
+    # **§5 FV 계류는 2026-08-11에 소진됐다**(loom-flush-core 90 verified — 프로토콜 개정 #9 :1057, 2026-10-17 문서
+    # 표류 정정 1). 2026-10-17까지 이 줄이 계류를 남은 조건으로 찍었다(고정 문자열 표류).
+    print("    ※ 범위 밖: D 기각 (i)/(ii)(G0/트랙 N) — 채택은 그것까지 통과해야 한다. "
+          "(§5 FV 계류는 2026-08-11 소진 — 원시 입력 구조적 사전조건 넷·LIS 최적성은 별개, 미증명)")
 
     reject_iii = resolve_all([k_all, back_iii], lambda x: x is True)
     if reject_iii is False:
@@ -929,8 +932,8 @@ def gate_e(idx, browser):
     print(f"\n  {verdict_head('E')}: {say(e_reject, '**기각**', '기각 미발동')}")
     # 이 스크립트가 **평가하지 않는** E 조항을 적는다 — 안 적으면 "기각 미발동"이 E의
     # 모든 기각 조항을 통과했다는 뜻으로 읽힌다(2026-09-27 검증 지적).
-    print("    ※ 범위 밖: E 기각 (iii)(G0 — No-VDOM 판별)·트랙 N 조항(G1/G2)·§5 FV 계류. "
-          "채택은 그것까지 통과해야 한다.")
+    print("    ※ 범위 밖: E 기각 (iii)(G0 — No-VDOM 판별)·트랙 N 조항(G1/G2). "
+          "채택은 그것까지 통과해야 한다. (§5 FV 계류는 2026-08-11 소진)")
     return {"reject_i": fired_i, "reject_ii": fired_ii}
 
 

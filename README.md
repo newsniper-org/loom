@@ -54,7 +54,7 @@ Component에 저장하지 않는다(CLAUDE.md "절대 하지 말 것" 4).
 스케줄링, Astro client 지시어, SWC)과 실제로 새로운 것을 구분해 둔다.
 
 단, docs/08의 "새로 설계한 것" 중 두 항목은 현행과 다르다. #3(Island 격리 재해석)은 RQ6로 폐기됐고,
-#2(PatchTable)는 구현되지 않았다. 아래 "알려진 불일치"를 참고할 것.
+#2(PatchTable)는 구현되지 않았다. docs/08에 2026-10-17 정정이 붙어 있다.
 
 ## 현재 상태
 
@@ -112,9 +112,10 @@ PHASES.md는 2026-08-13 이후 갱신되지 않았다. 그래서 두 가지가 �
     브라우저 간에 달라 비교할 수 없었다.
   - **WebDriver BiDi로 GC 통제를 붙인 Firefox 재수집은 대기 중이다**(개정 #10 후속 3). 다른 작업과의 CPU 경합이
     끝난 뒤, 무부하 그룹 11 단독 스모크부터 시작한다.
+  - §5 FV 계류(flush 규약 v0의 형식 검증)는 2026-08-11에 소진됐다(`loom-flush-core` 90 verified). 원시 입력
+    구조적 사전조건 넷과 LIS 최적성은 그 계약 밖이고 미증명이다.
   - **채택까지 남은 것**:
     - D·E는 G0(No-VDOM 구현 재심사, docs/03 판별 기준)를 구현 단위로 받지 않았다.
-    - §5 FV 계류. 문서마다 상태 서술이 다르다(아래 "알려진 불일치").
     - D 기각 (iii) 뒷항(M4/M7/M3)이 미계측이다.
     - D를 채택하면 W5 부속 조건(unkeyed opt-out 명세)이 붙는다.
     - D per-row 변형과 트랙 R S1은 "v22 이후 캠페인"으로 미뤄져 있다.
@@ -140,7 +141,7 @@ PHASES.md는 2026-08-13 이후 갱신되지 않았다. 그래서 두 가지가 �
 |---|---|---|
 | Supervision 6상태 기계 + Entity 소유권 (`lean4/SupervisionTree.lean`) | Lean 4 | 증명 완료, `sorry` 0. 단, `ownedEntities`가 언제 실제로 비워지는지(despawn 시점)는 모델링하지 않았다(파일 안 TODO) |
 | Resumability 건전성, 축소 모델 (`lean4/ResumabilitySoundness.lean`) | Lean 4 | 증명 완료, `sorry` 0. i32 카운터는 단일 writer 전제가 필요하고, 컴파일러가 이를 정적으로 강제한다. StringList/Bool/Str은 DOM 복구형이라 전제 없이 성립한다 |
-| 스케줄러 안전성 (`tla/SchedulerSafety.stub.tla`) | TLA+ | **의도적 스텁**. Bevy SingleThreaded 실행기에 위임했다. 근거는 bevy_ecs 0.14.2 소스 기준이고, 0.19 업그레이드 뒤 스텁 자체의 재검토 조건은 이행되지 않았다 |
+| 스케줄러 안전성 (`tla/SchedulerSafety.stub.tla`) | TLA+ | **의도적 스텁**. Bevy SingleThreaded 실행기에 위임했다. 2026-10-17에 bevy_ecs 0.19.0 소스로 재검토를 이행해 위임 근거가 성립함을 확인했다(wasm32에서는 항상 SingleThreaded). 0.19부터는 조건에 "`set_executor`로 실행기를 바꾸지 않는다"가 더해졌다 |
 | flush 순서 모델 (`verus/flush_order.rs`) | Verus | 28 verified, 0 errors. Verus로 쓴 **모델**이다 |
 | flush 순서 + LIS **배포되는 코드** (`crates/loom-flush-core`) | Verus | 90 verified, 0 errors(LIS 건전성 증명 2026-08-11). 덮는 범위는 D/E 계열 경로뿐이고 C·K는 제외다. 원시 입력의 구조적 사전조건 4개는 `debug_assert!`로만 지켜진다(미검증). LIS 최적성은 증명하지 않았다 |
 
@@ -249,7 +250,7 @@ loom-research/
 ## 읽는 순서 (Claude Code 기준)
 
 1. `CLAUDE.md`: 작업 프로토콜
-2. `docs/01-architecture-overview.md`: 전체 그림. 단, Island 서술이 낡았다(아래 "알려진 불일치")
+2. `docs/01-architecture-overview.md`: 전체 그림. 원래 그림은 RQ6 확정 전 것이고, 맨 앞의 2026-10-17 갱신 블록과 그림 아래 정정을 함께 읽을 것
 3. `docs/04-islands-and-resumability.md`: 가장 중요한 설계 결정(RQ6 확정 결과)
 4. 나머지 `docs/*`
 5. `research-questions/*`: 현재 진행 중인 리서치 작업 대상은 RQ1
@@ -285,44 +286,22 @@ loom-research/
   PatchTable 대신 제네릭 Rust System으로 구현했고 아직 전환하지 않았다(docs/07).
 - FIC `assets` 매니페스트(현재 항상 빈 배열), `request_context`, sidecar 콜드 스타트
 - wasm panic 봉쇄(조건 C는 stable 채널에서 미검증), 비동기 정리 타임아웃 시 강제 drop
-- LIS 최적성 증명, 입력 사전조건 4개의 검증, TLA+ 위임 근거의 bevy_ecs 0.19 재확인
+- LIS 최적성 증명, 입력 사전조건 4개의 검증
+- 기본 모델(Flatten)의 Layer 1 결선: 6상태 기계, 2단계 detach, 호스트발 DOM 제거 감지, load/visible 트리거가
+  Island 경로(`registry.js`)에만 있고 `bootstrap-flat.js`에는 없다(docs/04·06)
+- 복수 위치 임베드 계약: 실측 픽스처의 위젯 5개는 한 `#app` 안에 연속으로 있었고, anchor별 조각 계약이 없으며,
+  시그널을 가진 같은 컴포넌트를 두 번 참조하면 Flatten이 거부한다(docs/05)
 
-## 알려진 불일치 (README 밖 — 아직 안 고침)
+## 2026-10-17 일괄 정정
 
-README를 갱신하면서(2026-10-17) 확인했지만 이번에 고치지 않은 것들이다. 각 문서를 고칠 때 날짜 붙은
-정정으로 반영할 것.
+이 README를 갱신하면서 다른 문서와 주석의 낡은 서술도 함께 현재 상태로 고쳤다. 대상은 docs/01–08, CLAUDE.md,
+roadmap/PHASES.md, formal-verification 문서와 TLA+ 스텁, RQ1–RQ6 문서, 크레이트·데모 doc 주석이다. 원문은 지우지
+않고 "2026-10-17 정정"을 덧붙이는 방식으로 고쳤다. RQ1 프로토콜은 append-only라 끝에 등재만 했다. RQ1 본문에는
+v22 절과 §11-1(b) 등재를 넣었다. 코드는 주석만 바뀌었고, 동결된 하네스의 빌드 산출물은 그대로다.
 
-- **docs/01**: "Island root = supervision root", "Island별 ECS World partition"이 그대로다. RQ6 확정이 반영되지 않았다.
-- **docs/02**:
-  - `GraphMode::Flatten`을 "미구현"으로 서술한다. 실제로는 구현됐고 실측도 했다.
-  - PatchTable을 핵심 결정으로 서술한다. 실제로는 미구현이다.
-- **docs/03**:
-  - 끝의 2026-07-24 교차 참조가 "D/E 조건부 채택(FV 계류)"을 현행처럼 서술한다. 이 판정은 개정 #9로 무효다.
-  - 서두 "미해결"의 후보안 서술은 K/C/D/E 구도 이전 것이다.
-  - 반응성 파이프라인 3단계가 미구현인 PatchTable/DomBinding opcode 디스패치를 현행처럼 서술한다.
-  - 스케줄링 절의 "자동 병렬 실행"은 실제 실행기(SingleThreaded)와 다르다.
-  - RQ1 프로토콜 49행의 "PatchTable opcode 디스패치(02)"도 같은 문제다.
-- **docs/08**:
-  - Island 격리 서술이 RQ6 확정 전 그대로다.
-  - PatchTable을 새 설계로 서술한다(미구현).
-  - Verus 수치가 70 verified다(현재 90).
-- **formal-verification/README.md**: 70 verified, "세 후보"로 적혀 있다. **verus/README.md**의 "현재 결과" 줄은
-  80이다. 정본은 같은 파일 "기준선" 절의 90이다.
-- **tla/SchedulerSafety.stub.tla**: 버전 문자열만 0.19로 바뀌었고, 근거 인용은 bevy_ecs 0.14.2 그대로다.
-  스텁 스스로 정한 재검토 조건(메이저 업그레이드 시 실행기 소스를 다시 확인)이 이행되지 않았다.
-- **CLAUDE.md**: "formal-verification/의 Lean4/TLA+ 파일은 스켈레톤이지 증명이 아님"은 낡았다. Lean 4 두 건은
-  증명이 끝났고, TLA+만 스텁이며, Verus 트랙은 언급이 없다.
-- **roadmap/PHASES.md**:
-  - 2026-08-13 이후 갱신되지 않았다(개정 #10·v22 없음).
-  - Phase 5 절이 2026-08-08 시점에 머물러 있다.
-  - Phase 0 제목에 "(지금 여기)"가 남아 있다.
-- **RQ1 본문**: v22 판정이 반영되지 않았다. "§5 FV 계류" 상태가 절마다 다르다(2026-08-11 "소진" vs 뒤쪽 절의
-  "계류").
-- **크레이트 doc 주석**:
-  - loom-runtime 헤더가 Phase 1 스코프를 서술한다.
-  - cond.rs와 loom-resume-demo가 조건부 lowering을 "미구현"으로 서술한다. 실제로는 2026-07-24에 구현됐고,
-    조건부 안의 중첩 바인딩은 2026-08-07에 들어갔다.
-  - loom-resume-demo는 같은 파일 안에서도 헤더와 250행이 모순되고, 폼 입력 미구현·static-only 서술도 낡았다.
-  - list.rs가 존재하지 않는 하네스 경로를 가리킨다.
-  - loom-bench 헤더의 "R 축·CI 없음"이 낡았다.
-  - workspace 버전 문자열이 `0.0.1-phase1`이다.
+일부러 남긴 것:
+- workspace 버전 문자열 `0.0.1-phase1`: 바꾸면 Cargo.lock과 wasm-pack 산출물 메타데이터가 바뀌어 동결된 RQ1
+  하네스(§2.5)에 닿을 수 있다. Firefox GC 통제 재수집이 끝난 뒤 정리한다(Cargo.toml 주석).
+- `research-questions/data/verdicts/*.txt`의 "※ 범위 밖: §5 FV 계류" 줄: 커밋된 판정 기록이라 고치지 않았다.
+  판정기의 고정 문구는 고쳤으므로 다음 판정문부터 반영된다.
+- docs/01의 ASCII 그림과 docs/04의 "폐기된 이전 설계" 절: 이력 보존용 원문이다. 정정은 그 아래에 있다.

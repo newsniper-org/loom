@@ -170,6 +170,12 @@ pub enum RowSlice {
 /// block. Phase 1 scope: I32 only (matches `__loomShared.set(key: &str,
 /// value: i32)`'s existing signature) — narrower than local `signal()`,
 /// not wider; extend only when a real use case needs it.
+///
+/// **2026-10-17 주(지위)**: RQ4는 2026-07-28 전면 폐기됐다(RQ6 H-Qwik 확정 —
+/// 기본 모델은 하나의 World라 위젯 간 공유는 같은 World의 Signal 문제). 이 저작
+/// 표면은 되돌리지 않고 남아 있으며, `GraphMode::Flatten`에서도 소스가 이것을
+/// 쓰면 `SharedStore`가 함께 생성된다(codegen.rs `generate_flatten_entry_body`의
+/// `has_shared`). Flatten에서 이 경로가 필요한지 정리한 결정 기록은 없다.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SharedBinding {
     /// Name of the *local* `SignalDecl` this mirrors — always resolves to

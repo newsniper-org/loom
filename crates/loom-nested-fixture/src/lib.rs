@@ -10,6 +10,11 @@
 //! 트랙 L 후보들의 불변식 위반을 잡는 도구고, 이쪽은 **최종 트리 모양을 사람이
 //! 읽을 수 있는 HTML 한 줄로** 뽑아 비교하는 것이 전부다. 트랙 N 하네스의
 //! RecordingDom이 생기면 그쪽으로 흡수될 수 있다.
+//!
+//! **2026-10-17 갱신**: 트랙 N 하네스(`crates/loom-track-n`, 2026-08-08)와 그
+//! `RecordingDom`(`loom-track-n/src/dom.rs`)은 생겼지만 이 크레이트는 흡수되지
+//! 않고 별도로 남아 있다(테스트 `nested.rs`·`nested_list.rs`·`nested_derived.rs`).
+//! 흡수할지 결정한 기록은 없다.
 
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/generated.rs"));

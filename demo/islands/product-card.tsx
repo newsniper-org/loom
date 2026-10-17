@@ -18,6 +18,14 @@
 //     #25 is responsible for — nested Island composition, `client:load`/
 //     `client:visible` activation, opaque-boundary DOM scoping, compiled
 //     click dispatch — not RQ4's separate concern.
+//
+// **2026-10-17 정정**: 두 번째 항목의 "sharedSignal() authoring surface ...
+// not yet implemented"는 낡았다 — `sharedSignal()`/`sharedValue()` 저작 표면은
+// Task #26(2026-07-24, commit ece9da4)에 구현됐고 demo/widget-embed.tsx가 쓴다(ir.rs
+// `SharedBinding`). 이 픽스처가 그것을 쓰지 않는 것은 여전히 사실이다. 그리고
+// RQ4 자체가 2026-07-28 전면 폐기됐다(RQ6 H-Qwik 확정 — Island 경계는 이제
+// 선택적 최적화, docs/04). 첫 항목(`ClickAction`에 `Decrement` 없음)은
+// 2026-10-17 현재도 사실이다.
 import { signal } from "loom";
 
 function Widget() {

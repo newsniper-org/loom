@@ -31,6 +31,18 @@
 //! `data-loom-lref="chunk|symbol|key:value,..."` is a *tentative* pick, not
 //! RQ2's eventual answer.
 //!
+//! **2026-10-17 정정**: 바로 위 "Still not attempted ... there is no compiler
+//! surface for conditionals at all yet" 문장은 같은 날(2026-07-24) 안에
+//! 낡았다 — 이 파일 아래 `ssr_render`의 문서(History 2026-07-24)가 이미 적듯,
+//! 컴파일러가 `{cond() && <X/>}`를 lowering하게 됐고(commit fbb7d65)
+//! `demo/counter-list.tsx`의 `details` 조건부가 컴파일된 경로로 SSR·resume된다.
+//! 조건부 안의 중첩 binding은 2026-08-07(f0eaf6f)부터 가능하고, "이미 보이는
+//! 조건부를 resume해 안쪽 binding을 다시 붙이는" 경우도 컴파일된 코드로
+//! `crates/loom-nested-fixture/tests/nested.rs`
+//! (`resuming_a_shown_conditional_reattaches_its_nested_bindings`)가 네이티브
+//! TreeDom에서 검사한다(브라우저/wasm 청크 경로는 아님). 2026-10-17 현재 RQ2는
+//! 여전히 열려 있고 위 payload 포맷도 여전히 잠정이다.
+//!
 //! ## Two build targets sharing one crate
 //! - `src/bin/ssr.rs` (native): renders the initial HTML via generated
 //!   `setup()` against `StringDom` — standing in for a real backend's SSR
@@ -258,6 +270,16 @@ pub fn ssr_render() -> String {
 /// stated plainly in `research-questions/RQ6-verification-plan.md`'s status
 /// section, not silently substituted with something else.
 ///
+/// **2026-10-17 정정**: 위 "Form input is still not included — `loom-runtime`
+/// has no two-way form-value binding yet"는 낡았다. `<input value={s()}
+/// onInput={...}/>` 양방향 binding은 2026-07-24(commit fbb7d65 "컴파일러 표면
+/// 확장(조건부/폼 입력)")에 들어갔다 — loom-runtime의 `InputValueTarget`/
+/// `patch_input_system`/`DomOps::set_input_value`·`get_input_value`, IR의 input
+/// binding, 그리고 `demo/counter-list.tsx`의 `name` 입력이 그것이고, 위
+/// `ssr_render`가 받아 버리는 세 번째 반환값(`_input_actions`)이 그 action 표다.
+/// (이 문장과 그 구현은 같은 커밋 fbb7d65에 함께 들어갔다 — 커밋 안에서 문서가
+/// 구현을 따라가지 못한 것으로 보인다. 아래 "static-only" 문장도 같은 커밋.)
+///
 /// Conditional (RQ1 Track T candidate F) resume with **existing internal
 /// state** — a **runtime-only** proof, hand-written like the original
 /// counter kickoff was, because compiled conditionals are static-only
@@ -273,6 +295,15 @@ pub fn ssr_render() -> String {
 /// starts hidden and empty, so its resume path needs no captured child
 /// state at all), this proof specifically exercises the harder
 /// "already-shown-with-existing-state" resume case.
+///
+/// **2026-10-17 정정**: "compiled conditionals are static-only" 이유는
+/// 2026-08-07(f0eaf6f)에 해소됐다 — `then_branch` 안에 `{signal()}`/
+/// `{signal().map(...)}`를 넣을 수 있다(ir.rs `CondBinding` 문서). 다만 그
+/// signal들은 컴포넌트 최상위에 선언되고 entity는 `setup()`이 항상 즉시
+/// 만든다(codegen.rs "중첩 (2026-08-07)" 절) — "조건부 자식이 자기 내부 상태를
+/// 소유한다"는 이 모듈의 모양(F의 `CondBlock` 자식마다 `Signal<i32>`)과 같지는
+/// 않다. 컴파일된 경로의 "보이는 조건부 resume"은 loom-nested-fixture가 네이티브로
+/// 검사하고, 이 모듈은 F 런타임 System 자체의 상태 보존 증명으로 그대로 남는다.
 pub mod cond_resume {
     use super::StringDom;
     use loom_runtime::{

@@ -19,6 +19,24 @@
 //! `research-questions/RQ1-dynamic-control-flow-scheduling.md`'s "Phase 1
 //! 트랙 L" section for the complete, current list of what's covered.
 //!
+//! **2026-10-17 정정**: 위 "Still not ..." 목록은 이 문단이 쓰인 Phase 1
+//! 시점 것이다. 지금은 이렇다.
+//! - row 깊이 축: **있다.** R1/R2는 §3.3 핵심 격자 {W1,W2,W3,W4,W5,W7}×{R1,R2}로,
+//!   R3는 "W2 × R3 × n=1,000" 셀로 이 하네스가 돌린다(아래 셀 목록 코드,
+//!   loom-runtime `LoomApp::add_row_depth_systems`). 네이티브 쪽 확인은 loom-runtime `tests/r2_axis.rs`·
+//!   `tests/r3_axis.rs`.
+//! - paired-bootstrap CI: 이 바이너리가 계산하지 않는 것은 그대로다 — 의도된
+//!   분담이다. 하네스는 원시 표본만 내고, CI와 §9 판정은
+//!   `research-questions/analysis/rq1-verdicts.py`가 계산한다.
+//! - 다중 브라우저: 같은 빌드를 Chromium(비스로틀 + 4× 스로틀)과 Firefox(§8
+//!   교차 확인 16그룹)에서 돌린다. 셀(그룹)마다 새 브라우저를 띄우는 것은
+//!   `bench/collect-per-cell.sh`(개정 #10 후속 2), GC 통제(M-15)는 Chromium이
+//!   CDP(`bench/e2e/cdp-agent.mjs`), Firefox가 WebDriver BiDi
+//!   (`bench/e2e/ff-bidi-agent.mjs`).
+//! - 트랙 T(B/F 계열) 측정도 이 크레이트에 있다(`#results-cond`).
+//! 이 하네스는 개정 #10 기준으로 동결돼 있다(프로토콜 §2.5) — 2026-10-17 현재
+//! GC 통제 Firefox 재수집이 대기 중이므로 코드 토큰은 건드리지 말 것.
+//!
 //! Results are written as a JSON string into `#results`' `textContent`
 //! (kept as raw per-rep sample arrays, not pre-aggregated).
 

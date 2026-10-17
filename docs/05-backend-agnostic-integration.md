@@ -31,6 +31,24 @@ World)이 여러 개의 DOM 좌표에 투사된다"**는 모델이다 — §8이
 "H-Qwik 팔의 복수 anchor 메커니즘"으로 잠정 고정해 뒀던 것이, 이제 잠정이 아니라
 확정된 기본 모델이 됐다.
 
+**2026-10-17 정정 (위 두 문단의 실증 범위)**: 위 서술은 실측이 보인 것보다 넓게 적혀 있다.
+- RQ6 실측 픽스처(`demo/widget-embed/flat/index.html`)에서는 5개 위젯의 SSR 마크업이 **하나의 `#app`
+  div 안에 연속으로** 들어 있다. 위젯 사이에 호스트 콘텐츠가 끼어 있지 않다. 따라서 "헤더/본문/푸터처럼
+  호스트 템플릿의 서로 다른 위치에 흩어진 anchor"는 **실증되지 않았다.** M9가 확인한 것은 같은 World에
+  속한 위젯 사이의 교차 갱신이다.
+- "서로 다른 anchor marker" 요구는 전용 IR 필드 없이 기존 `data-loom-id`/`data-loom-lref` 마커로
+  "loosely" 충족한 상태이고, 전용 `anchor_id` 필드는 추가되지 않았다(RQ6-verification-plan.md §3.4
+  "여전히 남은 것" 2).
+- FIC(아래)는 `html` 문자열 **하나**를 돌려준다. 백엔드가 한 World의 마크업을 템플릿의 여러 위치에
+  나눠 꽂으려면 anchor별 조각을 돌려주는 계약이 필요한데, 그런 계약은 정의되지 않았다. 또 `loom-fic`는
+  `demo/counter-list.tsx` 하나에 고정돼 있어 Flatten 앱(복수 위젯)을 FIC로 렌더한 적이 없다.
+- Flatten은 시그널 이름의 전역 유일성을 요구한다. 시그널을 가진 같은 위젯을 한 페이지에 두 번 참조하면
+  이름이 충돌해 컴파일러가 거부한다(`crates/loom-compiler/src/codegen.rs` `flatten_node`의 panic. 2026-10-17 코드 확인. Island 팔은 DOM 쿼리 스코프가 격리돼 이 문제가
+  없다 — RQ6-verification-plan.md §3.4 "여전히 남은 것" 1). 자동 네임스페이싱은 구현되지 않았다.
+
+즉 "하나의 World, 복수 anchor root"는 기본 모델로 **확정된 방향**이지만, 레거시 백엔드 템플릿의 여러
+위치에 실제로 흩어 꽂는 경로는 아직 구현·실증되지 않았다(아래 "미해결").
+
 ## 요구조건 해석
 
 "어떤 백엔드 프레임워크에든 잘 결합"은 "Node.js 런타임 위의 다른 JS 프레임워크와 잘 어울림"
@@ -55,11 +73,22 @@ render(component_ref, props, request_context) -> {
 문자열 삽입 지점에 넣기만 하면 됨. 이건 사실 Astro의 SSR adapter 개념을 JS 런타임 경계
 바깥까지 확장한 것.
 
+**2026-10-17 현황 (실제 구현된 시그니처)**: `crates/loom-fic`의 실제 함수는 인자가 없다 —
+`render_html() -> String`, `render_html_full() -> FicRenderResult`(C ABI: `loom_fic_render`/
+`loom_fic_render_full`/`loom_fic_free`). `component_ref`는 이 크레이트가 컴파일한 컴포넌트 하나에
+고정돼 있고(레지스트리·조회 메커니즘 없음), `props`는 없으며, `request_context`는 비어 있다
+(`crates/loom-fic/src/lib.rs` 모듈 문서 "FIC shape, decided"). 위 `render(component_ref, props,
+request_context)`는 목표 계약이고, 지금 구현은 그 가운데 출력 쪽 모양(`{html, resumability_payload,
+assets}`)만 갖췄다.
+
 ## 세 가지 임베딩 경로
 
 1. **WASM-in-process**: Rust 코어를 WASM으로 컴파일, WASI 지원 런타임(wasmtime 등)이 있는
    어떤 언어에서든 인프로세스로 호출. 네트워크 홉 없음, 가장 저지연. leo4에서 이미 다루고 있는
    FFI/ABI 설계 경험과 직접 겹치는 지점.
+   **(2026-10-17 정정: 실제 구현은 WASI 타겟이 아니다.** Phase 4는 `wasm32-unknown-unknown` plain
+   빌드(wasm-bindgen 없음)를 wasmtime에 올렸고, `__wbindgen_*` import 4개를 no-op 스텁으로 채웠다 —
+   아래 "Phase 4 실제 구현" 3.)
 2. **Sidecar HTTP 마이크로서비스**: 렌더러를 독립 프로세스로 띄우고 backend는 그냥 HTTP POST.
    가장 단순하고 정말로 언어 무관하지만 네트워크 홉 비용 발생. 통합 난이도 최저, 성능 최저.
 3. **네이티브 바인딩**: 같은 Rust 코어에서 언어별 바인딩 생성 (Node: napi-rs, Python: PyO3,
@@ -105,6 +134,23 @@ html]` 와이어 포맷 — WASM-in-process 호스트는 콜리의 리니어 메
 (loom이 생성 안 한 nav/footer 포함)에 실제로 임베드 성공, Playwright 스크린샷으로
 검증 완료. 상세는 roadmap/PHASES.md Phase 4 절.
 
+## 엣지·ISR 축 (RQ6 §4.5, 2026-07-24 실측 — 2026-10-17 이 문서에 등재)
+
+RQ6 검증 계획 §4.5가 이 문서의 임베딩 경로를 써서 두 축을 쟀는데, 결과가 이 문서에 반영돼 있지
+않았다. 상세와 원본 데이터는 `research-questions/RQ6-verification-plan.md` §4.5와
+`research-questions/data/rq6-m11-isr-partial-regen.json`.
+
+- **M12(엣지 런타임 wasm ABI) — pass**: Node.js(V8, `crates/loom-fic/examples/edge_v8_proxy.js`)가
+  Phase 4의 plain wasm32 산출물을 wasmtime과 같은 스텁 4개만으로 그대로 로드·실행했다(같은 바이너리).
+  wasmtime류든 V8 isolate류든 같은 빌드로 동작한다는 구조적 확인이다. Cloudflare Workers 고유의 CPU-time
+  과금·콜드 스타트는 대표하지 못한다(Node를 프록시로 쓴 한계).
+- **M11(ISR 부분 재생성)**: `crates/loom-fic/src/bin/isr_bench.rs`(네이티브 release, 20회 median)에서
+  n_sections=50000일 때 전체 앱 재렌더는 정적 마크업 컴파일타임 방출 최적화 뒤 약 0.8–1.7ms, 위젯 단독
+  재렌더는 약 25–28µs였다(약 30–70배). 이 수치는 RQ6 §3.9 게이트 적용에 반영되지 않았다. RQ6 계획 §4.5는
+  규모 비례 이득이 확인되면 M1–M5 프로파일에 H-04 유리 데이터로 추가 등록하도록 사전 등록했고 데이터는
+  그 조건을 충족하므로, 이것은 계획 미이행이다(판정 조건 (c)와의 관계는 RQ6에서 재검토할 사항). 서버 측에서
+  위젯 단위로 다시 그리는 것이 이득이 되는 워크로드의 데이터 한 점이다(docs/04 2026-10-17 현황 확인 4).
+
 ## 미해결
 
 - ~~FIC의 request_context 스키마를 얼마나 최소화할 수 있는가~~ → **이번 스코프에서
@@ -126,3 +172,16 @@ html]` 와이어 포맷 — WASM-in-process 호스트는 콜리의 리니어 메
 - 이 문서는 아직 어느 것도 RQ로 등록 안 됨 — 이번 라운드에서 발견한 마찰(wasm-bindgen-futures
   무조건 의존, getrandom 백엔드 선택)은 전부 우회 가능한 빌드/링킹 디테일이었지 새
   RQ가 필요한 설계 수준 질문은 아니었음.
+
+**2026-10-17 현황 정리**: 2026-07-28 이후 `crates/loom-fic`에는 커밋이 없다(git log). 위 항목의 상태는
+그대로이고, 다음 항목을 보탠다.
+- **열림 — 복수 위치 임베드 계약**: 한 World의 마크업을 호스트 템플릿 여러 위치에 나눠 꽂는 anchor별
+  조각 계약과 전용 `anchor_id`가 없다. FIC로 Flatten 앱(복수 위젯)을 렌더한 적도 없다(위 "복수 마운트
+  지점" 2026-10-17 정정).
+- **열림 — `component_ref` 레지스트리와 `props`**: 컴포넌트 하나 고정, props 없음. props의 실제 resolve는
+  컴파일러 쪽 과제이기도 하다(docs/02).
+- **열림 — 같은 위젯 복수 임베드**: 시그널을 가진 컴포넌트를 두 번 참조하면 Flatten의 시그널 이름 전역
+  유일성 요구 때문에 거부된다.
+- **조건 변경 — `assets`**: 여전히 항상 빈 배열이다. 위젯별 코드 분할은 RQ6 M1 측정용으로
+  `crates/loom-widget-embed-island-*`에서만 만들어졌고, `loom-fic`에는 청크 빌드 툴링이 없다.
+- 이 문서의 마찰은 여전히 RQ로 등록되지 않았다(`research-questions/`에 백엔드 통합 RQ 없음).

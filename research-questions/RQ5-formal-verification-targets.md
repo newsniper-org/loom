@@ -86,7 +86,32 @@ StringList/Bool/Str(DOM-복구형 재개)로 확장, IR의 "시그널당 액션 
 > 건전성만 증명했고 최적성은 의도적으로 증명하지 않았다. 상세는
 > `formal-verification/verus/README.md`의 "LIS 건전성 — 증명 완료, 사슬이
 > 닫혔다" 절. 상세는 `formal-verification/README.md` +
-`roadmap/PHASES.md` Phase 5 절.
+> `roadmap/PHASES.md` Phase 5 절.
+>
+> **2026-10-17 — 현재 상태 재확인(직접 재실행)**: 후보 넷 모두 결론이 나 있고,
+> 2026-08-11 이후 바뀐 증명은 없다. `lean` 두 파일 무출력 통과(`sorry` 0, Lean
+> 4.29.1), `verus formal-verification/verus/flush_order.rs` → **28 verified, 0
+> errors**, `verus --crate-type=lib crates/loom-flush-core/src/lib.rs` → **90
+> verified, 0 errors**(경고 0). 2026-08-11 이후 세 대상 모두 변경 없음(마지막
+> 커밋: `loom-flush-core` 9d2ca26 08-11, Lean 5fd5957 08-08, `flush_order.rs`
+> 5959aa4 08-02). 남은 것은 그대로다: 원시 입력의 구조적 사전조건
+> 넷(`selection_preconditions_hold`)은 `debug_assert!`로만 지켜지고, LIS 최적성은
+> 증명하지 않았으며(의도적), Lean 두 파일은 모델 증명이고, `ownedEntities`의 despawn
+> 시점은 미모델링이다.
+>
+> **2026-10-17 정정 — 2번의 근거 버전**: 위 2번 항목은 "`bevy_ecs` 0.14.2 소스를
+> 실제로 읽어 확인"이라고 적는다. 2026-07-28 커밋 7e30659에서 bevy_ecs가
+> 0.19.0으로 메이저 업그레이드됐지만, 스텁이 스스로 걸어 둔 재검토 조건("메이저
+> 업그레이드하면 실행기 소스를 다시 읽을 것")은 그때 이행되지 않았다. 2026-10-17에
+> 0.19.0 소스로 이행했고 **결론은 유지된다**: `multi_threaded`는 여전히 default가
+> 아니고(`cargo tree`로 해석된 feature에도 없음), `Schedule::default()`가 부르는
+> `default_executor()`는 SingleThreaded를 고르며(wasm32에서는 feature와 무관하게
+> 항상), multi_threaded 실행기의 `can_run`은 여전히 충돌 System의 동시 실행을
+> 막는다 — 다만 메커니즘이 실행 직전 `archetype_component_access` 검사에서
+> init 시 `FilteredAccessSet`로 미리 계산한 충돌 비트셋 대조로 바뀌었다. 새로
+> 생긴 주의점 하나: 0.19에서는 `set_executor(MultiThreadedExecutor::new())`로
+> feature 없이도 다중 스레드 실행기를 쓸 수 있다(저장소에 그런 호출은 없음).
+> 파일:라인은 `formal-verification/tla/SchedulerSafety.stub.tla` 끝 절.
 
 ---
 
@@ -120,7 +145,7 @@ StringList/Bool/Str(DOM-복구형 재개)로 확장, IR의 "시그널당 액션 
 
 | # | 정리 후보 | 대상 | 난이도(추정) | 가치 |
 |---|---|---|---|---|
-| 4 | **flush 규약 v0의 순서 보장**: 구조 변경 Commands와 DOM op를 단일 순서 큐로 병합 flush할 때, (a) 적용 순서가 방출 순서와 일치하고, (b) 이동 기준 anchor가 같은 배치에서 아직 spawn되지 않은 row인 인터리빙에서도 최종 DOM 순서가 목표 순서로 **결정적으로** 수렴한다 | 순수 Rust(`Vec<DomWrite>` 적용 루프) — **Verus 적합** | 중 | **가장 시급** — D·E 채택의 유일한 남은 선결 조건이고, 트랙 N 불변식 5와 동일한 성질 *(2026-08-08: 착수·상당 부분 완료 — 위 "상태" 절 참고)* |
+| 4 | **flush 규약 v0의 순서 보장**: 구조 변경 Commands와 DOM op를 단일 순서 큐로 병합 flush할 때, (a) 적용 순서가 방출 순서와 일치하고, (b) 이동 기준 anchor가 같은 배치에서 아직 spawn되지 않은 row인 인터리빙에서도 최종 DOM 순서가 목표 순서로 **결정적으로** 수렴한다 | 순수 Rust(`Vec<DomWrite>` 적용 루프) — **Verus 적합** | 중 | **가장 시급** — D·E 채택의 유일한 남은 선결 조건이고, 트랙 N 불변식 5와 동일한 성질 *(2026-08-08: 착수·상당 부분 완료 — 위 "상태" 절 참고)* *(**2026-10-17 갱신**: 2026-08-11에 완료 — LIS 경로 수렴(08-09)과 LIS 건전성(08-11)까지 증명, `loom-flush-core` 90 verified. 남은 것은 원시 입력 구조적 사전조건 넷의 `debug_assert!` 의존과 LIS 최적성(의도적 미증명). FV 계류 항목 자체는 소진됐지만 D·E의 최종 채택은 RQ1 §5 게이트와 측정 데이터에 걸린 별개 판단이다. RQ1 문서의 일부 후속 절(트랙 N 사이클 1 등)이 08-11 이후에도 "FV 계류 그대로"라고 적었던 것은 표류였다 — 위 "상태" 절과 `RQ1-dynamic-control-flow-scheduling.md`의 2026-08-11·2026-10-17 정정 참고)* |
 
 **왜 Verus가 이 항목에 특히 맞는가**(#1/#3이 Lean4인 것과 대비):
 

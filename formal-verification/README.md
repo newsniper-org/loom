@@ -2,6 +2,31 @@
 
 RQ5 참고 후 읽을 것.
 
+## 현재 상태 요약 (2026-10-17 갱신)
+
+이 절은 2026-10-17에 새로 쓴 요약이다. 아래 날짜별 절은 당시 기록이라 수치와
+"남은 것"이 그 시점 기준이다(낡은 곳에는 정정을 달았다). RQ5 후보는 **넷**이고
+(#4는 2026-07-28에 추가 등재), 전부 결론이 났다.
+
+| # | 대상 | 도구 | 상태(2026-10-17 직접 재실행으로 확인) |
+|---|---|---|---|
+| 1 | teardown 안전성 — `lean4/SupervisionTree.lean` | Lean 4 (4.29.1) | 증명 완료, `sorry` 0, `lean` 무출력 통과. **모델** 증명. despawn 시점은 미모델링(파일 끝 TODO) |
+| 2 | 스케줄러 무충돌성 — `tla/SchedulerSafety.stub.tla` | TLA+ | **의도적 스텁**(증명 없음, Bevy에 위임). 2026-10-17에 bevy_ecs 0.19.0 소스로 재검토 조건을 이행했고 결론 유지 — 스텁 끝 절 |
+| 3 | resumability 건전성 — `lean4/ResumabilitySoundness.lean` | Lean 4 | 증명 완료, `sorry` 0. i32는 `SingleWriter` 전제(컴파일러 `check_one_action_per_signal`이 강제), StringList/Bool/Str은 무전제. **축소 모델** 증명 |
+| 4 | flush 규약 v0 순서 보장 — 모델 `verus/flush_order.rs` | Verus | **28 verified, 0 errors**. Verus로 쓴 **모델** |
+| 4 | 같은 성질 + LIS 경로 — 배포 코드 `crates/loom-flush-core` | Verus | **90 verified, 0 errors**(2026-08-11 LIS 건전성 이후 코드 변경 없음). 쓰기 계획 계산 코드 자체를 검증하지만 적용 루프는 spec으로 모델링, D/E 계열 경로만(C·K 제외) |
+
+남은 것(숨기지 않음):
+- `loom-flush-core`의 원시 입력 구조적 사전조건 넷(`selection_preconditions_hold`)은
+  `debug_assert!`로만 지켜진다(릴리스 빌드에서는 검사 없음).
+- LIS **최적성**은 증명하지 않았다(의도적 — 정합성이 아니라 성능 성질, 측정으로만 뒷받침).
+- `ownedEntities`가 detach 이후 언제 비워지는지(despawn 시점)는 미모델링.
+- Lean 두 파일은 모델 증명이라 "모델 = 코드"는 증명 밖이다(코드 리뷰·테스트로 유지).
+- `cargo verus verify`는 vstd 불일치로 실행되지 않는다. 아래 `verus …` 명령을 쓸 것.
+- `roadmap/PHASES.md`의 Phase 5 절은 2026-08-08(47 verified) 시점에 쓰였고, 2026-10-17에
+  08-09(수렴, 70 verified)·08-11(LIS 건전성, 90 verified) 경위와 미증명 목록이 보충됐다.
+  증명 단계별 상세(실패 시도·rlimit 기준선 포함)는 `verus/README.md`에 있다.
+
 ## 2026-07-24 (Phase 5) — 세 후보 전부 실제로 착수·완료
 
 이전까지는 이 디렉터리 전체가 **스켈레톤**(증명 없음)이었음. Phase 5에서 RQ5의 세
@@ -32,6 +57,17 @@ RQ5 참고 후 읽을 것.
    런타임 안전장치) — 겹치는 System은 절대 동시 실행되지 않음. 이 안전성은 Bevy
    자체가 이미 구현·검증한 메커니즘이라 재검증은 스코프 밖(CLAUDE.md 2-1). 근거
    전체는 스텁 파일 안 주석에 파일:라인 단위로 기록.
+   **2026-10-17 정정**: 위 근거는 0.14.2 기준이다. 2026-07-28 커밋 7e30659에서
+   bevy_ecs가 0.19.0으로 올라갔는데 스텁 자신의 재검토 조건("메이저 업그레이드하면
+   실행기 소스를 다시 읽을 것")이 이행되지 않은 채 버전 문자열만 바뀌어 있었다.
+   2026-10-17에 0.19.0 소스로 이행했다. (a) `multi_threaded`는 여전히 default가
+   아니고 `cargo tree`로도 켜져 있지 않으며, `default_executor()`가 SingleThreaded를
+   고른다(wasm32에서는 feature와 무관하게 항상). (b) `can_run`의 무충돌 검사는
+   남아 있지만 메커니즘이 바뀌었다 — 실행 직전의 `archetype_component_access`
+   검사가 아니라, 실행기 init 때 `FilteredAccessSet`로 미리 계산한 충돌 비트셋을
+   실행 중 System 집합과 대조한다. 결론(위임)은 유지. 새 주의점: 0.19에서는
+   `set_executor(MultiThreadedExecutor::new())`로 feature 없이도 다중 스레드 실행기를
+   쓸 수 있다(저장소에 그런 호출은 없음). 파일:라인은 스텁 끝 절.
 3. **`lean4/ResumabilitySoundness.lean`** (RQ5 후보 #3, resumability 건전성 —
    **처음으로 formal한 정의를 작성하고, 현재 IR 제약 하에서 실제로 증명**).
    "resume 결과 = hydration했다면 나왔을 결과와 동일하다"를 `i32` 스칼라
@@ -99,10 +135,15 @@ Entity"가 아니라 "이 지연 activation 서브트리가 소유한 Entity"로
 - `SupervisionNode.ownedEntities`가 detach 이후 언제 실제로 비워지는지(despawn 시점,
   메모리 회수) — RQ6 M4/M6과 연결되는 지점이나 이 파일은 아직 다루지 않음.
 
+(2026-10-17 보충: 이 목록은 Lean 쪽만 적혀 있었다. Verus 트랙의 남은 것 — 구조적
+사전조건 넷의 `debug_assert!` 의존, LIS 최적성 미증명 — 은 맨 위 "현재 상태 요약"과
+`verus/README.md` 맨 끝 "남는 것"에 있다. 2026-10-17 현재 위 항목은 여전히 남아 있다.)
+
 ## 상세 실행 기록
 
 `roadmap/PHASES.md`의 "Phase 5 — 공식 검증" 절 + `research-questions/
-RQ5-formal-verification-targets.md` 참고.
+RQ5-formal-verification-targets.md` 참고. (2026-10-17 주: PHASES.md Phase 5 절에는
+2026-10-17에 08-09·08-11 경위가 보충됐다. 증명 단계별 상세는 `verus/README.md`를 볼 것.)
 
 
 ## 2026-08-08 — 세 번째 트랙: Verus (`verus/`)
@@ -116,8 +157,14 @@ RQ5-formal-verification-targets.md` 참고.
 
 ```
 verus formal-verification/verus/flush_order.rs              # 모델 — 28 verified, 0 errors
-verus --crate-type=lib crates/loom-flush-core/src/lib.rs    # 실행 코드 — 70 verified, 0 errors
+verus --crate-type=lib crates/loom-flush-core/src/lib.rs    # 실행 코드 — 90 verified, 0 errors
 ```
+
+**2026-10-17 정정**: 위 블록의 실행 코드 수치는 `70 verified`였다. 이 절이
+쓰인 2026-08-08의 실제 값은 47이었고, 70은 2026-08-09(LIS 경로 수렴)의 값이 나중에
+여기 반영된 것이다. 그 뒤 2026-08-11 LIS 건전성 증명으로 90이 됐다. 2026-10-17에
+두 명령을 다시 돌려 28 / 90 verified, 0 errors를 확인했다(기준선은
+`verus/README.md`의 "기준선" 절).
 
 `cargo verus verify`는 업스트림 Verus와 crates.io `vstd`의 불일치로 **실행되지
 않는다**(`unexpected verus diagnostic item …opens_invariants_none`).

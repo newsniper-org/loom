@@ -3,6 +3,18 @@
 //! Phase 1 scope (roadmap/PHASES.md): Island/Resumability/backend-agnostic
 //! excluded. Single World, client=server same process.
 //!
+//! **2026-10-17 정정**: 위 문단은 Phase 1 착수 시점의 스코프이고 지금 이
+//! 크레이트의 범위가 아니다. 그 뒤로 같은 크레이트에 들어온 것:
+//! Resumability 경로(`DomOps::adopt_children`/`get_input_value` 등 resume용
+//! 연산, Phase 2, 2026-07-24), `<input>` 양방향 binding(`InputValueTarget`,
+//! 2026-07-24), Island supervision 상태 기계(`island.rs`, Phase 3)와
+//! `SharedStore`(Task #28-a), RQ1 트랙 L 후보(`list.rs`, K/C/D/E/D-LIS/E-LIS)·
+//! 트랙 T 후보(`cond.rs`, B/F/F-i/F-ii/F-iii)·§7.1 단계 계측(`stage.rs`)·
+//! §7 M2 DOM 연산 계수(`counting.rs`). "Single World"는 RQ6 H-Qwik 확정
+//! (2026-07-28) 뒤 오히려 **기본 모델** 그 자체가 됐다(docs/04). 단
+//! "client=server same process"는 네이티브 테스트 경로에만 맞는 말이다 —
+//! 브라우저 경로는 `browser` feature의 `web.rs`.
+//!
 //! ## Scheduling
 //! Reuses Bevy ECS's System/Schedule model as-is (CLAUDE.md 2-1 — "이미 잘
 //! 풀린 문제는 재발명하지 않음"). Change-detection ticks are tracked *per
@@ -27,6 +39,17 @@
 //! necessary again once Phase 2 introduces LRef; this is a scope-appropriate
 //! simplification, not a silent deviation from docs/02, and is recorded as
 //! such in roadmap/PHASES.md's Phase 1 status.
+//!
+//! **2026-10-17 정정**: 위 제목의 "deferred to Phase 2"와 "becomes necessary
+//! again once Phase 2 introduces LRef"라는 예측은 실현되지 않았다. Phase 2
+//! (2026-07-23~24)는 LRef를 넣었지만 opcode 형태의 `DomBinding`/PatchTable은
+//! 만들지 않았다 — 직렬화 경계를 넘는 "행동"은 이벤트 action뿐이었고, 그것은
+//! 컴파일러가 생성하는 `Action` 열거형 + `resume_action_by_symbol`의
+//! `match symbol { ... }`(codegen.rs)로 풀렸다. patch 쪽 디스패치는 지금도
+//! 제네릭 System(`patch_text_system::<T>` 등) 그대로다. 그래서 2026-10-17
+//! 현재 PatchTable은 **미구현**이고 전환 결정 기록도 없다(docs/07 PatchTable
+//! 행, roadmap/PHASES.md 참고). 금지 4(Component에 클로저/함수 포인터 없음)는
+//! 이 방식으로도 지켜진다.
 
 use bevy_ecs::{prelude::*, system::ScheduleSystem};
 use bevy_ecs::schedule::Schedule;
@@ -109,6 +132,15 @@ pub struct InputValueTarget;
 /// trait" shape `DomOps`/`BrowserDom` already established. Kept minimal
 /// (Phase 1 scope: i32 values only, matching `__loomShared`'s current
 /// JS-side signature) rather than pre-guessing a richer future shape.
+///
+/// **2026-10-17 정정(지위)**: RQ4는 2026-07-28 전면 폐기됐다(RQ6 H-Qwik 확정).
+/// RQ4 문서 머리말은 기본 모델(하나의 World)에서 위젯 간 공유가 같은 World의
+/// 평범한 Signal로 풀린다고 적는다. 다만 코드는 그 서술보다 넓다: 2026-10-17
+/// 현재 컴파일러는 소스가 `sharedSignal`/`sharedValue`를 쓰면
+/// `GraphMode::Flatten` 진입점에도 이 trait(`web::JsSharedStore`)를 그대로
+/// 통과시킨다(codegen.rs `generate_flatten_entry_body`의 `has_shared`). 즉
+/// 이 trait는 지금도 두 GraphMode 모두에서 쓰이며, Flatten에서도 이것이 필요한지
+/// 정리한 결정 기록은 찾지 못했다.
 pub trait SharedStore {
     fn set(&mut self, key: &str, value: i32);
     fn get(&mut self, key: &str) -> Option<i32>;
@@ -466,7 +498,8 @@ pub struct PendingDomWrites(pub Vec<DomWrite>);
 /// beyond its own primary content (default 1 = R1, "binding 1개"). Read by
 /// every Track L candidate's spawn path (`list_reconcile_k_system` here;
 /// `list_reconcile_c_system`/`place_in_order`/`place_in_order_lis` in
-/// `list.rs`). **개정 #9-11(2026-08-12)로 이 축의 모델이 바뀌었다**: 예전에는
+/// `list.rs`; **2026-10-17 정정**: 뒤의 둘은 2026-08-11 제거됐고, 지금 D/E 계열의
+/// spawn은 `list.rs`의 `emit_plan` → `RowSpawner::emit` 경로다). **개정 #9-11(2026-08-12)로 이 축의 모델이 바뀌었다**: 예전에는
 /// row당 정적 텍스트 자식 `n-1`개였고, 이제는 `RowBinding` entity `n-1`개
 /// (각자 `Signal<String>` + `DomTarget`, `Changed` 게이팅)와 중첩 조건부 1개다 —
 /// §3.2 문언("binding 8개 + 중첩 조건부 1개") 그대로. `RowBinding`의 doc comment에

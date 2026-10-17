@@ -49,6 +49,23 @@
 //!   목록이 존재하지 않는다; 빈 배열로 정직하게 두는 것이지 "구현했지만
 //!   우연히 비었다"가 아니다.
 //!
+//! **2026-10-17 정정**: 위 서술 중 셋을 현재 사실에 맞춘다.
+//! - "Island 청크로 쪼개 빌드하는 툴링 ... 여전히 미착수": 이 *크레이트*에
+//!   청크 빌드 툴링이 없다는 것은 여전히 맞다. 그러나 저장소 전체로는 아니다 —
+//!   per-Island 코드 분할은 2026-07-25 Task #27에서 컴파일러
+//!   (`compile_tsx_to_single_island_rust`/`generate_single_island_client`)와
+//!   `crates/loom-widget-embed-island-*` 크레이트들로 구현됐다(RQ6 M1 실측용).
+//!   loom-fic는 그것을 쓰지 않는다.
+//! - "Phase 3의 목표 상태": RQ6가 2026-07-28 H-Qwik으로 확정되면서 Island 세분화는
+//!   목표 상태가 아니라 선택적 최적화가 됐다. 그래서 다중 asset 매니페스트가
+//!   필요해지는 조건도 "Phase 3 완료"가 아니라 "누군가 실제로 세분화를 선택했을
+//!   때"다(docs/05 미해결 목록의 2026-07-28 갱신). 기본 모델에서 `assets`에
+//!   들어갈 것(앱 청크 하나)을 이 크레이트가 채우는지는 2026-10-17 현재 미정·미구현이다.
+//! - 위 `component_ref` 항목의 "would need Phase 3's `ComponentGraph`
+//!   generalization, not done": `ComponentGraph` 자체는 컴파일러에 2026-07-24
+//!   (증분 4)부터 있다. 미구현인 것은 loom-fic 쪽 registry/lookup이고, 이 크레이트는
+//!   여전히 `demo/counter-list.tsx` 컴포넌트 하나로 고정돼 있다.
+//!
 //! ## Wire format (used by every embedding path identically)
 //! `loom_fic_render()` returns a raw pointer to a buffer laid out as
 //! `[u32 length (little-endian)][UTF-8 HTML bytes]`. No separate

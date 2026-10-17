@@ -38,6 +38,15 @@
 //! 50% 이상", "매칭 비용 ≥ DOM 절감분") 판정에만 쓴다 — 두 조항 모두 절대
 //! 시간이 아니라 같은 tick 안의 구간 간 비교라서 이 오버헤드에 불변이다.
 //! 후보 간 비교에 쓸 때도 전 후보가 동일하게 계측된 상태여야 공평하다(§2.4).
+//!
+//! **2026-10-17 정정(근거 하나)**: 위 문단의 "Bevy가 병렬 실행 여지를 갖고"는
+//! 실제 실행기와 맞지 않는다. 이 workspace는 `bevy_ecs`(Cargo.lock 기준 0.19.0)를
+//! `multi_threaded` feature 없이 쓰고(`cargo tree -e features -i bevy_ecs`로
+//! 확인: std/bevy_reflect/async_executor/backtrace뿐), bevy_ecs 0.19의
+//! `default_executor()`는 그 경우와 wasm32에서 `SingleThreadedExecutor`를
+//! 고른다. 즉 비계측 경로에도 병렬 실행은 없다. 계측 tick이 더 클 수 있다는
+//! 결론과 "구간 비율에만 쓴다"는 규칙은 그대로다 — 마커 System들과 추가
+//! `ApplyDeferred` sync point라는 나머지 근거만으로도 성립한다.
 
 use bevy_ecs::prelude::*;
 

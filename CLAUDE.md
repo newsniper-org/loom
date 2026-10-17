@@ -9,8 +9,14 @@
 - **verify**: `formal-verification/`에 정의된 대상만, 정의된 범위만 검증. 프로토타입 이전에
   전체를 증명하려 하지 말 것 — 설계가 아직 움직이고 있음 (특히 RQ1 미해결. RQ6는
   2026-07-28 Phase 6에서 확정됨 — 아래 3번 정정 참고).
+  **2026-10-17 주기**: RQ1은 여전히 미해결이다 — 트랙 L은 v22 §9 판정까지 나왔지만 채택 판정이
+  아니고(G0 심사 기록·G1 판정 기록·Firefox GC 통제 재수집 등이 남음), 현황은 `roadmap/PHASES.md` 맨 위
+  "현재 상태 요약". 공식 검증은 Lean 4 모델 증명 2건과 Verus 코드 검증(`crates/loom-flush-core`)이
+  실제로 있다(아래 "이 패키지의 한계" 정정 참고).
 - **implement**: `roadmap/PHASES.md` 순서를 따름. Phase를 건너뛰지 말 것. 특히 Phase 0
   (research-questions 수렴) 없이 Phase 1로 넘어가지 말 것.
+  (**2026-10-17 주기**: Phase 0~6은 전부 실행됐다. 남은 일은 Phase를 새로 여는 것이 아니라 각 Phase가
+  남긴 열린 항목 — 주로 RQ1 트랙 L/T/R, RQ2 — 이다. Phase 7 이상은 정의돼 있지 않다.)
 
 ## 절대 하지 말 것
 
@@ -25,6 +31,11 @@
    스케줄링, Qwik의 event delegation)는 메커니즘을 그대로 재사용하고, 우리가 진짜 새로 풀어야
    하는 지점(Component가 POD로 남아야 한다는 제약 하에서의 patch dispatch, island 간 통신)에만
    설계 노력을 집중할 것.
+   **2026-10-17 정정**: 위 괄호의 "island 간 통신"은 2026-07-28 RQ4 전면 폐기로 기본 모델에서
+   사라진 문제다 — 기본 모델은 페이지 전체가 하나의 World라 위젯 간 공유는 같은 World의 Signal로
+   풀린다(`research-questions/RQ4-cross-island-shared-state.md`). 남는 것은 crash 통지 채널
+   (`window.__loomShared`, "경계 간 통신"이 아니라 "상태 관찰")뿐이고, 이것은 세분화
+   (`GraphMode::Islands`)를 선택했을 때 유용하게 남는다.
 3. **RQ6("islands가 정말 필요한가")를 무시하고 넘어가지 말 것.** 이건 장식적 질문이 아니라
    이 프로젝트 존재 이유 중 하나에 대한 질문. Phase 1-2 프로토타입이 나오면 반드시 벤치마크로
    재검토.
@@ -37,6 +48,10 @@
 4. **Component에 클로저/함수 포인터를 직접 저장하지 말 것.** Resumability를 위해 Component는
    항상 직렬화 가능한 데이터여야 함. "행동"이 필요하면 `docs/03-reactivity-no-vdom.md`의
    PatchTable 패턴(정수 opcode + args → 컴파일타임 생성된 정적 디스패치 테이블)을 따를 것.
+   **2026-10-17 주기**: 금지 자체는 그대로다. 다만 PatchTable(opcode 테이블)은 **아직 구현되지
+   않았다** — Phase 1 이래 컴파일러는 같은 성질("정적 디스패치, Component엔 클로저 없음")을 제네릭
+   Rust System(`patch_text_system::<T>` 등)과 닫힌 열거형으로 지킨다(docs/07 용어표, PHASES Phase 1
+   축소 1번). opcode 전환 여부는 결정 기록이 없는 열린 항목이다.
 
 ## 언어/툴체인 기본값 (변경 가능, 근거 있으면)
 
@@ -45,6 +60,11 @@
 - JSX 파싱: SWC 기반 (Rust 생태계 내 기존 검증된 파서 재사용, 직접 파서 작성 금지 — 리서치 가치 없음)
 - 백엔드 임베딩: Rust core → C ABI shim → 언어별 바인딩 (leo4의 "C shim이 lean.h 관심사를 흡수"
   패턴과 동일 구조. `docs/05-backend-agnostic-integration.md` 참고)
+- 공식 검증 (2026-10-17 추가 — 실제로 쓰고 있는 것을 적음): 상태 기계·축소 모델처럼 **손으로 다시 쓴
+  모델**은 Lean 4, `Vec<DomWrite>`처럼 **배포되는 Rust 코드 자체**에 계약을 걸 수 있는 대상은 Verus
+  (RQ5 후보 #4, 2026-07-28 병익님 제안). 도구는 대상의 성질로 고른다. `cargo verus verify`는 vstd
+  불일치로 동작하지 않으므로 `verus --crate-type=lib crates/loom-flush-core/src/lib.rs`와
+  `verus formal-verification/verus/flush_order.rs`를 쓴다(`formal-verification/verus/README.md`).
 
 ## 진행 중 발견한 것은 문서에 반영
 
@@ -58,7 +78,20 @@
 - RQ1, RQ2는 실제로 열려 있고 실험이 필요함. RQ3는 부분 폐기, RQ4는 전면 폐기,
   RQ6는 확정됨(2026-07-28 정정, 위 "절대 하지 말 것" 3번 참고) —
   (RQ3는 `roadmap/PHASES.md` Phase 0의 수렴 대상인데 초판 목록에서 누락되어 있었음 — 2026-07-22 정정)
+  **2026-10-17 주기**: 위 목록에 RQ5가 빠져 있었다 — RQ5(공식 검증 대상)는 후보 #1~#4가 전부
+  이행됐다(#4는 2026-08-11 LIS 건전성까지). RQ6 확정은 §7 (a)를 반사실 조항으로 읽는 해석(병익님
+  확정)과 위젯 5개 규모라는 한계 위에 서 있다 — "Island은 필요 없다"로 일반화해 전달하지 말 것.
 - formal-verification/의 Lean4/TLA+ 파일은 스켈레톤이지 증명이 아님
+  **2026-10-17 정정**: 이 줄은 2026-07-24 이후 사실이 아니다. Lean 4 두 파일
+  (`SupervisionTree.lean`, `ResumabilitySoundness.lean`)은 `sorry` 0으로 증명이 끝났다 — 단 **모델**
+  증명이라 모델이 코드와 일치한다는 가정 위에 선다. TLA+(`SchedulerSafety.stub.tla`)만 Bevy에 위임한
+  **의도적 스텁**이다. 이 줄이 언급조차 안 한 Verus 트랙이 있다: 모델 `verus/flush_order.rs` 28 verified,
+  배포 코드 `crates/loom-flush-core` 90 verified, 0 errors(2026-08-11 기준선). 증명되지 않은 것도 남아
+  있다 — LIS 최적성, 원시 입력의 구조적 사전조건 넷(`debug_assert!`로만 지켜짐), `ownedEntities`의
+  despawn 시점. 상세: `formal-verification/README.md`, `roadmap/PHASES.md` Phase 5 절.
 - examples/의 JSX 예시는 문법 목업이지 실제로 컴파일되지 않음
+  (**2026-10-17 주기**: 이 목업의 `island()` 래퍼는 "Island이 항상 필요하다"는 RQ6 확정 이전 전제로
+  쓰였다. 실제 컴파일러가 받는 TSX 부분집합은 `crates/loom-compiler/src/lower.rs` 모듈 문서와
+  `demo/*.tsx`가 기준이다.)
 
 이 사실을 숨기거나 마치 다 정해진 것처럼 다음 사람에게 전달하지 말 것.

@@ -23,6 +23,21 @@
 //! `CartBadgeIsland` type in this file; see that HTML file's markup and
 //! roadmap/PHASES.md Phase 3's RQ4 section for why that absence is the
 //! actual point being proven, not an oversight.
+//!
+//! **2026-10-17 정정**: 이 크레이트는 2026-07-24 시점의 손코딩 실증으로 보존된
+//! 것이고, 위 서술 중 둘은 그 뒤 사실과 다르다.
+//! - "no Island authoring surface exists in loom-compiler yet": 컴파일러 Island
+//!   통합(증분 4, `ComponentGraph`/`client:*` 지시자, 2026-07-24 b4dc6e7)과
+//!   Task #25/#26의 `GraphMode::Islands`가 생기면서 같은 구조를 컴파일러가 낸다 —
+//!   `crates/loom-island-compiled`(같은 ProductCard 시나리오), `crates/
+//!   loom-widget-embed`, per-Island 코드 분할 `crates/loom-widget-embed-island-*`
+//!   (Task #27). 아래 `ProductCardIsland` 문서의 같은 문장도 마찬가지다.
+//! - RQ4의 shared-signal-store: RQ4는 2026-07-28 **전면 폐기**됐다. RQ6가
+//!   H-Qwik(강한 형태)으로 확정되어 기본 모델은 페이지 전체가 하나의 World이고,
+//!   위젯 간 공유는 같은 World의 Signal 문제가 됐다. Island 경계 자체가 이제
+//!   "지연 activation 경계 세분화"를 선택했을 때의 선택적 최적화다(docs/04). 이
+//!   크레이트가 보인 것(RQ3 규칙이 실제 DOM·registry에서 성립, 청크 없는
+//!   구독자)은 기록으로 유효하지만 기본 모델의 설명이 아니다.
 
 use loom_runtime::web::{find_own, BrowserDom};
 use loom_runtime::{LoomApp, Signal};
@@ -156,6 +171,8 @@ struct ProductCardState {
 /// `client:visible` — activates only once its host scrolls into view (see
 /// registry.js's `IntersectionObserver`) for its own "show details" toggle.
 /// Not compiler-generated, since no Island authoring surface exists yet.
+/// (2026-10-17: 작성 당시 기준. 컴파일된 판본은 `crates/loom-island-compiled`
+/// — 모듈 문서의 2026-10-17 정정 참고.)
 #[wasm_bindgen]
 pub struct ProductCardIsland {
     #[allow(dead_code)]
