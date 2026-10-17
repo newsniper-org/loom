@@ -18,8 +18,8 @@
 //! 더하면 이 모듈과 그 테스트에 행을 더해야 한다(docs/02 진단 절의 규칙).
 //!
 //! **이 모듈이 다루지 않는 것(숨기지 않음).**
-//! - 7a가 새로 더하는 거부 중 G01·R46(c)는 C7에서 더했고(아래), R15·R16·R12
-//!   리스트는 C8에서 이 모듈에 더한다. 여기 있는 것은 7a 이전부터 codegen이 패닉으로 거부하던
+//! - 7a가 새로 더하는 거부 중 G01·R46(c)는 C7에서, R15·R16·R12 리스트는 C8에서
+//!   더했다(아래). 그 밖에 여기 있는 것은 7a 이전부터 codegen이 패닉으로 거부하던
 //!   것뿐이며, 판정 범위를 넓히지 않았다(넓히면 지금 컴파일되는 입력이 거부된다).
 //! - codegen.rs:1271 "signal `…` was never spawned"(선언만 하고 표시하지 않은
 //!   signal)도 사용자가 도달하지만, design-7a §1.1 R07U로 C7에서 lower 그래프
@@ -42,6 +42,32 @@
 //!   `mod_name`으로 **같은 규칙을 다시 구현**했고, 표류는 lib.rs의
 //!   `c7_graph_rejections` 테스트가 codegen이 실제로 방출한 `pub mod …_generated`
 //!   이름과 대조해 막는다.
+//!
+//! **C8(2026-10-17)에서 더한 7a 거부.**
+//! - `LOOM-R15`: 단일 Island 경로(`compile_tsx_to_single_island_rust`)의 대상
+//!   컴포넌트에 `<input>` 양방향 binding이 있으면 오류다. codegen의
+//!   `generate_single_island_client`는 이 검사가 없어 click 리스너만 연결한
+//!   진입점을 냈다(값이 `""`로 고정되고, 클릭하면 지워진다). 찾기는
+//!   `first_input_binding` — List/Cond 안까지 **모든 노드**를 내려간다(codegen의
+//!   `collect_actions`는 그 안으로 내려가지 않으므로 재사용하지 않는다).
+//!   다중 Islands의 같은 거부(codegen.rs:630-638, C3에서 이 모듈로 복제, 코드
+//!   `LOOM-L00`·문구 유지)도 같은 순회기로 바꿨다. List/Cond 안의 `<input>`은
+//!   어차피 뒤의 노드 모양 검사(2031·2290·2325)가 `L00`으로 거부하던 입력이라,
+//!   받아 주는 입력은 늘거나 줄지 않고 보고되는 문구만 원인(`<input>`)에 맞춰진다.
+//! - `LOOM-R16`: Islands·단일 Island 경로에서 같은 컴포넌트를 가리키는
+//!   `ComponentRef`가 그래프 전체에 2개 이상이면 오류다(island id·chunk가 이름에서
+//!   파생되어 충돌하고, `ComponentGraph::activation_for`의 `find_map`이 첫 참조의
+//!   디렉티브를 둘째에도 쓴다). 집계는 컴포넌트 선언 순 × pre-order의 `Vec`이다
+//!   (§3.4). **Flatten에는 더하지 않는다**: Flatten은 참조를 펼치므로 island id가
+//!   없고, signal이 있는 컴포넌트의 중복 참조는 이미 552(이름 유일성)가
+//!   거부하며, signal 없는 컴포넌트의 중복 참조는 의미상 무해하다.
+//! - `LOOM-R12`(리스트): 조건부 `{c() && <tag>…</tag>}`의 then 엘리먼트 자식이
+//!   리스트 binding 하나뿐이면(직계 리스트) 오류다(모드 무관). codegen의
+//!   CondBinding arm(`[JsxNode::ListBinding { .. }]`)은 wrapper를 곧 리스트
+//!   노드로 써서 resume에서 같은 DOM 노드를 Bool 패스와 리스트 패스가 두 번
+//!   adopt하고, SSR 시점에 열렸는데 리스트가 비면 열림 상태를 거짓으로
+//!   복원한다(design-7a §1.1 R12 리스트). 직계 **텍스트**(`[TextBinding]`)는 C9가
+//!   구현으로 고친다.
 //! - lower가 이미 막아 codegen에서 도달할 수 없는 거부(signal 종류 검사 2017·
 //!   2820·3059·3295·3000, `unknown signal` 조회 등)와 앞선 검사에 가려지는
 //!   거부(2172는 2023에, 2481은 2290에)는 복제하지 않는다.
@@ -59,11 +85,17 @@ use swc_common::{Span, DUMMY_SP};
 
 use crate::codegen::GraphMode;
 use crate::diag::Diagnostic;
-use crate::ir::{Component, ComponentGraph, JsxNode, SignalDecl, SignalInit};
+use crate::ir::{Component, ComponentGraph, IslandActivation, JsxNode, SignalDecl, SignalInit};
 use crate::lower::{NodeSpan, SpanTable, L00, R46};
 
 /// 단일 컴포넌트 경로의 컴포넌트 참조(7a C7).
 pub(crate) const G01: &str = "LOOM-G01";
+/// 단일 Island 대상의 `<input>` 양방향 binding(7a C8).
+pub(crate) const R15: &str = "LOOM-R15";
+/// Islands·단일 Island에서 같은 컴포넌트의 중복 참조(7a C8).
+pub(crate) const R16: &str = "LOOM-R16";
+/// 조건부의 직계 리스트 binding(7a C8).
+pub(crate) const R12: &str = "LOOM-R12";
 
 /// codegen.rs `sanitize_mod_name`과 **같은 규칙**(PascalCase → snake_case:
 /// 둘째 글자부터 대문자 앞에 `_`, 대문자는 소문자로). 위 모듈 문서의 R46(c) 참고.
@@ -129,6 +161,7 @@ pub(crate) fn check(graph: &ComponentGraph, spans: &SpanTable, target: Target<'_
         }
         Target::Graph(GraphMode::Islands) => {
             cx.mod_name_collision()?;
+            cx.duplicate_reference()?;
             // codegen의 `generate_islands`와 같은 순서: 컴포넌트 선언 순으로,
             // 루트는 Island 아님, 나머지는 (625 — C7부터 lower의 R47이 흡수) →
             // 634 → 생성.
@@ -154,6 +187,7 @@ pub(crate) fn check(graph: &ComponentGraph, spans: &SpanTable, target: Target<'_
         }
         Target::SingleIsland(name) => {
             cx.mod_name_collision()?;
+            cx.duplicate_reference()?;
             let Some((i, component)) = graph.components.iter().enumerate().find(|(_, c)| c.name == name) else {
                 // 소스 안의 위치가 아니라 호출 인자(build.rs의 대상 이름) 오류다.
                 return Err(Diagnostic::error(
@@ -168,6 +202,17 @@ pub(crate) fn check(graph: &ComponentGraph, spans: &SpanTable, target: Target<'_
                     cx.component_span(i),
                     format!("generate_single_island_client: component `{name}` is not Island-activated"),
                 ));
+            }
+            // R15: codegen의 단일 Island 경로에는 다중 Islands(634)의 input 가드가 없다.
+            if let Some(input) = first_input_binding(&component.root) {
+                return Err(Diagnostic::error(
+                    R15,
+                    cx.sp(input),
+                    format!(
+                        "Island `{name}`를 단일 Island 클라이언트로 컴파일할 때 <input> 양방향 binding은 지원하지 않습니다. 진입점이 click만 연결해 값이 \"\"로 고정되고, 클릭하면 지워집니다"
+                    ),
+                )
+                .with_label(cx.component_span(i), "이 Island 컴포넌트"));
             }
             cx.component(component, true)
         }
@@ -249,6 +294,33 @@ impl<'g> Cx<'g> {
                     format!("`{}`와 `{}`가 같은 모듈 이름 `{m}`으로 변환됩니다", first.name, c.name),
                 )
                 .with_label(self.component_span(*j), format!("`{}`도 `{m}`", first.name)));
+            }
+        }
+        Ok(())
+    }
+
+    /// R16: 같은 컴포넌트를 가리키는 `ComponentRef`가 둘 이상(선언 순 × pre-order로
+    /// 첫 중복). 주 span은 둘째 참조, 두 사이트 모두에 label.
+    fn duplicate_reference(&self) -> CResult {
+        let mut refs: Vec<(&'g str, IslandActivation, &'g JsxNode)> = Vec::new();
+        for component in &self.graph.components {
+            let mut order = Vec::new();
+            preorder(&component.root, &mut order);
+            for node in order {
+                if let JsxNode::ComponentRef { component: target, activation, .. } = node {
+                    if let Some((_, first_act, first)) = refs.iter().find(|(c, _, _)| *c == target.as_str()) {
+                        return Err(Diagnostic::error(
+                            R16,
+                            self.sp(node),
+                            format!(
+                                "컴포넌트 `{target}`가 두 번 참조됐습니다. Islands에서는 둘째 참조가 첫 참조의 디렉티브·island id를 공유합니다"
+                            ),
+                        )
+                        .with_label(self.sp(first), format!("첫 참조(client:{})", first_act.as_attr_value()))
+                        .with_label(self.sp(node), format!("둘째 참조(client:{})", activation.as_attr_value())));
+                    }
+                    refs.push((target.as_str(), *activation, node));
+                }
             }
         }
         Ok(())
@@ -479,6 +551,22 @@ impl<'g> Cx<'g> {
         }
         for c in children {
             self.lazy_collect(owner, cond, c)?;
+        }
+        // R12(리스트): codegen의 `[JsxNode::ListBinding { .. }]` arm — wrapper가 곧
+        // 리스트 노드가 되는 직계형. (직계 텍스트는 C9가 구현으로 고친다.)
+        if let [only] = children.as_slice() {
+            let only = self.res(only);
+            if matches!(only, JsxNode::ListBinding { .. }) {
+                return Err(Diagnostic::error(
+                    R12,
+                    self.sp(then_branch),
+                    format!(
+                        "조건부 `{{{cond}() && …}}`의 자식이 리스트 하나뿐입니다. 지금은 resume 대상이 어긋납니다. `<div>`로 한 번 감싸십시오(직계 형태 지원은 7b)"
+                    ),
+                )
+                .with_label(self.sp(only), "직계 리스트 binding")
+                .with_label(self.sp(node), "조건부"));
+            }
         }
         if !self.sole_dynamic_binding(children) {
             for c in children {
@@ -761,12 +849,12 @@ fn preorder<'g>(node: &'g JsxNode, out: &mut Vec<&'g JsxNode>) {
     }
 }
 
-/// codegen.rs:634가 쓰는 `collect_actions`와 같은 범위 — `Element` 자식만
-/// 내려가고 List/Cond 안은 보지 않는다(R15가 C8에서 이 범위를 넓힌다).
+/// 컴포넌트 트리의 **모든 노드**(List row·Cond then 가지 안 포함)를 pre-order로
+/// 내려가 첫 `InputBinding`을 찾는다(R15, 7a C8 — design-7a 검토 20). C3판은
+/// codegen.rs:634의 `collect_actions`와 같은 범위(`Element` 자식만)였다.
+/// `ComponentRef`는 다른 컴포넌트라 내려가지 않는다(그 컴포넌트는 따로 검사된다).
 fn first_input_binding(node: &JsxNode) -> Option<&JsxNode> {
-    match node {
-        JsxNode::InputBinding { .. } => Some(node),
-        JsxNode::Element { children, .. } => children.iter().find_map(first_input_binding),
-        _ => None,
-    }
+    let mut order = Vec::new();
+    preorder(node, &mut order);
+    order.into_iter().find(|n| matches!(n, JsxNode::InputBinding { .. }))
 }

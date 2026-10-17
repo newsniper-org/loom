@@ -3014,4 +3014,210 @@ mod tests {
             }
         }
     }
+
+    // 7a C8(2026-10-17): check.rs의 모드 거부 R15·R16과 조건부 직계 리스트 R12.
+    mod c8_mode_rejections {
+        use super::*;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        const IMPORT: &str = "import { signal } from \"loom\";\n";
+        const INPUT: &str = "<input value={t()} onInput={(e) => t.set(e.target.value)} />";
+
+        fn app(body: &str) -> String {
+            format!("{IMPORT}export function App() {{\n{body}\n}}\n")
+        }
+
+        // ---- R15 ----
+
+        /// Island `F`. `inner`가 `@IN@` 자리에 들어간다 — 깊이별 배치(직계 Element,
+        /// 조건부 안, 리스트 row 안). `with_t`가 거짓이면 `t` 선언을 뺀다(양성 짝).
+        fn island_f(shape: &str, inner: &str, with_t: bool) -> String {
+            let t = if with_t { "  const t = signal(\"\");\n" } else { "" };
+            let xs = if shape == "row" { "  const xs = signal([\"a\"]);\n" } else { "" };
+            let body = match shape {
+                "direct" => format!("<div><button onClick={{() => o.toggle()}}>t</button><p>{{o() && <i>x</i>}}</p>{inner}</div>"),
+                "cond" => format!("<div><button onClick={{() => o.toggle()}}>t</button>{{o() && <div><b>x</b>{inner}</div>}}</div>"),
+                "row" => format!("<div><button onClick={{() => o.toggle()}}>t</button><p>{{o() && <i>x</i>}}</p><ul>{{xs().map((x) => <li>{{x}}{inner}</li>)}}</ul></div>"),
+                _ => unreachable!(),
+            };
+            format!(
+                "{IMPORT}function F() {{\n  const o = signal(true);\n{xs}{t}  return {body};\n}}\nexport function App() {{\n  return <div><F client:load /></div>;\n}}\n"
+            )
+        }
+
+        #[test]
+        fn r15_single_island_rejects_input_at_every_depth() {
+            let shapes = ["direct", "cond", "row"];
+            assert_eq!(shapes.len(), 3);
+            for shape in shapes {
+                let neg = island_f(shape, INPUT, true);
+                let e = super::super::compile_tsx_to_single_island_rust(TEST_FILE, &neg, "F")
+                    .err()
+                    .unwrap_or_else(|| panic!("{shape}: 단일 Island가 input을 받아 버림"));
+                let d = assert_diag(
+                    e,
+                    check::R15,
+                    "Island `F`를 단일 Island 클라이언트로 컴파일할 때 <input> 양방향 binding은 지원하지 않습니다",
+                    Some("input"),
+                );
+                assert_eq!(d.source_text(d.items()[0].labels[0].0).as_deref(), Some("F"), "{shape}");
+                // 다중 Islands의 기존 거부(L00, 문구 유지)도 같은 깊이까지 본다.
+                let e = super::super::compile_tsx_to_rust_graph(TEST_FILE, &neg, GraphMode::Islands).err().expect("Islands");
+                assert_diag(e, lower::L00, "contains an <input> two-way binding", Some("input"));
+                // 최소 차이 양성 짝: input(과 그것만 쓰던 `t`)을 뺀다.
+                let pos = island_f(shape, "", false);
+                let ok = super::super::compile_tsx_to_single_island_rust(TEST_FILE, &pos, "F")
+                    .unwrap_or_else(|d| panic!("{shape}: 양성 짝이 실패:\n{pos}\n{d}"));
+                assert!(ok.warnings.is_empty(), "{}", ok.warnings);
+            }
+            // 모드 거부: 직계 input은 Flatten에서는 정상이다(Flatten 진입점은 input을 연결한다).
+            super::super::compile_tsx_to_rust_graph(TEST_FILE, &island_f("direct", INPUT, true), GraphMode::Flatten).unwrap();
+        }
+
+        // ---- R16 ----
+
+        const W: &str = "function W() {\n  const w = signal(0);\n  return <button onClick={() => w.increment()}>{w()}</button>;\n}\n";
+        fn refs(second: &str, extra: &str) -> String {
+            format!("{IMPORT}{W}{extra}export function App() {{\n  return <div><W client:load />\n    <{second} client:visible /></div>;\n}}\n")
+        }
+
+        #[test]
+        fn r16_duplicate_reference_is_rejected_where_islands_are_generated() {
+            let neg = refs("W", "");
+            for result in [
+                super::super::compile_tsx_to_rust_graph(TEST_FILE, &neg, GraphMode::Islands),
+                super::super::compile_tsx_to_single_island_rust(TEST_FILE, &neg, "W"),
+            ] {
+                let d = assert_diag(
+                    result.err().expect("R16"),
+                    check::R16,
+                    "컴포넌트 `W`가 두 번 참조됐습니다. Islands에서는 둘째 참조가 첫 참조의 디렉티브·island id를 공유합니다",
+                    Some("W"),
+                );
+                // 주 span은 **둘째** 참조(8행 6열), label은 두 사이트 모두.
+                assert_eq!(d.line_col(d.items()[0].span), (8, 6), "{d}");
+                let labels: Vec<((usize, usize), &str)> =
+                    d.items()[0].labels.iter().map(|(s, l)| (d.line_col(*s), l.as_str())).collect();
+                assert_eq!(labels, vec![((7, 16), "첫 참조(client:load)"), ((8, 6), "둘째 참조(client:visible)")], "{d}");
+                assert!(d.render().contains(&format!("--> {TEST_FILE}:8:6")), "{d}");
+            }
+            // 양성 짝: 둘째 참조가 다른 컴포넌트.
+            let pos = refs("V", &W.replace("function W", "function V").replace("const w", "const v").replace("w.increment", "v.increment").replace("{w()}", "{v()}"));
+            super::super::compile_tsx_to_rust_graph(TEST_FILE, &pos, GraphMode::Islands).unwrap();
+            super::super::compile_tsx_to_single_island_rust(TEST_FILE, &pos, "W").unwrap();
+        }
+
+        #[test]
+        fn r16_flatten_is_unchanged() {
+            // design-7a R16: Flatten에는 검사를 더하지 않는다. signal 없는 컴포넌트의
+            // 중복 참조는 무해해 컴파일되고(아래), signal이 있으면 기존 552가 거부한다
+            // (check_backstop::flatten_double_reference_to_a_signal_bearing_component_552).
+            let s = "function S() {\n  return <p>static</p>;\n}\n";
+            let src = format!("{IMPORT}{s}export function App() {{\n  const c = signal(0);\n  return <div><p>{{c()}}</p><S client:load /><S client:visible /></div>;\n}}\n");
+            super::super::compile_tsx_to_rust_graph(TEST_FILE, &src, GraphMode::Flatten).unwrap();
+            let e = super::super::compile_tsx_to_rust_graph(TEST_FILE, &refs("W", ""), GraphMode::Flatten).err().expect("552");
+            assert_diag(e, lower::L00, "second declaration of `w`", Some("W"));
+        }
+
+        // ---- R12(리스트) ----
+
+        fn cond_list(then: &str) -> String {
+            app(&format!(
+                "  const o = signal(true);\n  const xs = signal([\"a\"]);\n  return <div><button onClick={{() => o.toggle()}}>t</button>{{o() && {then}}}</div>;"
+            ))
+        }
+        const DIRECT: &str = "<ul>{xs().map((x) => <li>{x}</li>)}</ul>";
+        const WRAPPED: &str = "<div><ul>{xs().map((x) => <li>{x}</li>)}</ul></div>";
+
+        #[test]
+        fn r12_direct_list_child_of_a_conditional_is_rejected_in_every_mode() {
+            let neg = cond_list(DIRECT);
+            let results = [
+                super::super::compile_tsx_to_rust(TEST_FILE, &neg),
+                super::super::compile_tsx_to_rust_with_candidate(TEST_FILE, &neg, ListCandidate::K),
+                super::super::compile_tsx_to_rust_graph(TEST_FILE, &neg, GraphMode::Flatten),
+                super::super::compile_tsx_to_rust_graph(TEST_FILE, &neg, GraphMode::Islands),
+            ];
+            assert_eq!(results.len(), 4);
+            for result in results {
+                let d = assert_diag(
+                    result.err().expect("R12"),
+                    check::R12,
+                    "조건부 `{o() && …}`의 자식이 리스트 하나뿐입니다. 지금은 resume 대상이 어긋납니다. `<div>`로 한 번 감싸십시오",
+                    Some("ul"),
+                );
+                let labels: Vec<Option<String>> = d.items()[0].labels.iter().map(|(s, _)| d.source_text(*s)).collect();
+                assert_eq!(labels, vec![Some("xs()".to_string()), Some("o()".to_string())], "{d}");
+            }
+            // 양성 짝: `<div>`로 한 번 감싼다.
+            for result in [
+                super::super::compile_tsx_to_rust(TEST_FILE, &cond_list(WRAPPED)),
+                super::super::compile_tsx_to_rust_graph(TEST_FILE, &cond_list(WRAPPED), GraphMode::Flatten),
+            ] {
+                let ok = result.unwrap_or_else(|d| panic!("{d}"));
+                assert!(ok.warnings.is_empty(), "{}", ok.warnings);
+            }
+            // 직계 **텍스트**는 R12 거부가 아니다(C9가 구현으로 고치는 형태).
+            let text = app("  const o = signal(true);\n  const n = signal(0);\n  return <div><button onClick={() => o.toggle()}>t</button>{o() && <p>{n()}</p>}</div>;");
+            super::super::compile_tsx_to_rust(TEST_FILE, &text).unwrap();
+        }
+
+        // ---- 존재 단언: 막는 결함이 검사 없이는 실제로 생긴다 ----
+
+        fn lowered(src: &str) -> ir::ComponentGraph {
+            let (_cm, module) = super::super::parse_tsx(TEST_FILE, src).unwrap();
+            lower::lower_module(&module).unwrap_or_else(|d| panic!("{d:?}")).0
+        }
+        fn no_panic(f: impl FnOnce() -> String) -> String {
+            catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| panic!("codegen이 패닉했다 — 존재 단언 전제가 틀렸다"))
+        }
+
+        #[test]
+        fn the_rejected_defects_exist_without_the_checks() {
+            // R15: 단일 Island codegen은 input을 진단 없이 받고, click 리스너만 연결한다.
+            let g = lowered(&island_f("direct", INPUT, true));
+            let out = no_panic(|| codegen::generate_single_island_client(&g, "F"));
+            // input 액션이 실제로 생성된다(공허한 단언 방지) — 그런데 진입점은 그 액션을
+            // 값 `""`로 부르고(`resume_action_by_symbol(&symbol, "")`), click에만 연결한다.
+            assert!(out.contains("let node_4 = dom.create_element(node_0, \"input\", None);"), "{out}");
+            assert!(out.contains("\"Action1\" => Action::Action1(string_arg.to_string()),"), "{out}");
+            assert!(out.contains("let action = resume_action_by_symbol(&symbol, \"\");"), "{out}");
+            assert!(out.contains("add_event_listener_with_callback(\"click\""), "{out}");
+            assert!(!out.contains("add_event_listener_with_callback(\"input\""), "{out}");
+
+            // R16: Islands codegen은 중복 참조를 받고, 둘째 참조의 `client:visible`이
+            // 산출물 어디에도 없다(첫 참조의 `load`가 쓰인다).
+            let g = lowered(&refs("W", ""));
+            let out = no_panic(|| codegen::generate_graph(&g, GraphMode::Islands));
+            assert_eq!(out.matches("pub mod w_generated {").count(), 1, "{out}");
+            assert!(out.contains("\"data-loom-activation\", \"load\""), "{out}");
+            assert!(!out.contains("\"visible\""), "{out}");
+
+            // R12: codegen은 직계 리스트를 받아 wrapper(anchor)를 곧 리스트 부모로 쓴다.
+            let g = lowered(&cond_list(DIRECT));
+            let out = no_panic(|| codegen::generate(g.root_component()));
+            // 리스트 entity의 DomTarget이 조건부 wrapper(anchor) 자체다 — Bool 패스가 adopt하는
+            // 노드와 리스트 패스가 adopt하는 노드가 같아지는 원인.
+            const LIST_ON_ANCHOR: &str = "commands.entity(slot_0).insert(::loom_runtime::DomTarget(anchor.0));";
+            assert_eq!(out.matches(LIST_ON_ANCHOR).count(), 1, "{out}");
+            assert!(out.contains("::loom_runtime::CondBlock::with_size(1)"), "{out}");
+            // 감싼 양성 짝은 그 경로를 타지 않는다.
+            let g = lowered(&cond_list(WRAPPED));
+            assert!(!codegen::generate(g.root_component()).contains(LIST_ON_ANCHOR));
+        }
+
+        #[test]
+        fn diagnostics_are_deterministic() {
+            let render = || {
+                let mut t = String::new();
+                for shape in ["direct", "cond", "row"] {
+                    t.push_str(&super::super::compile_tsx_to_single_island_rust(TEST_FILE, &island_f(shape, INPUT, true), "F").err().unwrap().render());
+                }
+                t.push_str(&super::super::compile_tsx_to_rust_graph(TEST_FILE, &refs("W", ""), GraphMode::Islands).err().unwrap().render());
+                t.push_str(&super::super::compile_tsx_to_rust(TEST_FILE, &cond_list(DIRECT)).err().unwrap().render());
+                t
+            };
+            assert_eq!(render(), render());
+        }
+    }
 }
