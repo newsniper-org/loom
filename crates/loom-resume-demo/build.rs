@@ -18,7 +18,11 @@ fn main() {
     // 산출되는 `setup`/`resume`/... 함수들은 바이트 단위로 동일하고, 추가로
     // `generate_flatten_entry_body`가 `ResumedApp`(옛 손코딩 `ResumedComponent`를
     // 대체)까지 자동 생성해준다는 차이만 있다.
-    let generated = loom_compiler::compile_tsx_to_rust_graph(&source, loom_compiler::GraphMode::Flatten);
+    let generated = loom_compiler::build_support::expect_for_build_rs(loom_compiler::compile_tsx_to_rust_graph(
+        &source_path.display().to_string(),
+        &source,
+        loom_compiler::GraphMode::Flatten,
+    ));
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let dest = PathBuf::from(out_dir).join("generated.rs");

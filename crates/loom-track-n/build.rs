@@ -21,7 +21,13 @@ fn main() {
         ("e", ListCandidate::E),
         ("e_lis", ListCandidate::ELis),
     ] {
-        let generated = loom_compiler::compile_tsx_to_rust_with_candidate(&source, candidate);
+        let generated = loom_compiler::build_support::expect_for_build_rs(
+            loom_compiler::compile_tsx_to_rust_with_candidate(
+                &source_path.display().to_string(),
+                &source,
+                candidate,
+            ),
+        );
         std::fs::write(out_dir.join(format!("arm_{name}.rs")), generated)
             .unwrap_or_else(|e| panic!("loom-track-n/build.rs: write arm_{name}: {e}"));
     }

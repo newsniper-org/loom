@@ -17,7 +17,11 @@ fn main() {
     let source = std::fs::read_to_string(&source_path)
         .unwrap_or_else(|e| panic!("build.rs: failed to read {source_path:?}: {e}"));
 
-    let generated = loom_compiler::compile_tsx_to_single_island_rust(&source, "ProductCard");
+    let generated = loom_compiler::build_support::expect_for_build_rs(loom_compiler::compile_tsx_to_single_island_rust(
+        &source_path.display().to_string(),
+        &source,
+        "ProductCard",
+    ));
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     std::fs::write(PathBuf::from(&out_dir).join("generated.rs"), generated)

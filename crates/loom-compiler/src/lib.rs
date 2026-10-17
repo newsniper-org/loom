@@ -1,42 +1,68 @@
+pub mod build_support;
 mod codegen;
+pub mod diag;
 mod ir;
 mod lower;
 
 pub use codegen::{GraphMode, ListCandidate};
+pub use diag::{Compiled, Diagnostic, Diagnostics, Severity};
 
 use swc_common::sync::Lrc;
-use swc_common::{FileName, SourceFile, SourceMap};
+use swc_common::{FileName, SourceFile, SourceMap, Spanned};
 use swc_ecma_ast::Module;
 use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 
-pub fn parse_tsx(source: &str) -> Module {
+/// SWC로 TSX를 파싱한다. Phase 7a(2026-10-17)부터 `SourceMap`을 함께 돌려준다
+/// — 진단을 `파일:줄:열`로 렌더링하려면 span만으로는 부족하다.
+/// `file_name`은 진단에 찍힐 이름일 뿐이며 codegen은 읽지 않는다(산출물 무관,
+/// 게이트 A가 확인).
+///
+/// 구문 오류는 `LOOM-R23`으로 돌려준다. 메시지는 SWC 자체 메시지
+/// (`SyntaxError::msg`)를 재사용한다. (복구 가능한 오류 — `take_errors()` —
+/// 의 수거는 C4에서 별도로 다룬다.)
+pub fn parse_tsx(file_name: &str, source: &str) -> Result<(Lrc<SourceMap>, Module), Diagnostics> {
     let cm: Lrc<SourceMap> = Default::default();
     let fm: Lrc<SourceFile> =
-        cm.new_source_file(Lrc::new(FileName::Custom("input.tsx".into())), source.to_string());
+        cm.new_source_file(Lrc::new(FileName::Custom(file_name.into())), source.to_string());
     let syntax = Syntax::Typescript(TsSyntax {
         tsx: true,
         ..Default::default()
     });
     let lexer = Lexer::new(syntax, Default::default(), StringInput::from(&*fm), None);
     let mut parser = Parser::new_from(lexer);
-    parser
-        .parse_module()
-        .unwrap_or_else(|e| panic!("loomc: parse error: {e:?}"))
+    match parser.parse_module() {
+        Ok(module) => Ok((cm, module)),
+        Err(e) => {
+            let mut d = Diagnostics::new(cm);
+            d.push(Diagnostic::error(
+                "LOOM-R23",
+                e.span(),
+                format!("구문 오류: {}", e.kind().msg()),
+            ));
+            Err(d)
+        }
+    }
 }
 
 /// docs/02's whole compile pipeline in one call: real SWC parse → IR lower
 /// → Rust codegen. Single-component only (compiles just the module's one
 /// exported root component, ignoring any Island-referenced helper
 /// components — see `compile_tsx_to_rust_graph` for the 증분 4 multi-
-/// component path) — kept exactly as-is for backward compatibility with
-/// every existing `build.rs` call site (`loom-demo`, `loom-resume-demo`,
-/// `loom-fic`, `loom-bench`), none of which need to change. See `lower.rs`
-/// for the exact (intentionally narrow) authoring-surface subset this
-/// supports.
-pub fn compile_tsx_to_rust(source: &str) -> String {
-    let module = parse_tsx(source);
+/// component path) — kept as-is for backward compatibility with the
+/// legacy `build.rs` call sites (`loom-demo`, `loom-fic`,
+/// `loom-nested-fixture`; `loom-track-n` uses the `_with_candidate` variant).
+/// (2026-10-17 정정: 이 주석의 옛 판은 `loom-resume-demo`와 `loom-bench`를
+/// 호출처로 적었으나, resume-demo는 2026-07-28부터 `_graph(Flatten)`를 쓰고
+/// loom-bench에는 build.rs가 없다.) See `lower.rs` for the exact
+/// (intentionally narrow) authoring-surface subset this supports.
+///
+/// Phase 7a(2026-10-17)부터 `Result<Compiled, Diagnostics>`를 돌려준다.
+/// `Compiled::rust`는 이전 `String` 반환값과 바이트 단위로 같다.
+pub fn compile_tsx_to_rust(file_name: &str, source: &str) -> Result<Compiled, Diagnostics> {
+    let (cm, module) = parse_tsx(file_name, source)?;
     let graph = lower::lower_module(&module);
-    codegen::generate(graph.root_component())
+    let rust = codegen::generate(graph.root_component());
+    Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
 
 /// `compile_tsx_to_rust`의 **트랙 L 후보 선택** 판본 (2026-08-08 신설).
@@ -50,20 +76,30 @@ pub fn compile_tsx_to_rust(source: &str) -> String {
 /// row 키/순서 태그를 SSR DOM에서 되살려야 하는데 그 복구가 후보마다 다르고
 /// 트랙 N은 resume을 쓰지 않는다. 조용히 K 모양으로 되살리는 대신 부른 쪽에서
 /// 즉시 터지게 해 뒀다(codegen의 `generate_resume` 참고).
-pub fn compile_tsx_to_rust_with_candidate(source: &str, candidate: ListCandidate) -> String {
-    let module = parse_tsx(source);
+pub fn compile_tsx_to_rust_with_candidate(
+    file_name: &str,
+    source: &str,
+    candidate: ListCandidate,
+) -> Result<Compiled, Diagnostics> {
+    let (cm, module) = parse_tsx(file_name, source)?;
     let graph = lower::lower_module(&module);
-    codegen::generate_with_candidate(graph.root_component(), candidate)
+    let rust = codegen::generate_with_candidate(graph.root_component(), candidate);
+    Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
 
 /// 증분 4 (Task #25) multi-component path — compiles the module's full
 /// `ComponentGraph` (root + every Island-referenced helper component) in the
 /// given `GraphMode`. See `codegen::GraphMode`'s doc comment for the two
 /// modes' shapes.
-pub fn compile_tsx_to_rust_graph(source: &str, mode: GraphMode) -> String {
-    let module = parse_tsx(source);
+pub fn compile_tsx_to_rust_graph(
+    file_name: &str,
+    source: &str,
+    mode: GraphMode,
+) -> Result<Compiled, Diagnostics> {
+    let (cm, module) = parse_tsx(file_name, source)?;
     let graph = lower::lower_module(&module);
-    codegen::generate_graph(&graph, mode)
+    let rust = codegen::generate_graph(&graph, mode);
+    Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
 
 /// RQ6 §6 M1 real per-Island code splitting (Task #27) — parses+lowers
@@ -75,15 +111,91 @@ pub fn compile_tsx_to_rust_graph(source: &str, mode: GraphMode) -> String {
 /// emits every component in the graph into one artifact (see
 /// `codegen::generate_single_island_client`'s doc comment for the gap this
 /// closes and why it matters for RQ6).
-pub fn compile_tsx_to_single_island_rust(source: &str, island_component_name: &str) -> String {
-    let module = parse_tsx(source);
+pub fn compile_tsx_to_single_island_rust(
+    file_name: &str,
+    source: &str,
+    island_component_name: &str,
+) -> Result<Compiled, Diagnostics> {
+    let (cm, module) = parse_tsx(file_name, source)?;
     let graph = lower::lower_module(&module);
-    codegen::generate_single_island_client(&graph, island_component_name)
+    let rust = codegen::generate_single_island_client(&graph, island_component_name);
+    Ok(Compiled { rust, warnings: Diagnostics::new(cm) })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Phase 7a C1(2026-10-17): 공개 API가 `(file_name, source, …) ->
+    // Result<Compiled, Diagnostics>`로 바뀌었다. 아래 기존 테스트들은 옛
+    // 시그니처로 쓰여 있으므로, 같은 이름의 얇은 래퍼로 가린다(glob import보다
+    // 지역 정의가 우선). 성공 경로만 감싸며, 실패는 렌더된 진단으로 unwrap
+    // 패닉한다. lower의 거부는 C2 전까지 여전히 `panic!`이라 `should_panic`
+    // 테스트의 관측 메커니즘은 그대로다.
+    const TEST_FILE: &str = "test.tsx";
+    fn parse_tsx(source: &str) -> Module {
+        super::parse_tsx(TEST_FILE, source).unwrap().1
+    }
+    fn compile_tsx_to_rust(source: &str) -> String {
+        super::compile_tsx_to_rust(TEST_FILE, source).unwrap().rust
+    }
+    fn compile_tsx_to_rust_graph(source: &str, mode: GraphMode) -> String {
+        super::compile_tsx_to_rust_graph(TEST_FILE, source, mode).unwrap().rust
+    }
+    fn compile_tsx_to_single_island_rust(source: &str, island: &str) -> String {
+        super::compile_tsx_to_single_island_rust(TEST_FILE, source, island).unwrap().rust
+    }
+
+    mod diagnostics_api {
+        use super::super::*;
+
+        #[test]
+        fn fatal_parse_error_is_a_diagnostic_rendered_at_the_offending_position() {
+            // 2번째 줄 13열의 `;`(식이 와야 할 자리)가 SWC 파서의 치명 오류 지점.
+            let src = "export function App() {\n  const x = ;\n  return <div />;\n}\n";
+            let err = super::super::compile_tsx_to_rust("bad.tsx", src).unwrap_err();
+            assert!(err.has_errors());
+            let codes: Vec<&str> = err.items().iter().map(|d| d.code).collect();
+            assert_eq!(codes, ["LOOM-R23"]);
+            assert!(err.items()[0].message.starts_with("구문 오류: "), "{err}");
+            let r = err.render();
+            assert!(r.contains("error[LOOM-R23]: 구문 오류: "), "{r}");
+            assert!(r.contains("--> bad.tsx:2:13"), "{r}");
+            // 결정성: 같은 입력이면 렌더 결과가 같다.
+            let again = super::super::compile_tsx_to_rust("bad.tsx", src).unwrap_err().render();
+            assert_eq!(r, again);
+        }
+
+        #[test]
+        fn successful_compile_carries_an_empty_warning_set() {
+            let src = "export function App() {\n  const n = signal(0);\n  return <span>{n()}</span>;\n}\n";
+            let ok = super::super::compile_tsx_to_rust("ok.tsx", src).unwrap();
+            assert!(ok.rust.contains("pub fn setup("));
+            assert!(ok.warnings.is_empty());
+            assert!(!ok.warnings.has_errors());
+            assert_eq!(ok.warnings.render(), "");
+        }
+
+        #[test]
+        fn diagnostics_are_kept_sorted_by_position_then_code_and_render_labels_and_notes() {
+            let (cm, _m) = super::super::parse_tsx("x.tsx", "const a = 1;\nconst b = 2;\n").unwrap();
+            let f = cm.files()[0].clone();
+            let at = |off: u32| swc_common::Span::new(f.start_pos + swc_common::BytePos(off), f.start_pos + swc_common::BytePos(off + 1));
+            let mut d = Diagnostics::new(cm);
+            d.push(Diagnostic::warning("LOOM-W99", at(19), "second line"));
+            d.push(Diagnostic::error("LOOM-R99", at(6), "first line").with_label(at(19), "related").with_note("a note"));
+            let codes: Vec<&str> = d.items().iter().map(|x| x.code).collect();
+            assert_eq!(codes, ["LOOM-R99", "LOOM-W99"]);
+            let r = d.render();
+            let e = r.find("error[LOOM-R99]: first line").expect(&r);
+            let w = r.find("warning[LOOM-W99]: second line").expect(&r);
+            assert!(e < w, "{r}");
+            assert!(r.contains("--> x.tsx:1:7"), "{r}");
+            assert!(r.contains("--> x.tsx:2:7"), "{r}");
+            assert!(r.contains("related"), "{r}");
+            assert!(r.contains("= note: a note"), "{r}");
+        }
+    }
 
     const DEMO_SOURCE: &str = r#"
         import { signal } from "loom";

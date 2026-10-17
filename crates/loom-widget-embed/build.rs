@@ -15,8 +15,16 @@ fn main() {
     let source = std::fs::read_to_string(&source_path)
         .unwrap_or_else(|e| panic!("loom-widget-embed/build.rs: failed to read {source_path:?}: {e}"));
 
-    let islands = loom_compiler::compile_tsx_to_rust_graph(&source, loom_compiler::GraphMode::Islands);
-    let flat = loom_compiler::compile_tsx_to_rust_graph(&source, loom_compiler::GraphMode::Flatten);
+    let islands = loom_compiler::build_support::expect_for_build_rs(loom_compiler::compile_tsx_to_rust_graph(
+        &source_path.display().to_string(),
+        &source,
+        loom_compiler::GraphMode::Islands,
+    ));
+    let flat = loom_compiler::build_support::expect_for_build_rs(loom_compiler::compile_tsx_to_rust_graph(
+        &source_path.display().to_string(),
+        &source,
+        loom_compiler::GraphMode::Flatten,
+    ));
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     std::fs::write(PathBuf::from(&out_dir).join("generated.rs"), islands)

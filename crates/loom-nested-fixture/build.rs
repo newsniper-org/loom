@@ -15,7 +15,10 @@ fn main() {
         let source = std::fs::read_to_string(&source_path).unwrap_or_else(|e| {
             panic!("loom-nested-fixture/build.rs: failed to read {source_path:?}: {e}")
         });
-        let generated = loom_compiler::compile_tsx_to_rust(&source);
+        let generated = loom_compiler::build_support::expect_for_build_rs(loom_compiler::compile_tsx_to_rust(
+            &source_path.display().to_string(),
+            &source,
+        ));
         let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(out);
         std::fs::write(&dest, generated).unwrap_or_else(|e| {
             panic!("loom-nested-fixture/build.rs: failed to write {dest:?}: {e}")
