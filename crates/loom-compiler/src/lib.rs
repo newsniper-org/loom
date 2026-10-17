@@ -19,8 +19,15 @@ use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 /// 게이트 A가 확인).
 ///
 /// 구문 오류는 `LOOM-R23`으로 돌려준다. 메시지는 SWC 자체 메시지
-/// (`SyntaxError::msg`)를 재사용한다. (복구 가능한 오류 — `take_errors()` —
-/// 의 수거는 C4에서 별도로 다룬다.)
+/// (`SyntaxError::msg`)를 재사용한다.
+///
+/// 7a C4(R23, 2026-10-17): SWC 파서는 **복구 가능한** 오류(예: `with` 문 —
+/// `WithInStrict`/TS2410, 레거시 8진 리터럴 `010` — `LegacyOctal`/TS1085)를
+/// `parse_module()`의 `Ok` 안에 숨기고 `take_errors()`로만 내준다. 7a 이전에는
+/// 이것을 수거하지 않아 그런 입력이 조용히 다음 단계로 넘어갔다. 이제 `Ok`이든
+/// `Err`이든 `take_errors()`를 전부 수거해 하나라도 있으면 `Err`로 돌려준다
+/// (치명 오류가 있으면 그것도 같은 `Diagnostics`에 함께). 소비자 22회 호출의
+/// 소스는 C4 착수 전 프로브에서 수거 오류 0건이었다.
 pub fn parse_tsx(file_name: &str, source: &str) -> Result<(Lrc<SourceMap>, Module), Diagnostics> {
     let cm: Lrc<SourceMap> = Default::default();
     let fm: Lrc<SourceFile> =
@@ -31,15 +38,21 @@ pub fn parse_tsx(file_name: &str, source: &str) -> Result<(Lrc<SourceMap>, Modul
     });
     let lexer = Lexer::new(syntax, Default::default(), StringInput::from(&*fm), None);
     let mut parser = Parser::new_from(lexer);
-    match parser.parse_module() {
-        Ok(module) => Ok((cm, module)),
-        Err(e) => {
+    let parsed = parser.parse_module();
+    let recovered = parser.take_errors();
+    let syntax_error = |e: &swc_ecma_parser::error::Error| {
+        Diagnostic::error("LOOM-R23", e.span(), format!("구문 오류: {}", e.kind().msg()))
+    };
+    match parsed {
+        Ok(module) if recovered.is_empty() => Ok((cm, module)),
+        parsed => {
             let mut d = Diagnostics::new(cm);
-            d.push(Diagnostic::error(
-                "LOOM-R23",
-                e.span(),
-                format!("구문 오류: {}", e.kind().msg()),
-            ));
+            for e in &recovered {
+                d.push(syntax_error(e));
+            }
+            if let Err(e) = &parsed {
+                d.push(syntax_error(e));
+            }
             Err(d)
         }
     }
@@ -261,6 +274,91 @@ mod tests {
             // 결정성: 같은 입력이면 렌더 결과가 같다.
             let again = super::super::compile_tsx_to_rust("bad.tsx", src).unwrap_err().render();
             assert_eq!(r, again);
+        }
+
+        /// 7a C4 (R23): SWC가 `parse_module()`의 `Ok` 안에 숨기는 복구 가능 오류.
+        /// (소스, 기대 강조 토큰, 기대 `줄:열`, 기대 SWC 메시지 부분 문자열들, 최소 차이 양성 짝)
+        const R23_CASES: &[(&str, &str, &str, &[&str], &str)] = &[
+            (
+                "export function App() {\n  with (o) {}\n  const n = signal(0);\n  return <span>{n()}</span>;\n}\n",
+                "with",
+                "r23.tsx:2:3",
+                &["The 'with' statement is not supported", "With statement are not allowed in strict mode"],
+                "export function App() {\n  const n = signal(0);\n  return <span>{n()}</span>;\n}\n",
+            ),
+            (
+                "export function App() {\n  const n = signal(010);\n  return <span>{n()}</span>;\n}\n",
+                "010",
+                "r23.tsx:2:20",
+                &["Legacy octal literals are not available", "Legacy octal escape is not permitted in strict mode"],
+                "export function App() {\n  const n = signal(8);\n  return <span>{n()}</span>;\n}\n",
+            ),
+        ];
+
+        /// SWC를 직접 불러 (치명 오류 결과, 수거 오류 수)를 본다 — `parse_tsx`를 거치지 않음.
+        fn raw_swc_parse(src: &str) -> (Result<Module, ()>, usize) {
+            let cm: Lrc<SourceMap> = Default::default();
+            let fm = cm.new_source_file(Lrc::new(FileName::Custom("raw.tsx".into())), src.to_string());
+            let syntax = Syntax::Typescript(TsSyntax { tsx: true, ..Default::default() });
+            let mut p = Parser::new_from(Lexer::new(syntax, Default::default(), StringInput::from(&*fm), None));
+            let m = p.parse_module().map_err(|_| ());
+            (m, p.take_errors().len())
+        }
+
+        #[test]
+        fn r23_recoverable_parse_errors_exist_and_were_hidden_inside_ok() {
+            // 존재 단언(공허한 확인 방지): 각 부정 스니펫에서 SWC의 parse_module()은
+            // 실제로 Ok를 돌려주면서 take_errors()에 오류를 남긴다 — 즉 C4 이전
+            // parse_tsx(Ok만 보던)는 이것을 놓쳤다.
+            for (src, ..) in R23_CASES {
+                let (m, n) = raw_swc_parse(src);
+                assert!(m.is_ok(), "치명 오류가 아니어야 함: {src}");
+                assert!(n > 0, "take_errors()가 비어 있음 — 존재 단언 실패: {src}");
+            }
+            // 그리고 레거시 8진 스니펫은 수거하지 않으면 lower까지 조용히 통과한다
+            // (C4가 막는 '조용한 수용'의 실재 확인).
+            let (m, _) = raw_swc_parse(R23_CASES[1].0);
+            assert!(lower::lower_module(&m.unwrap()).is_ok());
+        }
+
+        #[test]
+        fn r23_recoverable_parse_errors_are_rejected_at_the_offending_token_with_swc_messages() {
+            for (src, token, at, msgs, ok) in R23_CASES {
+                let results = [
+                    super::super::compile_tsx_to_rust("r23.tsx", src).map(|c| c.rust),
+                    super::super::compile_tsx_to_rust_with_candidate("r23.tsx", src, ListCandidate::K).map(|c| c.rust),
+                    super::super::compile_tsx_to_rust_graph("r23.tsx", src, GraphMode::Flatten).map(|c| c.rust),
+                    super::super::compile_tsx_to_rust_graph("r23.tsx", src, GraphMode::Islands).map(|c| c.rust),
+                ];
+                for r in results {
+                    let e = r.unwrap_err();
+                    assert!(!e.is_empty());
+                    for d in e.items() {
+                        assert_eq!(d.code, "LOOM-R23", "{e}");
+                        assert!(d.message.starts_with("구문 오류: "), "{e}");
+                        assert_eq!(e.source_text(d.span).as_deref(), Some(*token), "{e}");
+                    }
+                    let rendered = e.render();
+                    for m in *msgs {
+                        assert!(e.items().iter().any(|d| d.message.contains(m)), "{m} 없음:\n{rendered}");
+                    }
+                    assert!(rendered.contains(&format!("--> {at}")), "{rendered}");
+                    assert_eq!(rendered, super::super::compile_tsx_to_rust("r23.tsx", src).unwrap_err().render());
+                }
+                // 최소 차이 양성 짝은 끝까지 컴파일된다.
+                let c = super::super::compile_tsx_to_rust("r23.tsx", ok).unwrap();
+                assert!(c.rust.contains("pub fn setup("));
+            }
+        }
+
+        #[test]
+        fn r23_recoverable_and_fatal_errors_are_reported_together_in_position_order() {
+            let src = "export function App() {\n  with (o) {}\n  const x = ;\n  return <div />;\n}\n";
+            let e = super::super::compile_tsx_to_rust("r23.tsx", src).unwrap_err();
+            let at: Vec<(usize, usize)> = e.items().iter().map(|d| e.line_col(d.span)).collect();
+            assert_eq!(at, [(2, 3), (2, 3), (3, 13)], "{e}");
+            assert!(e.items().iter().all(|d| d.code == "LOOM-R23"));
+            assert!(e.items()[2].message.contains("Expression expected"), "{e}");
         }
 
         #[test]

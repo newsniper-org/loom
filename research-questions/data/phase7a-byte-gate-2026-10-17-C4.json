@@ -1,0 +1,345 @@
+{
+ "D": {
+  "changed_paths": [
+   "crates/loom-compiler/src/lib.rs"
+  ],
+  "compiler_diff_exists": true,
+  "paths": 1,
+  "violations": []
+ },
+ "base": "3b51ffa393ec27e4a17e0baafba1ee01fa77d63f",
+ "cand_note": "후보 = 인덱스의 write-tree(기록 JSON 자신은 제외). 커밋 뒤 `verify-commit`이 HEAD 트리에서 기록 파일을 뺀 트리 == cand_tree 를 단언한다.",
+ "cand_temp_commit": "70f65c6e72284e4e0f44ccf3a22ec22325583ca7",
+ "cand_tree": "a0e1ff9315608eee824fa68c46a99cceabffa8ff",
+ "comparison": {
+  "counts": {
+   "A": [
+    22,
+    22
+   ],
+   "B": [
+    5,
+    5
+   ],
+   "BT": [
+    1,
+    1
+   ]
+  },
+  "failures": [],
+  "line": "A 22/22  B 5/5(+소비자 테스트 1/1)",
+  "outdir_equal": {
+   "host": true
+  }
+ },
+ "compiler_subtree": {
+  "base": "bf056bde86aeb28ec5028fe71d49b9bd78b22f1a",
+  "cand": "90e6a67495464e8d0ae60716ffa1b6d719e7b847"
+ },
+ "date": "2026-10-17",
+ "js_sha256": {
+  "base": {
+   "demo/resume/bootstrap.js": "d8510b199dea2d0f6f27ced3aa1dd46ca11ea4ebd2a73522cc04e2c2234e06f8",
+   "demo/resume/registry.js": "d0c2cfeb1b6c4698c00b7522fd2125feebb3f36b7167a9b3d2b3ec4da8a82515",
+   "demo/resume/shared-store.js": "04f0916cf2bbef6cbe78a85ae9c4c3ebb8bc5e2341cc5d016d4a0d26bb78870f",
+   "demo/widget-embed/flat/bootstrap-flat.js": "a4c0c0e66f3b36b99450ff0a644dd5cd610cfa0c0eb2898a5f1b10de17f1ce49"
+  },
+  "cand": {
+   "demo/resume/bootstrap.js": "d8510b199dea2d0f6f27ced3aa1dd46ca11ea4ebd2a73522cc04e2c2234e06f8",
+   "demo/resume/registry.js": "d0c2cfeb1b6c4698c00b7522fd2125feebb3f36b7167a9b3d2b3ec4da8a82515",
+   "demo/resume/shared-store.js": "04f0916cf2bbef6cbe78a85ae9c4c3ebb8bc5e2341cc5d016d4a0d26bb78870f",
+   "demo/widget-embed/flat/bootstrap-flat.js": "a4c0c0e66f3b36b99450ff0a644dd5cd610cfa0c0eb2898a5f1b10de17f1ce49"
+  }
+ },
+ "outdirs": {
+  "host": {
+   "loom-demo": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-demo-52dd10351f9042b5/out",
+   "loom-fic": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-fic-98003e8ee6ccb27e/out",
+   "loom-island-compiled": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-island-compiled-d6a52d5133ba86ce/out",
+   "loom-largeapp-axis-flat": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-largeapp-axis-flat-78479103c0d582e9/out",
+   "loom-largeapp-axis-island-target": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-largeapp-axis-island-target-6af55c248a5d2793/out",
+   "loom-nested-fixture": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-nested-fixture-2dec1463960b99da/out",
+   "loom-resume-demo": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-resume-demo-4e368aa76f734f29/out",
+   "loom-track-n": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-track-n-9355c9d502a37428/out",
+   "loom-widget-embed": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-widget-embed-c1b57da6c228d6ff/out",
+   "loom-widget-embed-island-checkout-form": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-widget-embed-island-checkout-form-cc1b6ce051d16e9c/out",
+   "loom-widget-embed-island-mini-dashboard": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-widget-embed-island-mini-dashboard-022a9d725852be8d/out",
+   "loom-widget-embed-island-product-card": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-widget-embed-island-product-card-e6a0dca5c9a7c4ef/out",
+   "loom-widget-embed-island-quantity-picker": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a/target/debug/build/loom-widget-embed-island-quantity-picker-0d73516518dd4a0b/out"
+  }
+ },
+ "parent": "3b51ffa393ec27e4a17e0baafba1ee01fa77d63f",
+ "result": "PASS",
+ "rows": {
+  "A01": {
+   "base": "ecec4a2672e1dc55eab2f327ac08713f57f68f0ed5798d5b30f7fc80fd8a30a0",
+   "cand": "ecec4a2672e1dc55eab2f327ac08713f57f68f0ed5798d5b30f7fc80fd8a30a0",
+   "desc": "outdir loom-demo generated.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A02": {
+   "base": "ecec4a2672e1dc55eab2f327ac08713f57f68f0ed5798d5b30f7fc80fd8a30a0",
+   "cand": "ecec4a2672e1dc55eab2f327ac08713f57f68f0ed5798d5b30f7fc80fd8a30a0",
+   "desc": "outdir loom-fic generated.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A03": {
+   "base": "d726d931d5a6584ba8b3e5fec1ab405de9f5296ae0ac51d507114ae808370177",
+   "cand": "d726d931d5a6584ba8b3e5fec1ab405de9f5296ae0ac51d507114ae808370177",
+   "desc": "outdir loom-island-compiled generated.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A04": {
+   "base": "1b52df7df764bdefba398bd8d0810fcd49e667c31ecad0264b0e952153378397",
+   "cand": "1b52df7df764bdefba398bd8d0810fcd49e667c31ecad0264b0e952153378397",
+   "desc": "outdir loom-island-compiled generated_flat.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A05": {
+   "base": "47e21415740aade028975877e6cbbb47cdd0a264b196c8faf0181711d0765853",
+   "cand": "47e21415740aade028975877e6cbbb47cdd0a264b196c8faf0181711d0765853",
+   "desc": "outdir loom-largeapp-axis-flat generated_flat.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A06": {
+   "base": "457042498a5ea313fdb424093952efaaef74dbed21b1a1b0570e3cb8e752a6e8",
+   "cand": "457042498a5ea313fdb424093952efaaef74dbed21b1a1b0570e3cb8e752a6e8",
+   "desc": "outdir loom-largeapp-axis-island-target generated.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A07": {
+   "base": "78ebe09415fc5f610d2d1fcbfd2dfce8a1e44ee888e4648ea9752308f8972471",
+   "cand": "78ebe09415fc5f610d2d1fcbfd2dfce8a1e44ee888e4648ea9752308f8972471",
+   "desc": "outdir loom-nested-fixture generated.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A08": {
+   "base": "6e8c1bb0ed0fb61d1940436f9e726e495b7ee34025abee2f847cf49b800103b5",
+   "cand": "6e8c1bb0ed0fb61d1940436f9e726e495b7ee34025abee2f847cf49b800103b5",
+   "desc": "outdir loom-nested-fixture generated_list.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A09": {
+   "base": "a1aed6423c63fa4313557248c98fbc5da70438a26c88931d514f83d1ae81a4fe",
+   "cand": "a1aed6423c63fa4313557248c98fbc5da70438a26c88931d514f83d1ae81a4fe",
+   "desc": "outdir loom-nested-fixture generated_derived.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A10": {
+   "base": "c45670417a2f3a570b5fab60aa0f4885d3a81b8051066ba0cfe404a965daafae",
+   "cand": "c45670417a2f3a570b5fab60aa0f4885d3a81b8051066ba0cfe404a965daafae",
+   "desc": "outdir loom-resume-demo generated.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A11": {
+   "base": "a1aed6423c63fa4313557248c98fbc5da70438a26c88931d514f83d1ae81a4fe",
+   "cand": "a1aed6423c63fa4313557248c98fbc5da70438a26c88931d514f83d1ae81a4fe",
+   "desc": "outdir loom-track-n arm_k.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A12": {
+   "base": "f7d869f3099228f076e9d0e1e03d89ed091ffc2b00d6c1d463b927d886301735",
+   "cand": "f7d869f3099228f076e9d0e1e03d89ed091ffc2b00d6c1d463b927d886301735",
+   "desc": "outdir loom-track-n arm_c.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A13": {
+   "base": "997dd0c5c29921de4c396cde3bbaa7ba8bb403901448532eaac02bab963b24de",
+   "cand": "997dd0c5c29921de4c396cde3bbaa7ba8bb403901448532eaac02bab963b24de",
+   "desc": "outdir loom-track-n arm_d.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A14": {
+   "base": "8dafeb4c24108feae5402c5633bdc38efccfa4aba8608c93be399183697ddf26",
+   "cand": "8dafeb4c24108feae5402c5633bdc38efccfa4aba8608c93be399183697ddf26",
+   "desc": "outdir loom-track-n arm_d_lis.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A15": {
+   "base": "b8ac15a461bceaf63f0837051dd26d9a78e1f64013accbbda15b891d400e77f8",
+   "cand": "b8ac15a461bceaf63f0837051dd26d9a78e1f64013accbbda15b891d400e77f8",
+   "desc": "outdir loom-track-n arm_e.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A16": {
+   "base": "939e64d1fedc44f335b6a18a3910782ca56b181dc7e70d5c462653276a3399dd",
+   "cand": "939e64d1fedc44f335b6a18a3910782ca56b181dc7e70d5c462653276a3399dd",
+   "desc": "outdir loom-track-n arm_e_lis.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A17": {
+   "base": "4d8d4afe8a209d2ad249d8843afd0aa20e75d0ba0e2d51beea5f75a61af8550a",
+   "cand": "4d8d4afe8a209d2ad249d8843afd0aa20e75d0ba0e2d51beea5f75a61af8550a",
+   "desc": "outdir loom-widget-embed generated.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A18": {
+   "base": "c617d1094aff12b01e5850b103ed8b3a7936d134f6181252a90758a9635e6e77",
+   "cand": "c617d1094aff12b01e5850b103ed8b3a7936d134f6181252a90758a9635e6e77",
+   "desc": "outdir loom-widget-embed generated_flat.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A19": {
+   "base": "647ed2cb934c34e8597319f958b4146b7aefb395a37e9861eaddabee192cc70d",
+   "cand": "647ed2cb934c34e8597319f958b4146b7aefb395a37e9861eaddabee192cc70d",
+   "desc": "outdir loom-widget-embed-island-checkout-form generated.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A20": {
+   "base": "85f8d00ea359d433d5fd77b7d6f651ad1381c8069201f73f6f491d96178d1e2f",
+   "cand": "85f8d00ea359d433d5fd77b7d6f651ad1381c8069201f73f6f491d96178d1e2f",
+   "desc": "outdir loom-widget-embed-island-mini-dashboard generated.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A21": {
+   "base": "c0b806af98ecf6fed3cae0204ffa09dfa4edc7dffd8b38d72963c2038ada3860",
+   "cand": "c0b806af98ecf6fed3cae0204ffa09dfa4edc7dffd8b38d72963c2038ada3860",
+   "desc": "outdir loom-widget-embed-island-product-card generated.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "A22": {
+   "base": "82692c5ac63f2b8abc1a47e6e36dce5ec95633057eb7c30f7b4ef6272e6e1722",
+   "cand": "82692c5ac63f2b8abc1a47e6e36dce5ec95633057eb7c30f7b4ef6272e6e1722",
+   "desc": "outdir loom-widget-embed-island-quantity-picker generated.rs",
+   "equal": true,
+   "role": "evidence",
+   "tier": "A"
+  },
+  "B01": {
+   "base": "aa8d0e839d28a07b87c2807146cc83acc064bbf12a5b5b84a04f6bac4a99a146",
+   "cand": "aa8d0e839d28a07b87c2807146cc83acc064bbf12a5b5b84a04f6bac4a99a146",
+   "desc": "stdout loom-widget-embed print_ssr",
+   "equal": true,
+   "role": "evidence",
+   "tier": "B"
+  },
+  "B02": {
+   "base": "517ceffa1c09f130983767270aa0a135d87a52f8c08a63a17f896737060d5231",
+   "cand": "517ceffa1c09f130983767270aa0a135d87a52f8c08a63a17f896737060d5231",
+   "desc": "stdout loom-widget-embed print_ssr_flat",
+   "equal": true,
+   "role": "evidence",
+   "tier": "B"
+  },
+  "B03": {
+   "base": "2c3f4989e1c4e29e1c95fe3d35f0634c968a4cfe240ed0df23b039bd7097b3b9",
+   "cand": "2c3f4989e1c4e29e1c95fe3d35f0634c968a4cfe240ed0df23b039bd7097b3b9",
+   "desc": "stdout loom-island-compiled print_ssr",
+   "equal": true,
+   "role": "evidence",
+   "tier": "B"
+  },
+  "B04": {
+   "base": "14ce33550d40de372b09a502ce7c2e23fa8ea6b385a0535ba57b7304da43fb92",
+   "cand": "14ce33550d40de372b09a502ce7c2e23fa8ea6b385a0535ba57b7304da43fb92",
+   "desc": "stdout loom-island-compiled print_ssr_flat",
+   "equal": true,
+   "role": "evidence",
+   "tier": "B"
+  },
+  "B05": {
+   "base": "596d81d799e582a8992c3b355309fca0562720484a0cc9530d2079beb22c9164",
+   "cand": "596d81d799e582a8992c3b355309fca0562720484a0cc9530d2079beb22c9164",
+   "desc": "argfile loom-resume-demo ssr resume.html",
+   "equal": true,
+   "role": "evidence",
+   "tier": "B"
+  },
+  "BT1": {
+   "base": "pass",
+   "cand": "pass",
+   "desc": "test loom-rq6-fixture-gen",
+   "equal": true,
+   "role": "guard",
+   "tier": "BT"
+  }
+ },
+ "scope": "이 게이트는 'Phase 7a가 BASE 대비 컴파일러 소비자 산출물을 바꾸지 않았다'를 증명한다. 동결 기반(트랙 L·T a55ba87, pkg-bench fb81633a…; 트랙 N 인증 기반 98f2d3d)과 같다는 것은 증명하지 않는다. HEAD(da4a9bc)는 이미 동결 기반이 아니다(HEAD에서 다시 빌드한 pkg-bench는 99bd8248…). L·T의 근거는 측정이 쓰는 demo/pkg-bench와 loom-bench 소스가 7a에서 바뀌지 않았다는 것이고 D 허용 목록이 보증한다. 트랙 N은 G0 새 기반 캠페인에서 G2를 다시 받는다. (design-7a §2.6)",
+ "summary": "A 22/22  B 5/5(+소비자 테스트 1/1)  D 위반 0",
+ "tiers": [
+  "A",
+  "B",
+  "D"
+ ],
+ "timing_s": {
+  "base": {
+   "A": 101.2,
+   "B": 181.0,
+   "C": null
+  },
+  "cand": {
+   "A": 76.9,
+   "B": 131.0,
+   "C": null
+  }
+ },
+ "toolchain": {
+  "cargo_V": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+  "cargo_lock_wasm_bindgen": [
+   "0.2.126"
+  ],
+  "env_cargo_rust": {},
+  "loadavg": "48.72 46.32 42.11 44/3847 2594708",
+  "python": "3.14.6",
+  "rustc_vV": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
+  "rustup_active_toolchain": "stable-x86_64-unknown-linux-gnu (default)",
+  "wasm_pack_V": "wasm-pack 0.14.0",
+  "wasm_pack_cache_tools": [
+   {
+    "path": "/home/ybi/.cache/.wasm-pack/wasm-bindgen-8a74166b323833fc/wasm-bindgen",
+    "version": "wasm-bindgen 0.2.117"
+   },
+   {
+    "path": "/home/ybi/.cache/.wasm-pack/wasm-bindgen-8b0e612a116397d6/wasm-bindgen",
+    "version": "wasm-bindgen 0.2.126"
+   },
+   {
+    "path": "/home/ybi/.cache/.wasm-pack/wasm-opt-1ceaaea8b7b5f7e0/bin/wasm-opt",
+    "version": "wasm-opt version 117 (version_117)"
+   }
+  ]
+ },
+ "work_dir": "/tmp/claude-1000/-home-ybi-loom-research/57c90ce0-a918-4fbe-b381-bd36cb7cd380/scratchpad/gate7a"
+}
