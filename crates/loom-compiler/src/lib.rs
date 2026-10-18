@@ -2501,7 +2501,7 @@ mod tests {
                 ("LOOM-R25", top("interface I { a: number }"), "최상위 `interface`는", "interface I { a: number }", Some(base.clone())),
                 ("LOOM-R25", top("class K {}"), "최상위 `class`는", "class K {}", Some(base.clone())),
                 ("LOOM-R25", top("export const y = 1;"), "최상위 `export const`는", "export const y = 1;", Some(base.clone())),
-                ("LOOM-R25", top(";"), "최상위 빈 문장(`;`)는", ";", Some(base.clone())),
+                // (2026-10-18 F2: 최상위 빈 문장 `;` 행은 양성으로 옮겼다 — `f2_empty_statements`.)
                 ("LOOM-R25", top_bare("import x from \"y\";"), "최상위 `import … from \"y\"`는", "\"y\"", Some(base.clone())),
                 ("LOOM-R25", top_bare("import type { signal } from \"loom\";"), "최상위 `import type`는", "import type { signal } from \"loom\";", Some(base.clone())),
                 ("LOOM-R25", top_bare("import { signal as s } from \"loom\";"), "import 별칭(`… as …`)는", "signal as s", Some(top_bare("import { signal } from \"loom\";"))),
@@ -2550,8 +2550,9 @@ mod tests {
         #[test]
         fn each_structure_rejection_points_at_the_offending_syntax_and_has_a_compiling_positive_pair() {
             let cases = cases();
-            // 개수 단언: R01 3, R02 2, R05 1, R06 4, R22 2, R24 1, R25 14, R27 10.
-            assert_eq!(cases.len(), 37);
+            // 개수 단언: R01 3, R02 2, R05 1, R06 4, R22 2, R24 1, R25 13, R27 10.
+            // (2026-10-18 F2: R25 14 → 13 — 최상위 `;` 행을 양성으로 옮겼다.)
+            assert_eq!(cases.len(), 36);
             for (code, neg, needle, token, pos) in &cases {
                 assert_lower_diag(neg, code, needle, token);
                 let e = super::super::compile_tsx_to_rust_graph(TEST_FILE, neg, GraphMode::Flatten)
@@ -3097,6 +3098,36 @@ mod tests {
             assert!(out.contains("pub mod self_generated {") && out.contains("pub struct SelfIsland"), "{out}");
         }
 
+    }
+
+    /// 2026-10-18 F2(Phase 7a 후속, 병익님: R25 완화): 빈 문장 `;`은 최상위와 컴포넌트
+    /// 본문 어디서든 받고, 산출물은 `;`이 없는 같은 소스와 **바이트 동일**해야 한다
+    /// (의미 없는 문장이라는 주장의 직접 단언).
+    mod f2_empty_statements {
+        use super::*;
+
+        const PLAIN: &str = "import { signal } from \"loom\";\nfunction W() {\n  const c = signal(0);\n  return <button onClick={() => c.increment()}>{c()}</button>;\n}\nexport function App() {\n  return <div><W client:load /></div>;\n}\n";
+        const WITH_EMPTY: &str = ";\nimport { signal } from \"loom\";;\n;function W() {\n  ;\n  const c = signal(0);;\n  return <button onClick={() => c.increment()}>{c()}</button>;\n  ;\n};\nexport function App() {\n  ;\n  return <div><W client:load /></div>;\n}\n;\n";
+
+        #[test]
+        fn empty_statements_are_accepted_and_change_nothing_in_all_four_apis() {
+            // 존재 단언: 변형 소스에 최상위·본문 빈 문장이 실제로 있다.
+            assert!(WITH_EMPTY.starts_with(";\n") && WITH_EMPTY.contains("  ;\n  const c"));
+            let both = |f: &dyn Fn(&str) -> Result<Compiled, Diagnostics>, api: &str| {
+                let a = f(PLAIN).unwrap_or_else(|d| panic!("{api} plain: {d}")).rust;
+                let b = f(WITH_EMPTY).unwrap_or_else(|d| panic!("{api} with `;`: {d}")).rust;
+                assert!(!a.is_empty(), "{api}");
+                assert_eq!(a, b, "{api}: 빈 문장이 산출물을 바꿨다");
+            };
+            both(&|src| super::super::compile_tsx_to_rust_graph(TEST_FILE, src, GraphMode::Islands), "islands");
+            both(&|src| super::super::compile_tsx_to_rust_graph(TEST_FILE, src, GraphMode::Flatten), "flatten");
+            both(&|src| super::super::compile_tsx_to_single_island_rust(TEST_FILE, src, "W"), "single");
+            let root_plain = "import { signal } from \"loom\";\nexport function App() {\n  const c = signal(0);\n  return <button onClick={() => c.increment()}>{c()}</button>;\n}\n";
+            let root_empty = ";\nimport { signal } from \"loom\";\nexport function App() {\n  ;const c = signal(0);\n  ;\n  return <button onClick={() => c.increment()}>{c()}</button>;\n};\n";
+            let a = super::super::compile_tsx_to_rust(TEST_FILE, root_plain).unwrap_or_else(|d| panic!("{d}")).rust;
+            let b = super::super::compile_tsx_to_rust(TEST_FILE, root_empty).unwrap_or_else(|d| panic!("{d}")).rust;
+            assert_eq!(a, b, "root: 빈 문장이 산출물을 바꿨다");
+        }
     }
 
     // 7a C8(2026-10-17): check.rs의 모드 거부 R15·R16과 조건부 직계 리스트 R12.

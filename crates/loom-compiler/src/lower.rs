@@ -691,6 +691,9 @@ fn collect_component_fn_decls(module: &Module) -> LResult<(&FnDecl, Vec<&FnDecl>
             ModuleItem::ModuleDecl(ModuleDecl::Import(import)) => {
                 imported.extend(lower_loom_import(import)?);
             }
+            // 2026-10-18 7a 후속 F2(병익님: R25 완화): 빈 문장 `;`은 의미가 없으므로 받는다
+            // (7a C6은 이것도 R25로 거부했다 — 막는 결함이 없는 거부였다).
+            ModuleItem::Stmt(Stmt::Empty(_)) => {}
             other => {
                 return Err(Diagnostic::error(
                     R25,
@@ -831,7 +834,8 @@ fn lower_component_fn(
     for stmt in &body.stmts {
         // R22: 첫 `return`만 루트가 될 수 있다(옛 동작은 마지막 `return`이 루트,
         // 그 사이 선언도 조용히 받아 줬다).
-        if root.is_some() {
+        // (2026-10-18 F2: 빈 문장 `;`은 return 뒤에 와도 의미가 없으므로 R22 대상이 아니다.)
+        if root.is_some() && !matches!(stmt, Stmt::Empty(_)) {
             return Err(Diagnostic::error(
                 R22,
                 stmt.span(),
@@ -884,6 +888,8 @@ fn lower_component_fn(
                 };
                 root = Some(lower_element(el, &mut cx, None)?);
             }
+            // 2026-10-18 7a 후속 F2: 컴포넌트 본문의 빈 문장 `;`도 의미가 없으므로 받는다.
+            Stmt::Empty(_) => {}
             other => return Err(unsupported(other.span(), "unsupported statement in component body")),
         }
     }
