@@ -2766,11 +2766,14 @@ mod tests {
                     r44("", &format!("<b>{{b()}}</b><input value={{t()}} {ONINPUT} />")),
                 ),
                 ("LOOM-R44", r44_w("onClick={() => a.increment()}"), "(컴포넌트 참조 `<W>`)", "W", r44_w("")),
-                // R46 — Rust 키워드, `$`, ZWJ(U+200D), 비ASCII, 컴포넌트 이름 키워드
-                ("LOOM-R46", named("type"), "signal 이름 `type`은 Rust 키워드이거나", "type", named("kind")),
-                ("LOOM-R46", named("$c"), "(ASCII 영숫자·`_` 이외 문자 U+0024)", "$c", named("c")),
-                ("LOOM-R46", named("c\u{200D}"), "U+200D", "c\u{200D}", named("c")),
-                ("LOOM-R46", named("cafe\u{301}"), "U+0301", "cafe\u{301}", named("cafe")),
+                // R46 — Rust 키워드, `$`, ZWJ(U+200D), 결합 문자, 한글, 비ASCII 컴포넌트.
+                // (2026-10-18 F1: 문구를 원인별로 사실대로 나눴다 — 키워드·`$`는 rustc 실패,
+                // 비ASCII signal은 "7b에서 지원 예정". 컴포넌트 `Self` 행은 양성으로 옮겼다.)
+                ("LOOM-R46", named("type"), "signal 이름 `type`은 Rust 키워드라 생성 코드(`Signals` 필드)가 rustc에서 실패합니다(7b: `r#` 지원 예정)", "type", named("kind")),
+                ("LOOM-R46", named("$c"), "Rust 식별자에 쓸 수 없는 문자 U+0024가 있어 생성 코드가 rustc에서 실패합니다(7b: 맹글링 예정)", "$c", named("c")),
+                ("LOOM-R46", named("c\u{200D}"), "비ASCII 문자 U+200D는 아직 지원하지 않습니다", "c\u{200D}", named("c")),
+                ("LOOM-R46", named("cafe\u{301}"), "비ASCII 문자 U+0301는 아직 지원하지 않습니다", "cafe\u{301}", named("cafe")),
+                ("LOOM-R46", named("개수"), "7b에서 지원 예정입니다", "개수", named("count")),
                 (
                     "LOOM-R46",
                     app("  const type = sharedSignal(\"k\", 0);\n  return <button onClick={() => type.increment()}>{type()}</button>;"),
@@ -2778,7 +2781,13 @@ mod tests {
                     "type",
                     app("  const kind = sharedSignal(\"k\", 0);\n  return <button onClick={() => kind.increment()}>{kind()}</button>;"),
                 ),
-                ("LOOM-R46", comp("Self"), "컴포넌트 이름 `Self`은 Rust 키워드", "Self", comp("Selfie")),
+                (
+                    "LOOM-R46",
+                    comp("\u{C4}rger"),
+                    "wasm-bindgen으로 내보내는 `\\u{c4}rgerIsland`는 wasm32에서 ASCII 식별자만 받습니다(rustc E0754",
+                    "\u{C4}rger",
+                    comp("Arger"),
+                ),
                 // R47 — 도달할 수 없는 헬퍼(단독, 서로만 참조하는 둘)
                 (
                     "LOOM-R47",
@@ -2806,8 +2815,10 @@ mod tests {
         #[test]
         fn each_graph_rejection_points_at_the_offending_syntax_and_has_a_compiling_positive_pair() {
             let cases = lower_cases();
-            // 개수 단언: R07 3, R07U 1, R08 2, R44 3, R46 6, R47 2.
-            assert_eq!(cases.len(), 17);
+            // 개수 단언: R07 3, R07U 1, R08 2, R44 3, R46 7, R47 2.
+            // (2026-10-18 F1: R46 6 → 7 — 컴포넌트 `Self` 1건을 양성으로 옮기고 한글 signal,
+            // 비ASCII 컴포넌트 `Ärger` 2건을 더했다.)
+            assert_eq!(cases.len(), 18);
             for (code, neg, needle, token, pos) in &cases {
                 assert_lower_diag(neg, code, needle, token);
                 let e = super::super::compile_tsx_to_rust_graph(TEST_FILE, neg, GraphMode::Flatten)
@@ -3013,6 +3024,79 @@ mod tests {
                 std::fs::write(path, &a).unwrap();
             }
         }
+    }
+
+    /// 2026-10-18 F1(Phase 7a 후속, R46 소유자 위임 결정): signal 이름은 Rust 식별자
+    /// 규칙(UAX#31 XID + ZWJ/ZWNJ 금지 + NFC + 키워드 아님)으로 판정하고, 컴포넌트
+    /// 이름은 ASCII만 받되 키워드 검사는 없다. 양성은 **존재 단언**부터 — 이름이
+    /// 실제로 Rust 식별자·문자열 자리에 방출됐는지 확인한다(`Ok`만으로는 이름이
+    /// 아예 방출되지 않아도 참이 될 수 있다).
+    /// 2026-10-18 F1(Phase 7a 후속, R46): 컴포넌트 이름 키워드 검사 제거(양성 `Self`)와
+    /// 비ASCII signal 이름의 7a 잠정 거부(문구가 사실과 맞는지).
+    mod f1_r46_names {
+        use super::*;
+
+        const IMPORT: &str = "import { signal, sharedSignal } from \"loom\";\n";
+        /// 한글, `café`(NFC U+00E9), 그리스 문자, CJK.
+        const NAMES: [&str; 4] = ["개수", "caf\u{E9}", "μετρητής", "计数"];
+
+        fn body(name: &str, shared: bool) -> String {
+            let init = if shared { "sharedSignal(\"k\", 0)" } else { "signal(0)" };
+            format!("  const {name} = {init};\n  return <button onClick={{() => {name}.increment()}}>{{{name}()}}</button>;")
+        }
+        fn root_src(name: &str, shared: bool) -> String {
+            format!("{IMPORT}export function App() {{\n{}\n}}\n", body(name, shared))
+        }
+        fn island_src(name: &str, shared: bool) -> String {
+            format!(
+                "{IMPORT}function W() {{\n{}\n}}\nexport function App() {{\n  return <div><W client:load /></div>;\n}}\n",
+                body(name, shared)
+            )
+        }
+        #[test]
+        fn non_ascii_signal_names_are_rejected_as_deferred_to_7b_in_all_four_apis() {
+            // 7a 잠정 규칙: 비ASCII signal 이름은 "7b에서 지원"으로 거부한다(일반 판정용 의존성이
+            // 측정 산출물 바이트를 바꾸므로 — lower.rs `check_signal_name`). "rustc 실패"라고
+            // 쓰지 않는다는 것까지 단언한다(한글·`café`는 rustc가 실제로 받는다 — r46-research).
+            for name in NAMES {
+                for shared in [false, true] {
+                    let isl = island_src(name, shared);
+                    for (api, r) in [
+                        ("root", super::super::compile_tsx_to_rust(TEST_FILE, &root_src(name, shared))),
+                        ("islands", super::super::compile_tsx_to_rust_graph(TEST_FILE, &isl, GraphMode::Islands)),
+                        ("flatten", super::super::compile_tsx_to_rust_graph(TEST_FILE, &isl, GraphMode::Flatten)),
+                        ("single", super::super::compile_tsx_to_single_island_rust(TEST_FILE, &isl, "W")),
+                    ] {
+                        let d = r.err().unwrap_or_else(|| panic!("{api} `{name}`: 거부돼야 한다"));
+                        let text = d.to_string();
+                        assert!(text.contains("LOOM-R46") && text.contains("7b에서 지원 예정"), "{api} `{name}`: {text}");
+                        assert!(!text.contains("rustc에서 실패"), "{api} `{name}`: 사실과 다른 문구: {text}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn component_named_self_is_accepted_in_all_four_apis() {
+            // 키워드 검사를 걷은 근거: 방출형이 `self_generated`·`SelfIsland`라 키워드가 아니다.
+            let isl = island_src("c", false).replace("function W()", "function Self()").replace("<W ", "<Self ");
+            let root = root_src("c", false).replace("function App()", "function Self()");
+            let r = super::super::compile_tsx_to_rust(TEST_FILE, &root).unwrap_or_else(|d| panic!("{d}")).rust;
+            assert!(r.contains("Self_chunk|"), "{r}");
+            for (islands, mode) in [(true, GraphMode::Islands), (false, GraphMode::Flatten)] {
+                let out = super::super::compile_tsx_to_rust_graph(TEST_FILE, &isl, mode).unwrap_or_else(|d| panic!("{d}")).rust;
+                // Flatten은 루트 청크 하나로 합친다(`App_chunk|…`) — `Self`의 액션이 거기 실린다.
+                let chunk = if islands { "Self_chunk|Action0|c:" } else { "App_chunk|Action0|c:" };
+                assert!(out.contains(chunk), "islands={islands}\n{out}");
+                if islands {
+                    assert!(out.contains("pub mod self_generated {"), "{out}");
+                    assert!(out.contains("pub struct SelfIsland"), "{out}");
+                }
+            }
+            let out = super::super::compile_tsx_to_single_island_rust(TEST_FILE, &isl, "Self").unwrap_or_else(|d| panic!("{d}")).rust;
+            assert!(out.contains("pub mod self_generated {") && out.contains("pub struct SelfIsland"), "{out}");
+        }
+
     }
 
     // 7a C8(2026-10-17): check.rs의 모드 거부 R15·R16과 조건부 직계 리스트 R12.

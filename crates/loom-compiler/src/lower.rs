@@ -83,6 +83,11 @@
 //! 이름), `LOOM-R47`(루트에서 도달할 수 없는 헬퍼 — 모드 무관). R46의 모듈 이름
 //! 충돌과 G01(단일 컴포넌트 경로의 컴포넌트 참조)은 모드에 따라 달라 check.rs가 낸다.
 //!
+//! **2026-10-18 정정(Phase 7a 후속 F1)**: R46 진단 문구를 원인별로 사실대로 나눴다
+//! (키워드·`$` = rustc 실패, 비ASCII signal = 7b에서 지원 예정 — rustc 실패라고 쓰지 않음,
+//! 비ASCII 컴포넌트 = wasm-bindgen E0754). 컴포넌트 이름 키워드 검사는 걷었다.
+//! `check_signal_name`/`check_component_name` 문서 참고.
+//!
 //! 함께 `SpanTable`을 돌려준다. IR(`ir.rs`)에 span을 넣지 않는 이유는 IR의
 //! `derive(PartialEq)`와 codegen의 구조체 생성을 건드리지 않기 위해서다
 //! (design-7a §3.3). 그래프 검사(single-writer, 이후 커밋의 R07/R44 등)는 이
@@ -146,6 +151,7 @@ pub(crate) const R08: &str = "LOOM-R08";
 /// 이벤트를 받는 요소 안에 또 이벤트를 받는 요소/컴포넌트 참조.
 pub(crate) const R44: &str = "LOOM-R44";
 /// 생성 Rust에서 쓸 수 없는 이름(Rust 키워드·예약어·`_`, ASCII 영숫자·`_` 밖의 문자).
+/// (2026-10-18 F1: 문구를 원인별로 정정, 비ASCII signal 일반 지원은 7b — `check_signal_name`.)
 /// 컴포넌트 이름의 모듈 이름 충돌(R46(c))은 모드 검사라 check.rs가 같은 코드로 낸다.
 pub(crate) const R46: &str = "LOOM-R46";
 /// 루트에서 도달할 수 없는 헬퍼 컴포넌트.
@@ -165,21 +171,70 @@ const RUST_KEYWORDS: &[&str] = &[
 /// `Signals` 필드·`{s}_entity` 변수로, 컴포넌트 이름은 `{C}Island`·모듈 이름으로
 /// 방출된다. `$`와 비ASCII 문자(U+200C/U+200D, 비-NFC 형태 포함)는 JS 식별자로는
 /// 유효하지만 rustc가 받지 않거나(`$`) 같은 이름이 다르게 정규화된다.
-fn check_rust_name(what: &str, name: &str, span: Span) -> LResult<()> {
-    let bad_char = name.chars().find(|c| !(c.is_ascii_alphanumeric() || *c == '_'));
-    let why = match (RUST_KEYWORDS.contains(&name), bad_char) {
-        (true, _) => "Rust 키워드".to_string(),
-        (false, Some(c)) => format!("ASCII 영숫자·`_` 이외 문자 U+{:04X}", c as u32),
-        (false, None) => return Ok(()),
+///
+/// **2026-10-18 정정(Phase 7a 후속 F1, 소유자 위임 결정)**: 위 판정(7a C7 —
+/// "ASCII 영숫자·`_` 밖이면 거부", 진단은 "rustc에서 실패")은 한글·`café`처럼
+/// rustc가 실제로 받는 signal 이름까지 "rustc 실패"라고 사실과 다르게 거부했다
+/// (r46-research: 7a 이전 컴파일러 + rustc 1.98.1로 islands·flatten·single 세 경로
+/// 모두 통과 측정). 그래서 둘로 나눴다.
+/// - [`check_signal_name`]: 키워드·`$` 등은 rustc 실패로 거부, 비ASCII는 "7b에서 지원"으로 거부
+///   (일반 판정 UAX#31 XID + NFC는 의존성 추가가 측정 산출물 바이트를 바꾸므로 7b — 함수 안 주석).
+/// - [`check_component_name`]: ASCII만(wasm32에서 `#[wasm_bindgen]` 내보내기
+///   `{C}Island`가 E0754로 실패). 컴포넌트 이름 키워드 검사는 걷었다 — 루트가 아닌
+///   컴포넌트는 대문자로 시작해 걸리는 키워드가 `Self`뿐인데 그 방출형은
+///   `self_generated`·`SelfIsland`라 막는 결함이 없었다.
+///
+/// signal 이름만 검사 대상이다: `sharedSignal`/`sharedValue`의 **키**는 생성 코드에
+/// `{:?}` 문자열 리터럴로만 들어가므로(codegen `shared.set({key:?}, …)`,
+/// `data-loom-shared-subscriber`) Rust 식별자 규칙이 걸리지 않는다.
+fn check_signal_name(name: &str, span: Span) -> LResult<()> {
+    let err = |msg: String| Err(Diagnostic::error(R46, span, msg));
+    let shown = name.escape_default();
+    if RUST_KEYWORDS.contains(&name) {
+        return err(format!(
+            "signal 이름 `{shown}`은 Rust 키워드라 생성 코드(`Signals` 필드)가 rustc에서 실패합니다(7b: `r#` 지원 예정)"
+        ));
+    }
+    let Some(c) = name.chars().find(|c| !(c.is_ascii_alphanumeric() || *c == '_')) else {
+        return Ok(());
     };
-    Err(Diagnostic::error(
-        R46,
-        span,
-        format!(
-            "{what} 이름 `{}`은 Rust 키워드이거나 ASCII 영숫자·`_` 이외 문자를 포함해 생성 코드가 rustc에서 실패합니다({why})",
-            name.escape_default()
-        ),
+    if c.is_ascii() {
+        // `$` 등: JS 식별자로는 유효하지만 Rust 식별자에 없는 문자 — rustc가 실제로 실패한다.
+        return err(format!(
+            "signal 이름 `{shown}`에 Rust 식별자에 쓸 수 없는 문자 U+{:04X}가 있어 생성 코드가 rustc에서 실패합니다(7b: 맹글링 예정)",
+            c as u32
+        ));
+    }
+    // 비ASCII: rustc가 받는 이름(한글·`café` 등)도 많지만, 받는지 가리려면 UAX#31 XID 판정과
+    // NFC 판정(Rust는 식별자를 NFC로 정규화 — JS에서 다른 두 이름이 합쳐짐)이 필요하다.
+    // 그 판정용 의존성(unicode-ident, unicode-normalization)을 컴파일러에 넣으면 소비자 크레이트의
+    // build-dependency 해시가 바뀌어 OUT_DIR 경로가 달라지고, 그 경로가 박히는 측정 산출물(wasm)
+    // 바이트가 바뀐다(2026-10-18 F1 게이트 실측: host out_dir 불일치로 FAIL) — 바이트 동일이 조건인
+    // 7a에서는 넣을 수 없어 7b로 넘긴다. 그래서 "rustc 실패"라고 쓰지 않는다.
+    err(format!(
+        "signal 이름 `{shown}`의 비ASCII 문자 U+{:04X}는 아직 지원하지 않습니다 — 비ASCII signal 이름은 Rust 식별자(UAX#31 XID)·NFC 판정과 함께 7b에서 지원 예정입니다(rustc가 받는 이름도 있지만, 지금은 받는지 정확히 가릴 수 없어 거부합니다)",
+        c as u32
     ))
+}
+
+/// R46(b) 컴포넌트 쪽: ASCII 영숫자·`_`만. 위 [`check_signal_name`] 문서 참고.
+/// `{C}Island`를 wasm-bindgen으로 내보내지 않는 Flatten·루트 단일 경로에서는 비ASCII
+/// 컴포넌트 이름이 wasm32 `cargo check`를 통과한다(F1 스크래치 측정) — 그 경로에서는
+/// 과잉 거부임을 알고 모드 무관 규칙을 택했다(맹글링은 7b).
+fn check_component_name(name: &str, span: Span) -> LResult<()> {
+    let Some(c) = name.chars().find(|c| !(c.is_ascii_alphanumeric() || *c == '_')) else {
+        return Ok(());
+    };
+    let shown = name.escape_default();
+    let msg = if c.is_ascii() {
+        format!("컴포넌트 이름 `{shown}`에 Rust 식별자에 쓸 수 없는 문자 U+{:04X}가 있어 생성 코드가 rustc에서 실패합니다", c as u32)
+    } else {
+        format!(
+            "컴포넌트 이름 `{shown}`에 ASCII가 아닌 문자 U+{:04X}가 있습니다 — Islands·단일 Island 경로에서 wasm-bindgen으로 내보내는 `{shown}Island`는 wasm32에서 ASCII 식별자만 받습니다(rustc E0754 `#[no_mangle] requires ASCII identifier`). 경로마다 규칙이 갈리지 않도록 모든 모드에서 거부합니다(7b: 맹글링 예정)",
+            c as u32
+        )
+    };
+    Err(Diagnostic::error(R46, span, msg))
 }
 
 /// `"loom"`에서 import할 수 있는 이름(= 저작 표면의 callee 전부).
@@ -743,7 +798,7 @@ fn lower_component_fn(
     let component_name = fn_decl.ident.sym.to_string();
     spans.components.push((component_name.clone(), fn_decl.ident.span));
     spans.nodes.push(Vec::new());
-    check_rust_name("컴포넌트", &component_name, fn_decl.ident.span)?;
+    check_component_name(&component_name, fn_decl.ident.span)?;
     // R01(매개변수): props는 아직 전달되지 않는다 — 매개변수를 받아 두면 저작자는
     // 값이 온다고 믿지만 실제로는 아무것도 오지 않는다.
     if let Some(first) = fn_decl.function.params.first() {
@@ -795,13 +850,13 @@ fn lower_component_fn(
                 }
                 for decl in &var_decl.decls {
                     if let Some((signal, shared)) = try_lower_shared_signal_decl(decl)? {
-                        check_rust_name("signal", &signal.name, decl.name.span())?;
+                        check_signal_name(&signal.name, decl.name.span())?;
                         spans.signals.push((component_name.clone(), signal.name.clone(), decl.name.span()));
                         spans.loom_calls.push(("sharedSignal", callee_span(decl)));
                         signals.push(signal);
                         shared_bindings.push(shared);
                     } else if let Some(signal) = try_lower_signal_decl(decl)? {
-                        check_rust_name("signal", &signal.name, decl.name.span())?;
+                        check_signal_name(&signal.name, decl.name.span())?;
                         spans.signals.push((component_name.clone(), signal.name.clone(), decl.name.span()));
                         spans.loom_calls.push(("signal", callee_span(decl)));
                         signals.push(signal);

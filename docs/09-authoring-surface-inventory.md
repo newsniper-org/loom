@@ -160,7 +160,7 @@
 | R43 | S2 | 동적 서브트리 안의 SVG `<svg><g><text>{c()}</text></g></svg>` | 동적 경로는 `document.create_element(tag)`를 써서 HTML 네임스페이스로 만듭니다. 그래서 SVG로 렌더되지 않을 것으로 봅니다. 정적 서브트리는 `insert_adjacent_html`을 거쳐 정상입니다. **같은 마크업이 binding 유무에 따라 다르게 렌더됩니다** | web.rs:288-292, 317; codegen.rs:1913-1937 | 중요 | runtime(`create_element_ns` 없음)·codegen | **L§2.5** | create_element 생성은 실측, 렌더는 추론 |
 | R44 | S1(공정성) | 중첩 `onClick` `<div onClick={d.inc}><button onClick={c.inc}>` | 진입점마다 의미가 다릅니다. bootstrap.js와 bootstrap-flat.js는 `closest("[data-loom-lref]")`로 **가장 안쪽 하나만** 실행합니다(사실상 stopPropagation). Island 진입점은 lref마다 리스너를 붙여 **버블링으로 둘 다** 실행합니다. lower와 codegen은 경고 없이 수용합니다 | bootstrap.js:117-118; bootstrap-flat.js:63-64; codegen.rs:759, 788 | 중요 | bootstrap·codegen | RQ6(Island arm과 Flatten arm의 의미 불일치) | 수용은 실측, 실행은 추론 |
 | R45 | S3 | I32 `increment` 오버플로 `signal(2147483647)` | `.0 += 1`을 생성합니다. 워크스페이스 release 프로파일에 `overflow-checks`가 없어 wasm release에서는 `-2147483648`로 감깁니다. dev에서는 실행 중 패닉입니다. JS 의미(2147483648)와 다릅니다 | codegen.rs:1079; Cargo.toml:38-44 | 선택 | codegen | PT | 코드 |
-| R46 | S2 | signal 이름이 Rust 키워드이거나 `$`를 포함(`const type = signal(0)`, `const $c`) | loomc는 통과합니다. `pub type: Entity`, `signals.$c`가 나와 **하위 크레이트 rustc에서 실패**합니다. 해당 키워드: `type ref move mod use impl where loop struct trait unsafe pub crate dyn match fn` 등. 한글 식별자는 통과합니다 | codegen.rs의 `Signals` 필드와 `{name}_entity` 생성 | 중요 | codegen(맹글링 없음) | — | 실측 |
+| R46 | S2 | signal 이름이 Rust 키워드이거나 `$`를 포함(`const type = signal(0)`, `const $c`) | loomc는 통과합니다. `pub type: Entity`, `signals.$c`가 나와 **하위 크레이트 rustc에서 실패**합니다. 해당 키워드: `type ref move mod use impl where loop struct trait unsafe pub crate dyn match fn` 등. 한글 식별자는 통과합니다(2026-10-18 F1 주: 이 측정은 signal 이름 기준이다. 7a C7에서 "비ASCII 전부 거부"로 바뀌었고, 다시 받는 것은 7b — 문서 끝 "R46 정정" 절) | codegen.rs의 `Signals` 필드와 `{name}_entity` 생성 | 중요 | codegen(맹글링 없음) | — | 실측 |
 | R47 | S3 | Flatten에서 루트로부터 도달할 수 없는 헬퍼 | 검사 없이 수용되고 컴파일되지 않습니다. Islands는 626에서 거부합니다 | codegen.rs:499-568, 626 | 선택 | codegen | — | 코드 |
 
 ---
@@ -467,7 +467,7 @@ codegen은 바뀌지 않았다(codegen.rs는 C9의 R12 텍스트 수정 한 곳�
 | R26 | **거부 LOOM-R26.** 인자 초과: `signal()`, `.set()`, `.append()`, `.map()`. `<input>` 자식(R02와 같은 경계). `sharedSignal`·`sharedValue`는 이미 정확히 2개를 L00으로 요구하므로 더하지 않았다 | C5 | — |
 | R27 | **거부 LOOM-R27(확장).** 컴포넌트 함수의 async/generator/타입 매개변수, `let`/`var`, **그리고 onClick·onInput·`.map` 화살표의 async/generator/타입 매개변수**. 반환 타입 주석은 의미가 없으므로 받는다. 매개변수는 R01이 맡는다 | C6 | — |
 | R44 | **거부 LOOM-R44.** onClick 요소 안의 onClick·`<input onInput>`·컴포넌트 참조(진입점 간 의미 불일치 차단). 안쪽이 주 span, 바깥 onClick에 label | C7 | 이벤트 전파 의미 결정 후 |
-| R46 | **거부 LOOM-R46(확장).** (a) signal·컴포넌트 이름이 Rust 2024 strict·reserved 키워드이거나 `_`, (b) ASCII 영숫자·`_` 밖 문자(`$`, **비ASCII 전부** — 이 행의 "한글 식별자는 통과합니다"는 7a부터 거부로 바뀜; U+200C/U+200D·비-NFC도 여기서 걸림), (c) 루트가 아닌 두 컴포넌트가 codegen의 모듈 이름 변환 뒤 충돌(`ProductCard`/`Product_card`, Islands·단일 Island만). (c)는 codegen의 private 함수를 부르지 않고 같은 규칙을 check.rs에 다시 구현했고, codegen이 실제 방출한 `pub mod …_generated` 이름과 대조하는 표류 방지 테스트를 뒀다 | C7 | 맹글링(미정) |
+| R46 | **거부 LOOM-R46(확장).** (a) signal·컴포넌트 이름이 Rust 2024 strict·reserved 키워드이거나 `_`, (b) ASCII 영숫자·`_` 밖 문자(`$`, **비ASCII 전부** — 이 행의 "한글 식별자는 통과합니다"는 7a부터 거부로 바뀜; U+200C/U+200D·비-NFC도 여기서 걸림), (c) 루트가 아닌 두 컴포넌트가 codegen의 모듈 이름 변환 뒤 충돌(`ProductCard`/`Product_card`, Islands·단일 Island만). (c)는 codegen의 private 함수를 부르지 않고 같은 규칙을 check.rs에 다시 구현했고, codegen이 실제 방출한 `pub mod …_generated` 이름과 대조하는 표류 방지 테스트를 뒀다 **2026-10-18 정정(F1)**: (b)의 "비ASCII 전부"와 (a)의 컴포넌트 이름 키워드 검사는 F1에서 바뀌었다 — 문서 끝 "R46 정정" 절 | C7(정정 F1) | 맹글링(미정) |
 | R47 | **거부 LOOM-R47(모드 무관).** 루트에서 도달할 수 없는 헬퍼. Islands의 기존 거부(codegen.rs:620-627)를 흡수 | C7 | — |
 | (추가) G01 | **거부 LOOM-G01.** 단일 컴포넌트 API(`compile_tsx_to_rust`, `_with_candidate`)에 컴포넌트 참조 — 지금까지는 rustc 단계에서야 실패했다. 같은 소스는 그래프 API에서 Ok | C7 | — |
 
@@ -491,3 +491,56 @@ CAP(R31 → 7d). 설계 §1.2의 선택 항목(R30·R42 태그 거부, R33 테�
 
 **"이 문서의 지위" 갱신**: "위험 표(§1)의 항목은 아직 고치지 않았다"는 7a 이후 위 행별 갱신으로 대체한다. 7a 수리는 컴파일러만이고
 런타임·데모 JS(R13·R14 결정 대기)·소비 픽스처 소스는 건드리지 않았다.
+
+### R46 정정 (2026-10-18, Phase 7a 후속 F1 — 소유자 위임 결정)
+
+위 7a 표의 R46 행(b)는 "ASCII 영숫자·`_` 밖 문자는 전부 거부"였고, 진단은 그 이유를 "생성 코드가 rustc에서 실패"라고 적었다. 이것은
+signal 이름에 대해 **사실이 아니었다** — 7a 이전 컴파일러 + rustc 1.98.1로 한글·`café`(NFC) signal이 islands·flatten·single 세 경로
+모두 통과했다(위 R46 위험 행의 "한글 식별자는 통과합니다"와 같은 결과). 병익님은 경쟁 프레임워크를 살펴보고 알아서 정하라고 위임했다.
+이전 문구(위 표)는 7a C7 시점의 기록으로 남긴다.
+
+**경쟁 프레임워크 조사 요약**(원본 링크·줄 번호는 세션 스크래치 r46-research.md): 사용자 식별자를 거부하는 곳은 없었다. 모두 원래 문자열을
+그대로 두고, 컴파일러가 사용자 이름에서 **파생해 만드는** 출력 식별자만 ASCII로 바꾸고 중복을 해소한다 — Svelte `Scope.generate`, Qwik optimizer
+`escape_sym`(+카운터·해시), Vue `toValidAssetId`, Solid는 JS 식별자가 아닌 키를 문자열/computed 키로 낸다. Rust 쪽 선례 Dioxus는 키워드를 `r#`로
+받고 HTML에는 원래 문자열을 쓴다(Rust 식별자와 출력 문자열 분리).
+
+**결정(최종 형태)**:
+- signal 이름: Rust 식별자 규칙(UAX#31 XID, ZWJ/ZWNJ 금지) + **NFC 강제**로 판정해 한글·`café`·그리스 문자·CJK 등을 받는다. NFC 강제는 Rust가
+  식별자를 NFC로 정규화해 JS에서 다른 두 철자가 한 이름으로 합쳐지는 문제(같은 컴포넌트 → E0124/E0062, Flatten으로 합친 두 컴포넌트 → E0124;
+  Flatten 이름 유일성 검사는 바이트 비교라 놓침)를 원천 차단한다 — 그러면 "바이트가 같다"와 "rustc가 같은 이름으로 본다"가 일치한다.
+  세션 합성안의 "한글 음절만 허용 목록"은 채택하지 않았다(특정 언어만 고르는 근거가 없음).
+- 키워드는 `r#`(raw 불가한 `self super crate Self _`는 계속 거부), `$` 등은 Rust 쪽 식별자만 결정적으로 맹글링하고 원래 문자열은
+  `data-loom-id`·lref에 유지, 맹글링 결과 사이 충돌 검사.
+- 컴포넌트 이름: ASCII만(Islands·단일 Island의 `{C}Island` wasm-bindgen 내보내기가 wasm32에서 rustc E0754). 키워드 검사는 제거 — 걸리는
+  키워드가 `Self`뿐인데 방출형이 `self_generated`·`SelfIsland`라 막는 결함이 없었다.
+
+**7a에서 하지 못한 것과 그 이유(실측)**: XID·NFC 판정에는 `unicode-ident`·`unicode-normalization`이 필요하다. 이것을 loom-compiler에 직접
+의존성으로 넣자(F1 첫 시도) 게이트가 **FAIL**했다 — 생성 소스(A 22/22)·SSR(B 5/5)은 바이트 동일이었지만, 컴파일러를 build-dependency로 쓰는
+소비자 크레이트의 빌드 메타데이터 해시가 바뀌어 **host OUT_DIR 경로가 달라졌다**(`research-questions/data/phase7a-followup-byte-gate-2026-10-18-F1a.json`,
+`failures: ["outdirs:host"]`). OUT_DIR 절대경로는 wasm에 박히므로(7a C0 검토 실측) 측정 산출물(RQ6 소비자 wasm) 바이트가 바뀐다. 컴파일러
+**소스** 변경은 메타데이터 해시에 들어가지 않아 7a 내내 문제가 없었지만, **의존성** 변경은 다르다. 바이트 동일이 조건인 7a에서는 넣을 수 없으므로
+일반 판정은 소비자 바이트가 어차피 바뀌는 7b(JSX 공백 규칙 수리 + RQ6 재측정)로 옮겼다.
+
+**7a 잠정 규칙(F1 커밋)**: 의존성 없이 할 수 있는 것만 했다.
+
+| 이름 | 처리(7a 후속 F1) | 진단 문구 |
+|---|---|---|
+| signal: Rust 키워드, `_` | 거부(변경 없음) | Rust 키워드라 생성 코드(`Signals` 필드)가 rustc에서 실패, 7b: `r#` 지원 예정 |
+| signal: `$` 등 ASCII 비식별자 문자 | 거부 | Rust 식별자에 쓸 수 없는 문자 U+XXXX — rustc 실패, 7b: 맹글링 예정 |
+| signal: 비ASCII 문자(한글, `café`, ZWJ, 결합 문자 등) | 거부(**문구 정정**) | "아직 지원하지 않습니다 — 7b에서 XID·NFC 판정과 함께 지원 예정(rustc가 받는 이름도 있지만 지금은 정확히 가릴 수 없어 거부)". "rustc 실패"라고 쓰지 않는다(테스트로 단언) |
+| 컴포넌트: ASCII, 키워드 포함(`Self`) | **받음(키워드 검사 제거)** | — |
+| 컴포넌트: 비ASCII | 거부(모든 모드) | `{C}Island` wasm-bindgen 내보내기 → wasm32 rustc E0754 |
+| 컴포넌트: R46(c) 모듈 이름 충돌 | 변경 없음 | 기존 문구 |
+
+**알고 택한 과잉 거부**: 비ASCII 컴포넌트 이름은 `{C}Island`를 내보내지 않는 Flatten·루트 단일 경로에서는 wasm32 `cargo check`를 통과한다
+(F1 측정). 경로마다 규칙이 갈리지 않도록 모드 무관하게 거부하고, 문구에 그 사실을 적었다. JSX에서 비대문자 비ASCII 태그(`<카드/>`)는 R46과
+별개로 lower의 `is_uppercase()` 규칙 때문에 HTML 태그로 해석된다(R24) — 별도 결정 사항.
+
+**스크래치 교차 확인**(저장소 밖, rustc 1.98.1, wasm-bindgen 0.2.126, `cargo check --target wasm32-unknown-unknown`):
+- (첫 시도의 XID·NFC 판정 컴파일러로 측정 — 7b 설계 근거) 그 컴파일러 산출물: signal `개수`·`café`·`μετρητής`·`计数`·ASCII 대조 × root·islands·flatten·single 20건, 컴포넌트 `Self`·`Arger` 8건 — **28/28 통과**.
+- 컴포넌트 검사·NFC 검사를 끈 컴파일러: `Ärger` Island는 islands·single에서 **E0754 2건 + "items in `extern` blocks cannot use non-ascii
+  identifiers" 1건으로 실패**(결함 존재), flatten·root는 통과, native 대상에서는 네 경로 모두 통과(wasm-bindgen 내보내기가 wasm32에서만
+  생성되므로 — r46-research의 두 보고서가 엇갈린 이유). NFC·NFD `개수`가 함께 있는 루트는 native·wasm32 모두 E0124 1건 + E0062 2건.
+
+**확인하지 못한 것**: 비ASCII `data-loom-id`·lref가 실제 브라우저의 `bootstrap.js` 파싱과 노드 찾기에서 동작하는지(구분자 `| , :`는 식별자에
+들어갈 수 없어 문제없을 것으로 보지만 측정하지 않았다). SWC가 식별자 안의 `\uXXXX` 이스케이프를 풀어서 넘기는지.

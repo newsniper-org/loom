@@ -96,6 +96,10 @@ System + 닫힌 열거형이 정본이고 opcode는 재개 조건부 대안(docs
       열림 판정을 함께 설계해야 함). (3) R12 텍스트의 영구 회귀 크레이트 → 7b(Cargo.lock 변경이 게이트 D에 걸림; 7a는 미커밋 스크래치
       실측). 회귀 테스트는 텍스트 노드를 adopt하는 DOM 대역 위에서 돌려야 한다(`TreeDom`은 텍스트를 adopt하지 않아 이 결함을 못 잡음).
       (4) W25 원인 소스(widget-embed.tsx import, largeapp 합성 소스) 정리 → 7b(RQ6 픽스처 소스 변경).
+    - **7a 후속 F1 (2026-10-18)**: R46 소유자 위임 결정. 최종 형태는 signal 이름 = Rust 식별자 규칙(XID) + NFC 강제(한글·`café` 등 받음),
+      키워드 `r#`·`$` 맹글링(Rust 쪽만), 컴포넌트 이름 = ASCII(wasm32 E0754). 판정용 의존성 추가가 소비자 OUT_DIR 경로(→ wasm 바이트)를
+      바꿔 7a 게이트가 FAIL했으므로 일반 판정은 **7b**로 옮기고, 7a에서는 진단 문구를 원인별로 사실대로 고치고(비ASCII signal = "7b 지원 예정")
+      컴포넌트 키워드 검사를 걷었다. 상세: docs/09 "R46 정정", RQ1 프로토콜 "개정 #11 적용 기록 — 7a 후속".
 - **7b 위젯 실사용 최소 표면**(컴파일러 전용): 정적 속성, 삼항, 액션 인자, Str/Bool 텍스트, JSX 공백 규칙, Flatten input 수리. 기존 산출물을
   바꾸는 묶음(공백 규칙·bootstrap-flat)은 RQ6 재측정 1회에 모은다.
 - **7c 런타임 표면**: `DomWrite` 추가(속성·class·checked·SVG 네임스페이스·`SpawnRow` tag/class 등). §2.5 동결을 깨므로 **G0 수리 캠페인의 새
