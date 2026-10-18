@@ -1,0 +1,147 @@
+{
+ "date": "2026-10-18",
+ "what": "Phase 7a 후속 F3 — demo/resume/bootstrap.js R13·R14 수리 브라우저 재검증(Playwright chromium, headless)",
+ "page": "demo/resume/index.html(ssr bin 재생성, main의 커밋 외 산출물과 바이트 동일) + chunks/App_chunk(wasm-pack --target web --release, 현 소스)",
+ "negative_control": "같은 시나리오를 수리 전 bootstrap.js(phase7a 3eee329판)에 돌림 — 결함이 재현돼야 테스트가 공허하지 않다",
+ "script": "세션 스크래치 f3-reverify.mjs(시나리오는 이 JSON의 steps 순서 그대로)",
+ "expected": {
+  "r13": "+1×2 → append(다른 요소 첫 클릭) → +1 → toggle(첫 클릭) 동안 count 2→2→3→3, items a,b,c,new, 청크 materialize 1회",
+  "r14": "input에 abc 입력 후 input 클릭 → 값 abc 유지"
+ },
+ "results": {
+  "new": {
+   "steps": [
+    [
+     "+1 ×2",
+     {
+      "count": "2",
+      "items": "a,b,c",
+      "details": "",
+      "detailsVisible": true,
+      "input": ""
+     }
+    ],
+    [
+     "append(첫 클릭)",
+     {
+      "count": "2",
+      "items": "a,b,c,new",
+      "details": "",
+      "detailsVisible": true,
+      "input": ""
+     }
+    ],
+    [
+     "+1",
+     {
+      "count": "3",
+      "items": "a,b,c,new",
+      "details": "",
+      "detailsVisible": true,
+      "input": ""
+     }
+    ],
+    [
+     "toggle(첫 클릭)",
+     {
+      "count": "3",
+      "items": "a,b,c,new",
+      "details": "shown!",
+      "detailsVisible": true,
+      "input": ""
+     }
+    ],
+    [
+     "type abc",
+     {
+      "count": "3",
+      "items": "a,b,c,new",
+      "details": "shown!",
+      "detailsVisible": true,
+      "input": "abc"
+     }
+    ],
+    [
+     "click input",
+     {
+      "count": "3",
+      "items": "a,b,c,new",
+      "details": "shown!",
+      "detailsVisible": true,
+      "input": "abc"
+     }
+    ]
+   ],
+   "chunkRequests": 1,
+   "r13_ok": true,
+   "r14_ok": true
+  },
+  "old": {
+   "steps": [
+    [
+     "+1 ×2",
+     {
+      "count": "2",
+      "items": "a,b,c",
+      "details": "",
+      "detailsVisible": true,
+      "input": ""
+     }
+    ],
+    [
+     "append(첫 클릭)",
+     {
+      "count": "0",
+      "items": "a,b,c,new",
+      "details": "",
+      "detailsVisible": true,
+      "input": ""
+     }
+    ],
+    [
+     "+1",
+     {
+      "count": "3",
+      "items": "a,b,c,new",
+      "details": "",
+      "detailsVisible": true,
+      "input": ""
+     }
+    ],
+    [
+     "toggle(첫 클릭)",
+     {
+      "count": "0",
+      "items": "a,b,c,new",
+      "details": "shown!",
+      "detailsVisible": true,
+      "input": ""
+     }
+    ],
+    [
+     "type abc",
+     {
+      "count": "0",
+      "items": "a,b,c,new",
+      "details": "shown!",
+      "detailsVisible": true,
+      "input": "abc"
+     }
+    ],
+    [
+     "click input",
+     {
+      "count": "0",
+      "items": "a,b,c,new",
+      "details": "shown!",
+      "detailsVisible": true,
+      "input": ""
+     }
+    ]
+   ],
+   "chunkRequests": 4,
+   "r13_ok": false,
+   "r14_ok": false
+  }
+ }
+}
