@@ -2341,3 +2341,19 @@ C 23 = wasm-pack 산출물 21 + 가드 2, D = 변경 허용 경로)다. 개수�
   달라지는 것을 C0 검토가 실측). /tmp(tmpfs)가 가득 차면 게이트가 하네스 오류(종료코드 2)로 멈춘다 — 비교 실패가 아니라 환경 실패다.
 - **공평성 영향 진술**: 중립. 측정 산출물이 하나도 바뀌지 않았다.
 
+#### 개정 #11 적용 기록 — 7a 후속 (2026-10-18)
+
+| 커밋 | 내용 | 기록 | 결과 |
+|---|---|---|---|
+| F1 4ec23f4 | R46 소유자 위임 결정(문구 정정, 컴포넌트 키워드 검사 제거, 비ASCII signal 일반 지원은 7b) | `phase7a-followup-byte-gate-2026-10-18-F1.json` | PASS (A·B·D) |
+| F1a(폐기된 첫 시도) | `unicode-ident`·`unicode-normalization` 직접 의존성 추가 | `…-F1a.json` | **FAIL** — 생성 소스·SSR 동일이었지만 host OUT_DIR 경로 불일치 |
+| F2 cc72568 | R25 완화(빈 문장) | `…-F2.json` | PASS |
+| F3 01b657b | 7a C11 = R13·R14 `bootstrap.js` 수리(`--allow-c11-bootstrap`, sha d8510b19… → 8e6f93a0…) + Playwright 재검증 | `…-F3.json`, `phase7a-followup-F3-resume-reverify-2026-10-18.json` | PASS |
+| 최종 | BASE=3eee329, A·B·C·D + base2 | `phase7a-followup-byte-gate-2026-10-18-final.json` | 이 커밋에 함께 기록 |
+
+- **새로 확인된 사실(F1a)**: 개정 #11의 "산출물 바이트 동일"은 컴파일러 **소스** 변경에는 쉽게 성립하지만, 컴파일러의 **의존성** 변경은
+  컴파일러를 build-dependency로 쓰는 소비자 크레이트의 빌드 메타데이터 해시를 바꿔 OUT_DIR 경로를 바꾸고, OUT_DIR 절대경로가 박히는
+  wasm 바이트를 바꾼다. 따라서 컴파일러 의존성 추가는 바이트 동일 면제를 받을 수 없다 — 소비자 바이트가 어차피 바뀌는 단계(7b)에서 한다.
+- `demo/resume/bootstrap.js`는 측정 산출물이 아니다(RQ6 M1 Layer 0은 16c7e10판만 측정, 이 파일을 로드하는 측정 스펙 없음) — 그래서
+  게이트 D의 C11 예외로 바꿨고, 전/후 sha를 기록했다.
+- **공평성 영향 진술**: 중립. 측정 산출물이 하나도 바뀌지 않았다.

@@ -1,3 +1,4 @@
+*(2026-10-18: `demo/resume/bootstrap.js`도 청크당 인스턴스 하나로 고쳐(7a 후속 F3) 전제 (3)을 지킨다 — 재검증 `research-questions/data/phase7a-followup-F3-resume-reverify-2026-10-18.json`.)*
 # 02. 컴파일러 설계 — JSX/TSX → ECS Entity Graph
 
 > **현재 상태 (2026-10-17 갱신)** — 이 문서의 원래 서술과 실제 구현이 갈리는 지점의 요약.

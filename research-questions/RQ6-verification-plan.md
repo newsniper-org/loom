@@ -1566,3 +1566,5 @@ widget-embed의 R20, counter-list(resume 데모)의 R13·R14, nested-list의 R11
 SSR 출력 4건, 청크 wasm·JS 8개(측정 out-name 고정), widget-embed 번들이 da4a9bc 대비 바이트 동일(`research-questions/data/phase7a-byte-gate-2026-10-17-final.json`).
 M10 증거 테스트 `component_ref_prop_cannot_carry_a_live_signal_value`(옛 lib.rs:1008, §3.8 인용)는 기대 문구와 관측 메커니즘이 그대로다 —
 새 거부 LOOM-R01을 기존 `lower_prop_literal` **뒤**에 두어, 비리터럴 prop은 7a 이전 문구로 계속 거부된다.
+
+**§3.10 후속 (2026-10-18)**: 3번의 R13(요소별 인스턴스)·R14(input 클릭 소거)는 7a 후속 F3에서 `demo/resume/bootstrap.js`를 고쳐 해소했고, "상태 변경 → 다른 요소 첫 클릭" 순서의 Playwright 재검증을 통과했다(수리 전 판은 결함 재현 — 음성 대조, `research-questions/data/phase7a-followup-F3-resume-reverify-2026-10-18.json`). §3.1의 공허했던 확인은 이로써 실제 확인으로 대체된다. M1 Layer 0 수치(16c7e10판)는 소급 수정하지 않는다.

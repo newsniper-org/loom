@@ -551,3 +551,11 @@ signal 이름에 대해 **사실이 아니었다** — 7a 이전 컴파일러 + 
 결함이 없으므로 둘 다 받는다(R22 "return 뒤의 문장"에서도 빈 문장은 제외). 산출물이 `;` 없는 같은 소스와 4개 API 모두에서 바이트 동일함을
 테스트로 단언했다(`f2_empty_statements`). 그 밖의 R25 거부(최상위 `const`/`class`/`export default` 등)는 그대로다.
 
+### R13·R14 수리 (2026-10-18, Phase 7a 후속 F3 = 7a C11 — 병익님 승인)
+
+- R13: `demo/resume/bootstrap.js`가 lref 요소마다 따로 resume하던 것을 청크당 인스턴스 하나(Promise 캐시)로 고쳤다 — 페이지당 resume은
+  청크마다 정확히 한 번. panic 봉쇄 단위도 청크로.
+- R14: click 위임이 `<input>`/`<textarea>`를 건너뛴다(input의 lref는 input 이벤트 전용).
+- Playwright 재검증(`research-questions/data/phase7a-followup-F3-resume-reverify-2026-10-18.json`): 새 판 통과(count 2→2→3→3, materialize 1회, 입력값 유지). 수리 전 판(음성 대조): 다른 요소
+  첫 클릭에 count 0 리셋, materialize 4회, input 클릭에 값 소거 — 결함 재현.
+- R38(Flatten `bootstrap-flat.js`의 input 결함)은 측정 산출물(RQ6 Flatten 팔 로더)이라 7b(RQ6 재측정과 함께)에 남는다.
