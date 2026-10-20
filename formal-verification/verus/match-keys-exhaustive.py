@@ -53,9 +53,12 @@ def match_keys(old_order, new_keys):
     return retained, removed
 
 
-def build(old_order, new_keys, fresh_counter):
-    """호출부 네 곳의 공통 부분. `match_keys` 뒤에 오는 것 전부."""
-    retained, removed = match_keys(old_order, new_keys)
+def build(old_order, new_keys, fresh_counter, matcher=None):
+    """호출부 네 곳의 공통 부분. `match_keys` 뒤에 오는 것 전부.
+
+    `matcher`(2026-10-20 추가): `(old_order, new_keys) -> (retained, removed)`. 기본은 옛 `match_keys`이고,
+    G0R1 이후의 매처(`match_by_key`)를 끼워 같은 성질 검사를 다시 돌릴 때 쓴다(sweep 4 확장)."""
+    retained, removed = (matcher or match_keys)(old_order, new_keys)
 
     # `current`: RemoveNode가 적용된 **뒤의** DOM 순서.
     #   old_order.iter().map(|(_, e)| *e).filter(|e| !removed.contains(e))
@@ -425,12 +428,268 @@ def sweep_bench_reachability():
     return worst_cell
 
 
+# ---------------------------------------------------------------------------
+# G0R1 (2026-10-20, 개정 #12) — `crates/loom-runtime/src/list_key.rs`의 `match_by_key` 모형과 전수 동치 조사.
+#
+# 모형과 Rust 소스의 대응은 **한 줄씩 읽어서 맞춘 것**이지 기계가 검사한 것이 아니다(증명 범위의 한계).
+# 그래서 Rust 쪽에도 같은 동치를 무작위 오라클 테스트(`match_equivalence_against_legacy_oracle`,
+# 퇴화 해시 3종 × 문자열 3종)로 따로 세운다 — 이 스크립트는 그 **작은 도메인의 전수 보강**이다.
+# ---------------------------------------------------------------------------
+
+import hashlib
+
+
+def keyfn_real(item):
+    """운영 `row_key` 근사 — **결정적**이어야 한다. 내장 `hash(str)`는 PYTHONHASHSEED에 따라 바뀌므로 금지(검토 F3).
+    blake2b(digest_size=8). 정의는 출력에 기록한다."""
+    return int.from_bytes(hashlib.blake2b(item.encode(), digest_size=8).digest(), "big")
+
+
+def keyfn_const(item):
+    return 0
+
+
+def keyfn_parity(item):
+    return ord(item[0]) % 2 if item else 0
+
+
+def keyfn_pair(item):
+    return 0 if item in ("a", "b") else 1
+
+
+KEYFNS = [
+    ("blake2b64(운영 근사)", keyfn_real),
+    ("const0(전부 충돌)", keyfn_const),
+    ("ord(c)%2", keyfn_parity),
+    ("{a,b}->0,{c,d}->1", keyfn_pair),
+]
+
+
+def match_by_key_model(old_items, new_items, keyfn):
+    """`match_by_key`의 한 줄씩 모형. 반환: (take_old, collisions, item_cmp).
+
+    · 안정 LSD radix 정렬 = (key, 원래 인덱스) 사전식 정렬과 같다(안정성 + 인덱스 오름차순 입력).
+    · uniform 확인의 Item 비교 수를 센다(대표 비교 포함 `|옛 run|-1 + |새 run|`).
+    · 충돌 run은 (Item, idx) 정렬 뒤 Item 동치류별 k번째↔k번째."""
+    m, n = len(old_items), len(new_items)
+    old = sorted(((keyfn(x), j) for j, x in enumerate(old_items)))
+    new = sorted(((keyfn(x), i) for i, x in enumerate(new_items)))
+    take_old = [m] * n
+    collisions = item_cmp = 0
+    a = b = 0
+
+    def run_end(v, s):
+        e = s + 1
+        while e < len(v) and v[e][0] == v[s][0]:
+            e += 1
+        return e
+
+    while a < m and b < n:
+        ka, kb = old[a][0], new[b][0]
+        if ka < kb:
+            a = run_end(old, a)
+            continue
+        if kb < ka:
+            b = run_end(new, b)
+            continue
+        ae, be = run_end(old, a), run_end(new, b)
+        rep = old_items[old[a][1]]
+        uniform = True
+        for (_, j) in old[a + 1:ae]:
+            item_cmp += 1
+            if old_items[j] != rep:
+                uniform = False
+                break
+        if uniform:
+            for (_, i) in new[b:be]:
+                item_cmp += 1
+                if new_items[i] != rep:
+                    uniform = False
+                    break
+        if uniform:
+            for (_, i), (_, j) in zip(new[b:be], old[a:ae]):
+                take_old[i] = j
+        else:
+            collisions += 1
+            o = sorted((j for (_, j) in old[a:ae]), key=lambda j: (old_items[j], j))
+            w = sorted((i for (_, i) in new[b:be]), key=lambda i: (new_items[i], i))
+            x = y = 0
+            while x < len(o) and y < len(w):
+                if old_items[o[x]] < new_items[w[y]]:
+                    c = old_items[o[x]]
+                    while x < len(o) and old_items[o[x]] == c:
+                        x += 1
+                elif old_items[o[x]] > new_items[w[y]]:
+                    c = new_items[w[y]]
+                    while y < len(w) and new_items[w[y]] == c:
+                        y += 1
+                else:
+                    c = old_items[o[x]]
+                    xe, ye = x, y
+                    while xe < len(o) and old_items[o[xe]] == c:
+                        xe += 1
+                    while ye < len(w) and new_items[w[ye]] == c:
+                        ye += 1
+                    for i, j in zip(w[y:ye], o[x:xe]):
+                        take_old[i] = j
+                    x, y = xe, ye
+        a, b = ae, be
+    return take_old, collisions, item_cmp
+
+
+def legacy_take_old(old_keys, new_keys):
+    """옛 `match_keys`의 출력 `(retained, removed)`를 Rust의 `take_old`(길이 n, 기본 m)로 바꾼다."""
+    old_order = [(k, i) for i, k in enumerate(old_keys)]
+    retained, _ = match_keys(old_order, list(new_keys))
+    take_old = [len(old_keys)] * len(new_keys)
+    for i, entity in retained:
+        take_old[i] = entity
+    return take_old
+
+
+def legacy_cmp_count(old_keys, new_keys):
+    """옛 매처의 키 비교 수 — `pool.iter().position(|(k,_)| k == key)`가 센 `==` 횟수."""
+    pool = list(old_keys)
+    c = 0
+    for key in new_keys:
+        pos = None
+        for p, k in enumerate(pool):
+            c += 1
+            if k == key:
+                pos = p
+                break
+        if pos is not None:
+            pool.pop(pos)
+    return c
+
+
+def sweep_equivalence():
+    """6. 동치 전수 — sweep 1과 같은 도메인(old 364가지 × new 1,365가지), keyfn 4개."""
+    total = 0
+    exist = {"dup_new": 0, "dup_old": 0, "fresh": 0, "removed": 0}
+    per_fn = {name: {"mismatch": 0, "collision_runs": 0, "cases_with_collision": 0} for name, _ in KEYFNS}
+    first_bad = None
+    for m in range(MAXLEN + 1):
+        for old_keys in product(OLD_ALPHA, repeat=m):
+            for n in range(MAXLEN + 1):
+                for new_keys in product(NEW_ALPHA, repeat=n):
+                    want = legacy_take_old(old_keys, new_keys)
+                    total += 1
+                    if len(set(new_keys)) != n:
+                        exist["dup_new"] += 1
+                    if len(set(old_keys)) != m:
+                        exist["dup_old"] += 1
+                    if any(t == m for t in want):
+                        exist["fresh"] += 1
+                    if len(set(want) - {m}) < m:
+                        exist["removed"] += 1
+                    for name, fn in KEYFNS:
+                        got, coll, _ = match_by_key_model(old_keys, new_keys, fn)
+                        if got != want:
+                            per_fn[name]["mismatch"] += 1
+                            if first_bad is None:
+                                first_bad = (name, old_keys, new_keys, want, got)
+                        per_fn[name]["collision_runs"] += coll
+                        if coll:
+                            per_fn[name]["cases_with_collision"] += 1
+    print(f"\n6. 동치 전수 — `match_by_key` 모형 == 옛 `match_keys` (take_old가 글자 그대로 같은가)")
+    print(f"   도메인: sweep 1과 같다(길이 ≤{MAXLEN}, old 키∈{{{','.join(OLD_ALPHA)}}}, new 키∈{{{','.join(NEW_ALPHA)}}}) "
+          f"× keyfn {len(KEYFNS)}개 = {total * len(KEYFNS):,}건")
+    print(f"   [존재 카운트 — 먼저] 조합 {total:,}건 중 new 중복 {exist['dup_new']:,} · old 중복 {exist['dup_old']:,} · "
+          f"fresh 있음 {exist['fresh']:,} · removed 있음 {exist['removed']:,}")
+    bad = 0
+    for name, fn in KEYFNS:
+        d = per_fn[name]
+        print(f"   keyfn {name:24s} 충돌 run을 탄 조합 {d['cases_with_collision']:>9,}건 (run {d['collision_runs']:,}개)  "
+              f"불일치 {d['mismatch']:,}건")
+        bad += d["mismatch"]
+    # 공허한 통과 방지: 충돌 경로를 타는 keyfn이 실제로 충돌 run을 만들어야 한다.
+    assert per_fn["const0(전부 충돌)"]["cases_with_collision"] > 100_000, "const0이 충돌 경로를 타지 않았다"
+    assert per_fn["{a,b}->0,{c,d}->1"]["cases_with_collision"] > 10_000
+    assert per_fn["blake2b64(운영 근사)"]["cases_with_collision"] == 0, "blake2b 8바이트가 이 도메인에서 충돌했다"
+    if first_bad:
+        print(f"   최소 반례 후보: {first_bad}")
+    return bad
+
+
+def sweep_model_bounds():
+    """7. **모형 내 상한 확인**으로 한정한다(검토 F4). 길이 ≤5 도메인이라 증가율의 근거가 될 수 없고, 파이썬의 정렬 비교 수는
+    Rust와 다르다. **증가율의 근거는 Rust 쪽 `list_key.rs`의 구조 단언 테스트 하나뿐이다.**"""
+    # (a) 옛 모형의 역순 비교 수 = n(n+1)/2 (존재 단언 — 이차 성장이 모형에서 보인다)
+    print("\n7. 모형 내 상한 확인 (증가율의 근거가 아니다 — 위 설명)")
+    for n in range(1, MAXLEN + 1):
+        keys = [chr(ord("a") + i) for i in range(n)] if n <= 26 else None
+        got = legacy_cmp_count(keys, list(reversed(keys)))
+        assert got == n * (n + 1) // 2, (n, got)
+    print(f"   (a) 옛 모형: 역순 n=1..{MAXLEN}의 키 비교 수 == n(n+1)/2  [확인]")
+    # (b) 새 모형: 무충돌 keyfn(blake2b)에서 Item 비교 수 ≤ n+m, 역순이면 정확히 n
+    worst = 0
+    exact_ok = 0
+    for m in range(MAXLEN + 1):
+        for old_keys in product(OLD_ALPHA, repeat=m):
+            for n in range(MAXLEN + 1):
+                for new_keys in product(NEW_ALPHA, repeat=n):
+                    _, coll, cmp_ = match_by_key_model(old_keys, new_keys, keyfn_real)
+                    assert coll == 0
+                    assert cmp_ <= n + m, (old_keys, new_keys, cmp_)
+                    worst = max(worst, cmp_ - (n + m))
+    for n in range(1, MAXLEN + 1):
+        keys = [chr(ord("a") + i) for i in range(n)]
+        _, coll, cmp_ = match_by_key_model(keys, list(reversed(keys)), keyfn_real)
+        assert coll == 0 and cmp_ == n, (n, coll, cmp_)
+        exact_ok += 1
+    print(f"   (b) 새 모형(무충돌 keyfn): Item 비교 수 ≤ n+m 전 조합 확인(여유 최소 {-worst}), "
+          f"역순 n=1..{MAXLEN}에서 정확히 n  [확인 {exact_ok}건]")
+
+
+def matcher_new(old_order, new_keys):
+    """`build`에 끼우는 새 매처 어댑터. keyfn은 운영 근사."""
+    old_items = [k for (k, _) in old_order]
+    take_old, _, _ = match_by_key_model(old_items, list(new_keys), keyfn_real)
+    m = len(old_order)
+    retained = [(i, old_order[t][1]) for i, t in enumerate(take_old) if t < m]
+    taken = {t for t in take_old if t < m}
+    removed = [e for j, (_, e) in enumerate(old_order) if j not in taken]
+    return retained, removed
+
+
+def sweep_multistep_new(steps=3):
+    """4'. sweep 4의 새 매처 판. 새 `take_old`로 만든 `target`이 다음 라운드의 `old_order`가 될 때도 Entity 유일성이 세워지는가."""
+    counter = [0]
+    total = viol = nondistinct = 0
+    seqs = []
+    for n in range(0, 4):
+        seqs.extend([list(t) for t in product("abc", repeat=n)])
+    start = [("a", 0), ("b", 1)]
+    for chain in product(seqs, repeat=steps):
+        old_order = list(start)
+        counter[0] = 0
+        for new_keys in chain:
+            r = build(old_order, new_keys, counter, matcher=matcher_new)
+            total += 1
+            if check(old_order, new_keys, r):
+                viol += 1
+            old_order = list(zip(r["target_keys"], r["target"]))
+            if len({e for (_, e) in old_order}) != len(old_order):
+                nondistinct += 1
+    print(f"\n4'. 다단계(새 매처, 초기 old=[('a',0),('b',1)], {steps}스텝) — reconcile {total:,}회")
+    print(f"   성질 위반 {viol:,}회, 다음 라운드 old_order의 Entity가 서로 다르지 않게 된 경우 {nondistinct:,}회")
+    return viol, nondistinct
+
+
 if __name__ == "__main__":
     t1 = sweep_wellformed()
     v2 = sweep_dupkeys_only()
     t3 = sweep_hostile_dup_entities()
     v4, nd4 = sweep_multistep()
     reach = sweep_bench_reachability()
+    # G0R1(2026-10-20) 확장 — 새 매처 `match_by_key`의 모형
+    print("\n" + "=" * 78)
+    print("G0R1 확장: 새 매처(radix 병합)의 모형이 옛 `match_keys`와 같은 take_old를 내는가")
+    print("keyfn 정의: " + "; ".join(f"{n}" for n, _ in KEYFNS) + "  (운영 근사 = hashlib.blake2b(item, digest_size=8) 빅엔디언)")
+    mism6 = sweep_equivalence()
+    sweep_model_bounds()
+    v4n, nd4n = sweep_multistep_new()
 
     print()
     if reach:
@@ -442,7 +701,7 @@ if __name__ == "__main__":
         print("     **키 유일성을 `requires`로 걸면 안 된다**(그 계약은 실제로")
         print("     위반된다). 걸어야 하는 것은 Entity 유일성뿐이다.")
     print()
-    ok = (not t1) and v2 == 0 and v4 == 0 and nd4 == 0
+    ok = (not t1) and v2 == 0 and v4 == 0 and nd4 == 0 and mism6 == 0 and v4n == 0 and nd4n == 0
     if ok:
         print("결론: 호출부(old_order의 Entity가 서로 다름)에서 Q·NoDupC·NoDupT·")
         print("      FreshOK·OrderC·Split·KeyOK·LenOK가 **전부** 성립한다.")
