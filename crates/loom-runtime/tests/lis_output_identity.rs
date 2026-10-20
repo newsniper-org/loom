@@ -251,7 +251,7 @@ fn verified_lis_keep_matches_the_original_algorithm_exhaustively() {
         let seq: Vec<usize> = (0..n).map(|_| rng.below(span)).collect();
         d.check(&seq, old_len);
     }
-    // injective retained part (the real shape produced by match_keys)
+    // injective retained part (the real shape produced by match_keys — 2026-10-20: 이제 list_key::match_by_key, 같은 take_old를 낸다)
     for _ in 0..40_000 {
         let n = rng.below(60);
         let old_len = rng.below(n + 3);

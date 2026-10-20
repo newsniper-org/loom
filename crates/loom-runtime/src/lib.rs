@@ -446,6 +446,10 @@ pub enum DomWrite {
 /// 그때 "이 row의 아이템이 무엇이었나"를 다시 알아낼 방법이 없다(row 아이템은
 /// 후보에 따라 `RowKey`/`OrderedKey`/없음으로 제각각이다). 그래서 아이템에서
 /// 파생된 **부분**을 spawn 시점에 한 번 계산해 여기 남긴다.
+///
+/// **2026-10-20 정정(G0R1)**: D/E의 `RowKey`/`OrderedKey`는 이제 아이템 전체의 `u64` 해시이고 아이템 값은 별도
+/// 값 채널 `RowValue<T>`에 있다. 그래도 파생값을 여기 따로 두는 이유는 같다 — 컴파일러 산출물의 row 템플릿은 `T=String`이
+/// 아닌 파생 mirror를 갖고, 그 재계산을 `RowValue<T>`의 타입에 묶지 않기 위해서다.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RowDerivedFlag(pub bool);
 

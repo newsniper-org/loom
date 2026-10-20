@@ -25,6 +25,16 @@
 //! - 현행 트랙 L 판정 근거는 개정 #10 하네스로 재수집한 v22뿐이다(개정 #9가
 //!   그 이전 판정을 전부 무효화, v21은 재검토 대상). 채택 후보는 2026-10-17
 //!   현재 미정 — `research-questions/RQ1-benchmark-protocol.md`가 계속 지배한다.
+//!
+//! **2026-10-20 정정 (G0R1, 프로토콜 개정 #12)**: D·D-LIS·E·E-LIS의 key·매칭·값 채널이 바뀌었다.
+//! - key는 `to_string()`으로 만든 `String`이 아니라 아이템 전체의 고정 해시 `u64`(`list_key::row_key`)다.
+//! - 행마다 값 채널 `RowValue<T>`가 있고, key가 같은 후보는 `Item` 동등으로 확인한다(충돌해도 결과는 정확).
+//! - 매칭은 `Vec::position`+`remove`(Θ(n·m))가 아니라 안정 radix + 병합 조인(`list_key::match_by_key`)이다.
+//! - D 무조건 변형은 retained 행에 `SetText`를 직접 내지 않고, 값 채널 write → `Changed` 게이팅 patch System
+//!   (`list_key::patch_row_value_system`)이 낸다. 무조건 인스턴스는 `const UNCOND`로 monomorphize된다.
+//! - 후보 C의 조건부 비교도 `String`이 아니라 `Item` 동등이다(`SlotValue<T>`, §2.5 대칭 적용).
+//! 아래 본문 중 "key == display text"·`match_keys`·`emit_unconditional_text`를 서술하던 주석은 이력으로 남기고
+//! 각 자리에 같은 날짜의 정정 블록을 달았다.
 
 use crate::{DomTarget, DomWrite, NodeHandle, PendingDomWrites, Signal};
 use bevy_ecs::prelude::*;
@@ -303,6 +313,8 @@ const ROW_WITHOUT_KEY_MSG: &str =
 ///    오직 `plan_*`의 `target_ids`로만 대입되는데, 그 유일성은 이제
 ///    `plan_inputs`의 **사후조건**이다. 즉 검사가 보는 것은 귀납의 기저다.
 /// 2. **`take_old`가 단사다.** `match_keys`의 소비(`pool.remove`) 규율이 준다.
+///    (2026-10-20: 매처가 `list_key::match_by_key`로 바뀌었다 — 병합 조인에서 run마다 옛 원소를 앞에서부터
+///    한 번씩만 짝짓고 `zip`이 짧은 쪽에서 멈추므로 같은 성질이 선다. 동치 증명은 `list_key.rs` 머리말·무작위 오라클 테스트.)
 /// 3. **fresh Entity가 옛 것과 겹치지 않는다.** `commands.spawn()`은 live가
 ///    아닌 새 Entity를 주고, 같은 시스템의 `despawn()`은 Commands 큐에 들어가
 ///    나중에 적용되므로 이 reconcile 중에 인덱스 재활용이 일어날 수 없다.
@@ -681,6 +693,10 @@ pub struct OrderKey(pub u64);
 /// The set of row entities currently belonging to this list (an unordered
 /// membership set — DOM order is *derived* from `OrderKey`, never stored
 /// here).
+///
+/// **2026-10-20 정정**: "unordered"는 정확하지 않다. reconcile 끝에 `members.0`에는 **목표 순서**(`plan.target_ids`)가
+/// 대입되고, 다음 reconcile은 `OrderKey`로 `sort_by_key`해 옛 순서를 재구성한다(`select_e`). 순서가 없다는 것이
+/// 아니라 "별도 순서 구조를 유지하지 않고 `OrderKey`에서 파생한다"는 뜻이다.
 #[derive(Component, Default, Debug, Clone)]
 pub struct OrderKeyMembers(pub Vec<Entity>);
 
