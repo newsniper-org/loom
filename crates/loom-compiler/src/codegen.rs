@@ -988,11 +988,15 @@ impl ListCandidate {
         match self {
             ListCandidate::K => "()".to_string(),
             ListCandidate::C => "(::loom_runtime::SlotValue(item.clone()),)".to_string(),
+            // 2026-10-20 (G0R1, 개정 #12): key는 아이템 전체의 고정 해시 `u64`이고(`row_key`), 행마다 값 채널
+            // `RowValue<T>`가 아이템 사본을 든다. 런타임의 reconcile 본문이 만드는 fresh 행과 같은 번들이다 —
+            // 다르면 초기 row를 다음 재조정이 못 알아본다(2026-08-08 결함).
             ListCandidate::D | ListCandidate::DLis => {
-                "(::loom_runtime::RowKey(item.clone()),)".to_string()
+                "(::loom_runtime::RowKey(::loom_runtime::row_key(&item)), ::loom_runtime::RowValue(item.clone()))"
+                    .to_string()
             }
             ListCandidate::E | ListCandidate::ELis => format!(
-                "(::loom_runtime::OrderedKey(item.clone()), ::loom_runtime::OrderKey({idx} as u64))"
+                "(::loom_runtime::OrderedKey(::loom_runtime::row_key(&item)), ::loom_runtime::RowValue(item.clone()), ::loom_runtime::OrderKey({idx} as u64))"
             ),
         }
     }
