@@ -153,7 +153,9 @@ fn cell_id(
 /// A minimal POD item type (fixed-width `u32`) alongside `String` (heap),
 /// so the item-type axis RQ1-benchmark-protocol.md §3.2/R-axis calls for
 /// gets at least a partial cross-check, not just the heap case.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+// 2026-10-20 (G0R1, 개정 #12): D·E의 매칭이 `Item: Ord + Hash`를 요구한다(충돌 run의 `(Item, idx)` 정렬 + 아이템
+// 전체 고정 해시). `Ord`는 derive라 `cmp == Equal ⇔ ==`가 성립한다.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct ItemId(u32);
 impl std::fmt::Display for ItemId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -178,6 +180,11 @@ enum Workload {
     /// **W7** (§3.1) — "값 갱신: 순서 불변, 10% 아이템 값만 변경(retain 경로
     /// 표적)". 2026-08-02 신설. 이전까지 이 하네스에는 W7 셀이 **하나도**
     /// 없었다 — §3.4가 "C, D, E (retain 경로)"로 기대하는 셀 전체가 미계측이었다.
+    ///
+    /// **2026-10-20 (G0R1) 갱신**: 아래 서술은 `RowKey(item.to_string())` 시절의 것이다. 지금 D·E의 key는 아이템 전체의
+    /// 고정 해시 `u64`이고(`row_key`) 별도 key 채널은 여전히 없으므로 **값 변경 = key 변경**이라는 결론은 그대로다
+    /// — D는 W7에서 retain하지 못하고 remove+insert로 간다. 값 채널 `RowValue<T>`는 충돌 검증과 무조건 write
+    /// 대상으로만 있고, 조건부 D에서는 write가 영원히 0건이다.
     ///
     /// **Phase 1 구현과 §3.4 기대의 어긋남(숨기지 않음)**: D의 키는 Phase 1
     /// 범위에서 아이템의 표시 텍스트 그 자체다(`RowKey(item.to_string())`,
@@ -987,7 +994,7 @@ fn make_c<T: Send + Sync + Clone + ToString + PartialEq + 'static>(
     Candidate { name: "C", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), write_variant: shape.write_variant, last_window: (0.0, 0.0), _marker: std::marker::PhantomData }
 }
 
-fn make_d<T: Send + Sync + Clone + ToString + 'static>(
+fn make_d<T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
@@ -997,14 +1004,21 @@ fn make_d<T: Send + Sync + Clone + ToString + 'static>(
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
-    app.add_instrumented_systems(list_reconcile_d_system::<T>);
-    shape.apply(&mut app);
+    // G0R1: D의 무조건 변형은 별도 monomorph(`const UNCOND`)이고 patch System이 창 안에 붙는다 — 선택은 마운트 전에.
+    if shape.write_variant == loom_runtime::WriteVariant::Unconditional {
+        app.add_instrumented_systems(loom_runtime::list_reconcile_d_unconditional_system::<T>);
+        shape.apply(&mut app);
+        app.add_row_value_patch::<T>();
+    } else {
+        app.add_instrumented_systems(list_reconcile_d_system::<T>);
+        shape.apply(&mut app);
+    }
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "D", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), write_variant: shape.write_variant, last_window: (0.0, 0.0), _marker: std::marker::PhantomData }
 }
 
-fn make_e<T: Send + Sync + Clone + ToString + 'static>(
+fn make_e<T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
@@ -1026,7 +1040,7 @@ fn make_e<T: Send + Sync + Clone + ToString + 'static>(
 /// research-questions/RQ1-dynamic-control-flow-scheduling.md's Phase 1
 /// Track L section for why this is measured as a *separate* candidate
 /// alongside plain D, not a replacement.
-fn make_d_lis<T: Send + Sync + Clone + ToString + 'static>(
+fn make_d_lis<T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
@@ -1036,15 +1050,21 @@ fn make_d_lis<T: Send + Sync + Clone + ToString + 'static>(
     let (dom, handle) = BrowserDom::new(document.clone(), root);
     let mut dom = loom_runtime::CountingDom::new(dom);
     let mut app = LoomApp::new();
-    app.add_instrumented_systems(list_reconcile_d_lis_system::<T>);
-    shape.apply(&mut app);
+    if shape.write_variant == loom_runtime::WriteVariant::Unconditional {
+        app.add_instrumented_systems(loom_runtime::list_reconcile_d_lis_unconditional_system::<T>);
+        shape.apply(&mut app);
+        app.add_row_value_patch::<T>();
+    } else {
+        app.add_instrumented_systems(list_reconcile_d_lis_system::<T>);
+        shape.apply(&mut app);
+    }
     let entity = app.world.spawn((Signal(initial), ListRows::default(), DomTarget(handle))).id();
     app.tick(&mut dom);
     Candidate { name: "D-LIS", app, dom, entity, last_counts: Default::default(), last_stages: Default::default(), write_variant: shape.write_variant, last_window: (0.0, 0.0), _marker: std::marker::PhantomData }
 }
 
 /// RQ1's LIS-optimized variant of E.
-fn make_e_lis<T: Send + Sync + Clone + ToString + 'static>(
+fn make_e_lis<T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static>(
     document: &web_sys::Document,
     parent: &web_sys::Node,
     initial: Vec<T>,
@@ -1076,6 +1096,10 @@ struct RowShape {
     inner: usize,
     variants: bool,
     write_variant: loom_runtime::WriteVariant,
+    /// 개정 #12 계측 대칭: R1·R3 × write 변형 이중 측정 셀(`doubled`)에서는 그 셀의 **전 후보**(K·C·D·D-LIS·E·E-LIS,
+    /// 조건부·무조건 인스턴스 모두)에 row_patch 창 표식을 등록한다 — D 무조건만 표식 비용을 지는 비대칭을 없앤다.
+    /// R2 셀과 W8 셀은 `add_row_depth_systems`의 창을 그대로 쓴다(전 후보 공통).
+    patch_window: bool,
 }
 
 impl RowShape {
@@ -1086,6 +1110,8 @@ impl RowShape {
         app.set_write_variant(self.write_variant);
         if self.bindings > 1 || self.inner > 0 {
             app.add_row_depth_systems();
+        } else if self.patch_window {
+            app.add_row_patch_window();
         }
     }
 }
@@ -1100,7 +1126,7 @@ type Maker<T> = fn(&web_sys::Document, &web_sys::Node, Vec<T>, RowShape) -> Cand
 /// 더 붙는다(개정 #10). K·E·E-LIS는 이 축을 읽지 않는다 — 축 골든
 /// (`loom-runtime/tests/golden/list-candidate-writes-axes.txt`)에서 셋의 UNCOND 절
 /// write 열이 R1 절과 같고, C·D·D-LIS는 다르다.
-fn all_makers<T: Send + Sync + Clone + ToString + PartialEq + 'static>() -> [(Maker<T>, bool); 6] {
+fn all_makers<T: Send + Sync + Clone + ToString + PartialEq + Ord + std::hash::Hash + 'static>() -> [(Maker<T>, bool); 6] {
     [
         (make_k, false),
         (make_c, true),
@@ -1151,7 +1177,7 @@ async fn run_combination<T, F>(
     out: &mut String,
     first_entry: &mut bool,
 ) where
-    T: Send + Sync + Clone + ToString + PartialEq + 'static,
+    T: Send + Sync + Clone + ToString + PartialEq + Ord + std::hash::Hash + 'static,
     F: Fn(u64) -> T,
 {
     let combo_container = document.create_element("div").unwrap();
@@ -1163,6 +1189,7 @@ async fn run_combination<T, F>(
         inner: row_inner,
         variants: row_variants,
         write_variant: loom_runtime::WriteVariant::Conditional,
+        patch_window: doubled,
     };
     // row 모양 축은 **전부** `RowShape`가 마운트 전에 건다. 여기서 뒤늦게
     // 거는 호출을 두지 않는 것이 요점이다 — 그 자리가 있는 한 같은 순서
@@ -1950,7 +1977,7 @@ async fn run_w6_cell(
         document,
         &node,
         Vec::new(),
-        RowShape { bindings: 1, inner: 0, variants: false, write_variant: loom_runtime::WriteVariant::Conditional },
+        RowShape { bindings: 1, inner: 0, variants: false, write_variant: loom_runtime::WriteVariant::Conditional, patch_window: false },
     );
     let cid = format!("w6|cand={candidate_index}|trial={trial}");
 
@@ -3255,6 +3282,65 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 개정 #12 계측 대칭(C9): R1·R3 × 이중 측정 셀에서는 **그 셀의 전 후보**(조건부·무조건 인스턴스 모두)에
+    /// row_patch 창이 등록돼 `row_patch_ms`가 기록된다. 창 없이는 그 필드가 기록되지 않는다(0.0)는 대조를 먼저 두어
+    /// 공허한 통과를 막고, 창이 중복 등록되면 패닉한다.
+    #[test]
+    fn row_patch_window_is_registered_on_every_instance_of_a_doubled_r1_cell() {
+        use loom_runtime::*;
+        fn app_with(sys: impl FnOnce(&mut LoomApp), window: bool) -> LoomApp {
+            let mut app = LoomApp::new();
+            sys(&mut app);
+            RowShape {
+                bindings: 1,
+                inner: 0,
+                variants: false,
+                write_variant: WriteVariant::Conditional,
+                patch_window: window,
+            }
+            .apply(&mut app);
+            app
+        }
+        type Reg = fn(&mut LoomApp);
+        let regs: Vec<(&str, Reg)> = vec![
+            ("K", |a| { a.add_instrumented_systems(list_reconcile_k_system::<String>); }),
+            ("C", |a| { a.add_instrumented_systems(list_reconcile_c_system::<String>); }),
+            ("D", |a| { a.add_instrumented_systems(list_reconcile_d_system::<String>); }),
+            ("D-LIS", |a| { a.add_instrumented_systems(list_reconcile_d_lis_system::<String>); }),
+            ("E", |a| { a.add_instrumented_systems(list_reconcile_e_system::<String>); }),
+            ("E-LIS", |a| { a.add_instrumented_systems(list_reconcile_e_lis_system::<String>); }),
+            ("D-UNCOND", |a| {
+                a.add_instrumented_systems(list_reconcile_d_unconditional_system::<String>);
+                a.add_row_value_patch::<String>();
+            }),
+            ("D-LIS-UNCOND", |a| {
+                a.add_instrumented_systems(list_reconcile_d_lis_unconditional_system::<String>);
+                a.add_row_value_patch::<String>();
+            }),
+        ];
+        for (name, reg) in &regs {
+            let mut without = app_with(*reg, false);
+            without.run_schedule_for_test();
+            assert_eq!(
+                without.world.resource::<StageTimings>().row_patch_ms, 0.0,
+                "{name}: 창 없이 row_patch_ms가 기록됐다 — 대조가 성립하지 않는다"
+            );
+            let mut with = app_with(*reg, true);
+            with.run_schedule_for_test();
+            assert!(with.world.get_resource::<RowPatchWindow>().is_some(), "{name}: 창이 등록되지 않았다");
+            assert!(
+                with.world.resource::<StageTimings>().row_patch_ms > 0.0,
+                "{name}: row_patch_ms가 기록되지 않았다"
+            );
+        }
+        // 창 중복 등록은 패닉한다.
+        let r = std::panic::catch_unwind(|| {
+            let mut a = app_with(|a| { a.add_instrumented_systems(list_reconcile_k_system::<String>); }, true);
+            a.add_row_patch_window();
+        });
+        assert!(r.is_err(), "창 중복 등록이 막히지 않았다");
     }
 
     #[test]
