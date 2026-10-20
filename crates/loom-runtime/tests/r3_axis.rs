@@ -53,7 +53,7 @@ fn run(register: impl FnOnce(&mut LoomApp), storage: Storage, variants: bool) ->
     assert_eq!(rows.len(), ITEMS.len(), "row가 안 만들어졌다");
     // C는 슬롯 entity에 `SlotValue`를 두므로 존재만 확인해 둔다(후보 구분용).
     if matches!(storage, Storage::Slots) {
-        assert!(app.world.get::<SlotValue>(rows[0]).is_some());
+        assert!(app.world.get::<SlotValue<String>>(rows[0]).is_some());
     }
     let a = rows.iter().filter(|e| app.world.get::<RowVariantA>(**e).is_some()).count();
     let b = rows.iter().filter(|e| app.world.get::<RowVariantB>(**e).is_some()).count();

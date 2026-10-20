@@ -38,8 +38,13 @@ use bevy_ecs::prelude::*;
 /// instead of an unconditional write every reconcile. `ListRows` (from
 /// `lib.rs`) is reused as C's slot-entity list, in position order — for C,
 /// "row identity" *is* "position", matching RQ1's description exactly.
+///
+/// **2026-10-20 (G0R1, 개정 #12 §2.5 대칭 적용)**: 값이 `String`(표시 텍스트)에서 `T`(아이템)로 바뀌었다.
+/// 조건부 변형의 비교가 갱신마다 `to_string()` n회 + `String` 비교였는데, G0R1이 D/E에서 같은 종류의 비용을
+/// 없애므로 C에도 적용한다(K는 이미 `Item: PartialEq`로 비교). 이제 비교는 `Item` 동등이고 `to_string`은
+/// 실제로 write할 때만 부른다. Display가 단사인 측정 타입(`ItemId`, `String`)에서는 결정이 같다.
 #[derive(Component, Debug, Clone, Default)]
-pub struct SlotValue(pub String);
+pub struct SlotValue<T>(pub T);
 
 /// RQ1 candidate **C** ("고정 슬롯 값-통과"): entity identity = list
 /// position, not item identity. Growing/shrinking the list only
@@ -52,7 +57,7 @@ pub struct SlotValue(pub String);
 fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), F>,
-    mut slots: Query<(&mut SlotValue, &DomTarget)>,
+    mut slots: Query<(&mut SlotValue<T>, &DomTarget)>,
     owned: Query<&crate::RowOwned>,
     variant_nodes: Query<&crate::RowVariantNode>,
     variant_targets: Query<&DomTarget>,
@@ -63,7 +68,7 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     write_variant: Res<crate::WriteVariant>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
-    T: Send + Sync + Clone + ToString + 'static,
+    T: Send + Sync + Clone + ToString + PartialEq + 'static,
 {
     for (items, mut rows, anchor) in &mut lists {
         let new_len = items.0.len();
@@ -75,16 +80,17 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
         // flags as C's real, non-free tradeoff).
         for i in 0..common {
             let entity = rows.0[i];
-            let new_text = items.0[i].to_string();
             if let Ok((mut slot_value, target)) = slots.get_mut(entity) {
                 // §10 write 변형 축(개정 #9-6). 무조건 변형은 `PartialEq` 비교
                 // 자체를 건너뛴다 — §10이 "재정렬 셀에서 C 최선 = 무조건(슬롯 값
                 // 거의 전부 변경 → 비교는 순수 오버헤드)"으로 예고한 쪽이다.
                 if *write_variant == crate::WriteVariant::Unconditional
-                    || slot_value.0 != new_text
+                    || slot_value.0 != items.0[i]
                 {
-                    let old_text = slot_value.0.clone();
-                    slot_value.0 = new_text.clone();
+                    // G0R1(C6): 표시 텍스트는 실제로 write할 때만 만든다(이전에는 공통 슬롯마다 `to_string`).
+                    let new_text = items.0[i].to_string();
+                    let old_text = slot_value.0.to_string();
+                    slot_value.0 = items.0[i].clone();
                     pending.0.push(DomWrite::SetText {
                         target: target.0,
                         text: new_text.clone(),
@@ -166,7 +172,7 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
         if new_len > old_len {
             for item in &items.0[old_len..new_len] {
                 let text = item.to_string();
-                let entity = commands.spawn(SlotValue(text.clone())).id();
+                let entity = commands.spawn(SlotValue(item.clone())).id();
                 rows.0.push(entity);
                 // R3 브랜치 marker와 R2 추가 binding은 `DefaultRow::emit`이
                 // 함께 낸다 — 여기 인라인으로 두면 사이트별 생성기를 쓸 때
@@ -1093,7 +1099,7 @@ keyed_candidate_systems!(
 /// (슬롯 값 채널 `SlotValue`, 그리고 파생값 재계산에 필요한 `RowOwned`).
 pub fn list_reconcile_c_system<T>(
     lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), Changed<Signal<Vec<T>>>>,
-    slots: Query<(&mut SlotValue, &DomTarget)>,
+    slots: Query<(&mut SlotValue<T>, &DomTarget)>,
     owned: Query<&crate::RowOwned>,
     variant_nodes: Query<&crate::RowVariantNode>,
     variant_targets: Query<&DomTarget>,
@@ -1104,7 +1110,7 @@ pub fn list_reconcile_c_system<T>(
     write_variant: Res<crate::WriteVariant>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
-    T: Send + Sync + Clone + ToString + 'static,
+    T: Send + Sync + Clone + ToString + PartialEq + 'static,
 {
     c_body::<T, crate::DefaultRow, _>(
         &crate::NoRowCtx,
@@ -1127,7 +1133,7 @@ pub fn list_reconcile_c_system_with<T, R: crate::RowSpawner>(
         (&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget),
         (Changed<Signal<Vec<T>>>, With<R::Marker>),
     >,
-    slots: Query<(&mut SlotValue, &DomTarget)>,
+    slots: Query<(&mut SlotValue<T>, &DomTarget)>,
     owned: Query<&crate::RowOwned>,
     variant_nodes: Query<&crate::RowVariantNode>,
     variant_targets: Query<&DomTarget>,
@@ -1139,7 +1145,7 @@ pub fn list_reconcile_c_system_with<T, R: crate::RowSpawner>(
     variant_mode: Res<crate::RowVariantMode>,
     site: Res<R::Ctx>,
 ) where
-    T: Send + Sync + Clone + ToString + 'static,
+    T: Send + Sync + Clone + ToString + PartialEq + 'static,
 {
     c_body::<T, R, _>(
         &site,
