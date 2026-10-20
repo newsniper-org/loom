@@ -375,49 +375,30 @@ const SELECTION_PRECONDITION_MSG: &str =
 /// 있던 `unreachable!("plan_writes marks spawn only for Fresh slots")`는
 /// 없앴다 — `op.spawn == target_fresh[op.idx]`가 `plan_*`의 **사후조건**이라
 /// 런타임 갈래 자체가 없어졌다.
-/// §10 write 변형 축의 **D 쪽 무조건 변형**(개정 #9-6).
-///
-/// D는 키(= 아이템 텍스트)로 매칭하므로 retained row의 텍스트는 **정의상 같다**.
-/// 그래서 조건부 변형은 아무것도 안 쓴다. 비교를 하지 않는 구현(= 매 대상 행의
-/// 내용을 다시 그리는 소박한 keyed reconciler)은 전 행에 `SetText`를 낸다 —
-/// 이 함수가 그 구현이다. §10이 "재정렬 셀에서 **D 최선 = 조건부**"로 예고한
-/// 쪽의 반대편이고, 두 변형이 다 있어야 §9 서두의 "셀별 우세 변형" 규정이
-/// 기계적으로 작동한다.
-///
-/// 새로 spawn된 행은 제외한다 — `RowSpawner::emit`이 이미 텍스트를 실었으므로
-/// 여기서 또 쓰면 같은 행을 두 번 쓰는 것이지 "비교 생략"이 아니다.
-fn emit_unconditional_text<R: crate::RowSpawner>(
-    variant: crate::WriteVariant,
-    target_ids: &[u64],
-    ops: &[loom_flush_core::PlanOp],
-    texts: &[String],
-    dom_targets: &Query<&DomTarget>,
-    pending: &mut Vec<DomWrite>,
-) {
-    if variant != crate::WriteVariant::Unconditional {
-        return;
-    }
-    let mut spawned = vec![false; target_ids.len()];
-    for op in ops {
-        if op.spawn {
-            spawned[op.idx] = true;
-        }
-    }
-    for (i, bits) in target_ids.iter().enumerate() {
-        if spawned[i] {
-            continue;
-        }
-        if let Ok(target) = dom_targets.get(Entity::from_bits(*bits)) {
-            pending.push(DomWrite::SetText { target: target.0, text: texts[i].clone() });
-        }
-    }
-}
+// **2026-10-20 (G0R1, 개정 #12) — `emit_unconditional_text`는 삭제됐다.** 아래 이력 주석이 서술하던 D 무조건 변형
+// (retained 행마다 `SetText`를 **직접 발행**)은 G0 첫 실행이 P2-(iii)로 기각했다(4연산 밖의 연산 방출). 새 정의:
+// retain = 값 채널(`RowValue<T>`) write이고, `Changed<RowValue<T>>`로 게이팅되는 좁은 patch System
+// (`list_key::patch_row_value_system`)이 `SetText` 1회를 낸다. 무조건 인스턴스는 `const UNCOND`로 monomorphize되므로
+// 심사 단위 안에 설정 enum 비교가 없다. DOM op 다중집합(retained마다 `SetText` 1회)은 같고, 방출 위치는
+// `systems_ms`에서 `row_patch_ms`로, 방출 순서는 Query 저장 순서로 바뀐다(프로토콜 개정 #12 공평성 진술).
+// ---- 이하 옛 doc comment(이력 보존) ----
+// §10 write 변형 축의 **D 쪽 무조건 변형**(개정 #9-6).
+//
+// D는 키(= 아이템 텍스트)로 매칭하므로 retained row의 텍스트는 **정의상 같다**.
+// 그래서 조건부 변형은 아무것도 안 쓴다. 비교를 하지 않는 구현(= 매 대상 행의
+// 내용을 다시 그리는 소박한 keyed reconciler)은 전 행에 `SetText`를 낸다 —
+// 이 함수가 그 구현이다. §10이 "재정렬 셀에서 **D 최선 = 조건부**"로 예고한
+// 쪽의 반대편이고, 두 변형이 다 있어야 §9 서두의 "셀별 우세 변형" 규정이
+// 기계적으로 작동한다.
+//
+// 새로 spawn된 행은 제외한다 — `RowSpawner::emit`이 이미 텍스트를 실었으므로
+// 여기서 또 쓰면 같은 행을 두 번 쓰는 것이지 "비교 생략"이 아니다.
 
-fn emit_plan<R: crate::RowSpawner>(
+fn emit_plan<R: crate::RowSpawner, T: ToString>(
     site: &R::Ctx,
     parent: NodeHandle,
     target_ids: &[u64],
-    texts: &[String],
+    items: &[T],
     ops: &[loom_flush_core::PlanOp],
     out: &mut crate::RowSpawnCtx,
 ) {
@@ -426,7 +407,8 @@ fn emit_plan<R: crate::RowSpawner>(
         let entity = Entity::from_bits(target_ids[op.idx]);
         let before = op.before.map(Entity::from_bits);
         if op.spawn {
-            R::emit(site, out, entity, parent, &texts[op.idx], before);
+            // G0R1(C5): 표시 텍스트는 fresh 행의 spawn op에서만 만든다(이전에는 전 슬롯분을 미리 만들었다).
+            R::emit(site, out, entity, parent, &items[op.idx].to_string(), before);
         } else {
             out.pending.push(DomWrite::Reposition { parent, entity, before });
         }
@@ -504,33 +486,27 @@ use crate::list_key::{match_by_key, note_collisions, row_key, OrderedKey, RowKey
 /// `Reposition`, and only new/removed keys get `SpawnRow`/`RemoveNode` —
 /// this is the entire "row identity survives reordering" property K can't
 /// offer.
-fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
+fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter, const UNCOND: bool>(
     site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), F>,
-    keys: Query<(&RowKey, &mut RowValue<T>)>,
+    mut keys: Query<(&RowKey, &mut RowValue<T>)>,
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
     row_inner: Res<crate::RowInner>,
-    write_variant: Res<crate::WriteVariant>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
 {
     for (items, mut rows, anchor) in &mut lists {
-        // 표시 텍스트. G0R1 C4에서는 전 슬롯분을 그대로 만든다(골든 바이트 동일 게이트) — fresh 행에만
-        // 만들도록 줄이는 것은 C5.
-        let new_keys: Vec<String> = items.0.iter().map(ToString::to_string).collect();
         let (old_ids, take_old, new_hash) = select_d(&items.0, &rows.0, &keys);
         // fresh row는 **슬롯 순서대로** spawn한다 — 옛 코드가 target을 조립하며
         // 하던 것과 같은 순서라 Entity id 배정이 그대로다. despawn보다 앞서지만
         // `Commands::despawn`은 sync point까지 미뤄지므로 id 재활용이 끼어들 수
         // 없고, `pending`에 들어가는 write 순서(RemoveNode 먼저)도 그대로다.
-        let fresh_ids: Vec<u64> = new_keys
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
+        let fresh_ids: Vec<u64> = (0..items.0.len())
+            .map(|i| {
                 if take_old[i] >= old_ids.len() {
                     commands
                         .spawn((RowKey(new_hash[i]), RowValue(items.0[i].clone())))
@@ -575,16 +551,19 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 row_inner: row_inner.0,
                 row_variants: variant_mode.0,
             };
-            emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
+            emit_plan::<R, T>(site, anchor.0, &plan.target_ids, &items.0, &plan.ops, &mut out);
         }
-        emit_unconditional_text::<R>(
-            *write_variant,
-            &plan.target_ids,
-            &plan.ops,
-            &new_keys,
-            &dom_targets,
-            &mut pending.0,
-        );
+        if UNCOND {
+            // retain = 값 채널 write(docs/03 P2). `DerefMut`이 `Changed<RowValue<T>>`를 켠다 — 비교 없음(무조건).
+            // fresh 행은 spawn 번들이 이미 값을 실었으므로 제외(`take_old[i] < old_ids.len()`만).
+            for (i, &t) in take_old.iter().enumerate() {
+                if t < old_ids.len() {
+                    if let Ok((_, mut v)) = keys.get_mut(Entity::from_bits(plan.target_ids[i])) {
+                        v.0 = items.0[i].clone();
+                    }
+                }
+            }
+        }
 
         rows.0 = plan.target_ids.iter().map(|b| Entity::from_bits(*b)).collect();
     }
@@ -599,30 +578,24 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
 /// (**2026-10-17 정정**: 두 함수는 2026-08-11 제거됐다 — 지금 차이는 계획을
 /// `loom_flush_core::plan_from_selection` 대신 `plan_lis_from_selection_auto`로
 /// 받는다는 것뿐이고, 방출은 둘 다 `emit_plan`. `emit_plan` 앞 주석 참고.)
-fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
+fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter, const UNCOND: bool>(
     site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), F>,
-    keys: Query<(&RowKey, &mut RowValue<T>)>,
+    mut keys: Query<(&RowKey, &mut RowValue<T>)>,
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
     row_bindings: Res<crate::RowBindings>,
     row_inner: Res<crate::RowInner>,
-    write_variant: Res<crate::WriteVariant>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
     T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
 {
     for (items, mut rows, anchor) in &mut lists {
-        // 표시 텍스트. G0R1 C4에서는 전 슬롯분을 그대로 만든다(골든 바이트 동일 게이트) — fresh 행에만
-        // 만들도록 줄이는 것은 C5.
-        let new_keys: Vec<String> = items.0.iter().map(ToString::to_string).collect();
         let (old_ids, take_old, new_hash) = select_d(&items.0, &rows.0, &keys);
         // D와 같은 순서·같은 이유 — `list_reconcile_d_system` 참고.
-        let fresh_ids: Vec<u64> = new_keys
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
+        let fresh_ids: Vec<u64> = (0..items.0.len())
+            .map(|i| {
                 if take_old[i] >= old_ids.len() {
                     commands
                         .spawn((RowKey(new_hash[i]), RowValue(items.0[i].clone())))
@@ -660,16 +633,19 @@ fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 row_inner: row_inner.0,
                 row_variants: variant_mode.0,
             };
-            emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
+            emit_plan::<R, T>(site, anchor.0, &plan.target_ids, &items.0, &plan.ops, &mut out);
         }
-        emit_unconditional_text::<R>(
-            *write_variant,
-            &plan.target_ids,
-            &plan.ops,
-            &new_keys,
-            &dom_targets,
-            &mut pending.0,
-        );
+        if UNCOND {
+            // retain = 값 채널 write(docs/03 P2). `DerefMut`이 `Changed<RowValue<T>>`를 켠다 — 비교 없음(무조건).
+            // fresh 행은 spawn 번들이 이미 값을 실었으므로 제외(`take_old[i] < old_ids.len()`만).
+            for (i, &t) in take_old.iter().enumerate() {
+                if t < old_ids.len() {
+                    if let Ok((_, mut v)) = keys.get_mut(Entity::from_bits(plan.target_ids[i])) {
+                        v.0 = items.0[i].clone();
+                    }
+                }
+            }
+        }
 
         rows.0 = plan.target_ids.iter().map(|b| Entity::from_bits(*b)).collect();
     }
@@ -726,15 +702,12 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
 {
     for (items, mut members, anchor) in &mut lists {
-        let new_keys: Vec<String> = items.0.iter().map(ToString::to_string).collect();
         let (old_ids, take_old, new_hash) = select_e(&items.0, &members.0, &keyed);
         // D와 같은 순서·같은 이유(`list_reconcile_d_system` 참고). **E의 차이는
         // 유지된다** — fresh row가 `OrderedKey` + 슬롯 인덱스 `OrderKey`로
         // 태어난다.
-        let fresh_ids: Vec<u64> = new_keys
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
+        let fresh_ids: Vec<u64> = (0..items.0.len())
+            .map(|i| {
                 if take_old[i] >= old_ids.len() {
                     commands
                         .spawn((
@@ -788,7 +761,7 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 row_inner: row_inner.0,
                 row_variants: variant_mode.0,
             };
-            emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
+            emit_plan::<R, T>(site, anchor.0, &plan.target_ids, &items.0, &plan.ops, &mut out);
         }
 
         members.0 = plan.target_ids.iter().map(|b| Entity::from_bits(*b)).collect();
@@ -816,12 +789,9 @@ fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
 {
     for (items, mut members, anchor) in &mut lists {
-        let new_keys: Vec<String> = items.0.iter().map(ToString::to_string).collect();
         let (old_ids, take_old, new_hash) = select_e(&items.0, &members.0, &keyed);
-        let fresh_ids: Vec<u64> = new_keys
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
+        let fresh_ids: Vec<u64> = (0..items.0.len())
+            .map(|i| {
                 if take_old[i] >= old_ids.len() {
                     commands
                         .spawn((
@@ -874,7 +844,7 @@ fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 row_inner: row_inner.0,
                 row_variants: variant_mode.0,
             };
-            emit_plan::<R>(site, anchor.0, &plan.target_ids, &new_keys, &plan.ops, &mut out);
+            emit_plan::<R, T>(site, anchor.0, &plan.target_ids, &items.0, &plan.ops, &mut out);
         }
 
         members.0 = plan.target_ids.iter().map(|b| Entity::from_bits(*b)).collect();
@@ -999,7 +969,12 @@ mod lis_tests {
 // 재측정 사유가 되지 않는다. 접미사 `_with` 쪽은 loom-compiler가 복잡한 row
 // 템플릿을 만났을 때만 쓴다.
 
-// **`$wv` — §10의 write 변형 축을 받는가**(개정 #9-6). D 계열은 식별자
+// **`$wv` — §10의 write 변형 축을 받는가**는 **2026-10-20 G0R1에서 사라졌다.** D 계열이 `Res<WriteVariant>`를
+// 런타임에 읽던 자리를 `const UNCOND: bool` monomorphize가 대체했다 — 심사 단위(D의 System) 안에 설정 enum
+// 비교가 남지 않고(G0 판정례 후보 (c)의 대상이 사라진다), 무조건 인스턴스에만 값 채널 write가 존재한다.
+// 하네스는 `WriteVariant`에 따라 `list_reconcile_d_system`/`list_reconcile_d_unconditional_system`을 고른다.
+// `WriteVariant` 리소스 자체는 하네스의 설치 대조용과 후보 C(`c_body`)가 계속 쓴다. 아래는 옛 주석(이력 보존).
+//   (옛) **`$wv` — §10의 write 변형 축을 받는가**(개정 #9-6). D 계열은 식별자
 // `write_variant`를 넘기고, E 계열은 아무것도 안 넘긴다. 조항이 그 축을
 // **C·D에만** 등재했으므로 E의 시스템에는 파라미터 자체가 생기지 않는다 —
 // 선언만 하고 안 읽는 파라미터를 남기면 개정 #8을 낳은 바로 그 모양(축이
@@ -1009,7 +984,7 @@ mod lis_tests {
 // 지역 이름은 그 규칙의 확장 밖에서 해석되지 않으므로, 전달 규칙을 한 단계
 // 두면 파라미터 이름과 인자 이름이 서로 다른 문맥에 놓여 이름 해석이 깨진다.
 macro_rules! keyed_candidate_systems {
-    ($body:ident, $plain:ident, $with:ident, $rows:ty, $keys:ty $(, $wv:ident)?) => {
+    ($body:ident, $plain:ident, $with:ident, $rows:ty, $keys:ty $(, uncond = $u:literal)?) => {
         pub fn $plain<T>(
             lists: Query<(&Signal<Vec<T>>, &mut $rows, &DomTarget), Changed<Signal<Vec<T>>>>,
             keys: $keys,
@@ -1018,12 +993,11 @@ macro_rules! keyed_candidate_systems {
             pending: ResMut<PendingDomWrites>,
             row_bindings: Res<crate::RowBindings>,
             row_inner: Res<crate::RowInner>,
-            $($wv: Res<crate::WriteVariant>,)?
             variant_mode: Res<crate::RowVariantMode>,
         ) where
             T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
         {
-            $body::<T, crate::DefaultRow, _>(
+            $body::<T, crate::DefaultRow, _ $(, $u)?>(
                 &crate::NoRowCtx,
                 lists,
                 keys,
@@ -1032,7 +1006,6 @@ macro_rules! keyed_candidate_systems {
                 pending,
                 row_bindings,
                 row_inner,
-                $($wv,)?
                 variant_mode,
             );
         }
@@ -1048,13 +1021,12 @@ macro_rules! keyed_candidate_systems {
             pending: ResMut<PendingDomWrites>,
             row_bindings: Res<crate::RowBindings>,
             row_inner: Res<crate::RowInner>,
-            $($wv: Res<crate::WriteVariant>,)?
             variant_mode: Res<crate::RowVariantMode>,
             site: Res<R::Ctx>,
         ) where
             T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
         {
-            $body::<T, R, _>(
+            $body::<T, R, _ $(, $u)?>(
                 &site,
                 lists,
                 keys,
@@ -1063,7 +1035,6 @@ macro_rules! keyed_candidate_systems {
                 pending,
                 row_bindings,
                 row_inner,
-                $($wv,)?
                 variant_mode,
             );
         }
@@ -1076,7 +1047,15 @@ keyed_candidate_systems!(
     list_reconcile_d_system_with,
     crate::ListRows,
     Query<(&RowKey, &mut RowValue<T>)>,
-    write_variant
+    uncond = false
+);
+keyed_candidate_systems!(
+    d_body,
+    list_reconcile_d_unconditional_system,
+    list_reconcile_d_unconditional_system_with,
+    crate::ListRows,
+    Query<(&RowKey, &mut RowValue<T>)>,
+    uncond = true
 );
 keyed_candidate_systems!(
     d_lis_body,
@@ -1084,7 +1063,15 @@ keyed_candidate_systems!(
     list_reconcile_d_lis_system_with,
     crate::ListRows,
     Query<(&RowKey, &mut RowValue<T>)>,
-    write_variant
+    uncond = false
+);
+keyed_candidate_systems!(
+    d_lis_body,
+    list_reconcile_d_lis_unconditional_system,
+    list_reconcile_d_lis_unconditional_system_with,
+    crate::ListRows,
+    Query<(&RowKey, &mut RowValue<T>)>,
+    uncond = true
 );
 keyed_candidate_systems!(
     e_body,

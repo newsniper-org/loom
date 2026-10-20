@@ -1172,8 +1172,8 @@ SetText { target: NodeHandle(100), text: "a" }
 SetText { target: NodeHandle(101), text: "b" }
 --- tick 3 (3 writes) ---
 Reposition(NodeHandle(0), e3, before=None)
-SetText { target: NodeHandle(101), text: "b" }
 SetText { target: NodeHandle(100), text: "a" }
+SetText { target: NodeHandle(101), text: "b" }
 --- tick 4 (2 writes) ---
 RemoveNode(NodeHandle(101))
 RemoveNode(NodeHandle(100))
@@ -1203,8 +1203,8 @@ SetText { target: NodeHandle(100), text: "a" }
 SetText { target: NodeHandle(101), text: "b" }
 --- tick 3 (3 writes) ---
 Reposition(NodeHandle(0), e2, before=e3)
-SetText { target: NodeHandle(101), text: "b" }
 SetText { target: NodeHandle(100), text: "a" }
+SetText { target: NodeHandle(101), text: "b" }
 --- tick 4 (2 writes) ---
 RemoveNode(NodeHandle(101))
 RemoveNode(NodeHandle(100))

@@ -15,8 +15,8 @@
 
 use bevy_ecs::entity::Entity;
 use loom_runtime::{
-    list_reconcile_c_system, list_reconcile_d_lis_system, list_reconcile_d_system,
-    list_reconcile_e_lis_system, list_reconcile_e_system, list_reconcile_k_system, DomTarget,
+    list_reconcile_c_system, list_reconcile_d_lis_system, list_reconcile_d_lis_unconditional_system,
+    list_reconcile_d_system, list_reconcile_d_unconditional_system, list_reconcile_e_lis_system, list_reconcile_e_system, list_reconcile_k_system, DomTarget,
     DomWrite, ListRows, LoomApp, NodeHandle, OrderKeyMembers, PendingDomWrites, Signal,
     WriteVariant,
 };
@@ -124,6 +124,10 @@ fn record<F: FnOnce(&mut LoomApp)>(shape: Shape, register: F, keyed: Keyed) -> V
     app.set_write_variant(shape.write_variant);
     if shape.bindings > 1 || shape.inner > 0 {
         app.add_row_depth_systems();
+    } else if shape.write_variant == WriteVariant::Unconditional {
+        // 개정 #12 계측 대칭: R1 × 무조건 셀에서는 **전 후보**에 row_patch 창을 등록한다
+        // (D만 표식 비용을 지는 비대칭 제거). 표식은 write를 내지 않으므로 K·C·E의 방출은 그대로다.
+        app.add_row_patch_window();
     }
     let initial: Vec<String> = INITIAL.iter().map(|s| s.to_string()).collect();
     let anchor = NodeHandle(0);
@@ -177,6 +181,22 @@ pub fn full_log() -> String {
             let log = match name {
                 "C" => record(shape, |a| { a.add_instrumented_systems(list_reconcile_c_system::<String>); }, keyed),
                 "K" => record(shape, |a| { a.add_instrumented_systems(list_reconcile_k_system::<String>); }, keyed),
+                "D" if shape.write_variant == WriteVariant::Unconditional => record(
+                    shape,
+                    |a| {
+                        a.add_instrumented_systems(list_reconcile_d_unconditional_system::<String>);
+                        a.add_row_value_patch::<String>();
+                    },
+                    keyed,
+                ),
+                "D-LIS" if shape.write_variant == WriteVariant::Unconditional => record(
+                    shape,
+                    |a| {
+                        a.add_instrumented_systems(list_reconcile_d_lis_unconditional_system::<String>);
+                        a.add_row_value_patch::<String>();
+                    },
+                    keyed,
+                ),
                 "D" => record(shape, |a| { a.add_instrumented_systems(list_reconcile_d_system::<String>); }, keyed),
                 "D-LIS" => record(shape, |a| { a.add_instrumented_systems(list_reconcile_d_lis_system::<String>); }, keyed),
                 "E" => record(shape, |a| { a.add_instrumented_systems(list_reconcile_e_system::<String>); }, keyed),

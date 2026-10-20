@@ -17,6 +17,8 @@ use std::hash::{BuildHasher, Hash};
 
 use bevy_ecs::prelude::*;
 
+use crate::{DomTarget, DomWrite, PendingDomWrites};
+
 /// D의 행 key. 아이템 전체의 고정 해시(`row_key`).
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RowKey(pub u64);
@@ -204,6 +206,25 @@ pub fn match_by_key<K: MatchKey, T: Ord>(
         b = be;
     }
     Selection { take_old, collisions }
+}
+
+/// D 무조건 변형의 patch System. retain = 값 채널 write(`RowValue<T>`의 `DerefMut`)이고, 이 System은
+/// `Changed<RowValue<T>>`로 게이팅되어 `SetText` **1회**만 낸다(`patch_row_binding_system`과 같은 모양, 연산 하나).
+///
+/// - 적용부는 기존 `SetText` 그대로다(web.rs의 `set_text_content`). 이 System이 새로 만든 것이라는 점,
+///   즉 "새 System을 만들어 심사 합산을 피하는 형태"라는 점을 숨기지 않는다 — 판정례 후보 (나).
+/// - fresh 행은 그 틱에 `DomTarget`이 없어 걸리지 않고(`DomTarget`은 `tick`의 적용 구간에서 붙는다), 다음 틱에는
+///   `RowValue`의 추가 tick ≤ 이 System의 last_run이라 걸리지 않는다 — 초기값 후속 재패치(§2.2)가 없다.
+///   이 추론은 `tests/g0r1_uncond_patch.rs`의 개수 단언(무조건 − 조건부 == retained 수)이 고정하고, 변이 점검으로
+///   순서 제약을 빼면 실패함을 확인했다.
+/// - **반드시 후보 System의 sync point 뒤**에 놓는다(`LoomApp::add_row_value_patch`가 창 안에 건다).
+pub fn patch_row_value_system<T: Send + Sync + ToString + 'static>(
+    q: Query<(&RowValue<T>, &DomTarget), Changed<RowValue<T>>>,
+    mut pending: ResMut<PendingDomWrites>,
+) {
+    for (v, t) in &q {
+        pending.0.push(DomWrite::SetText { target: t.0, text: v.0.to_string() });
+    }
 }
 
 /// debug 빌드에서만 누적되는 충돌 계수기(ECS 접근이 아니므로 스케줄에 영향이 없다). 개정 #12 (ii)-5가

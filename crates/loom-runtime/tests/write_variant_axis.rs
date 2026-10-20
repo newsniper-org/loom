@@ -16,7 +16,7 @@ mod support;
 use support::MockDom;
 
 use loom_runtime::{
-    list_reconcile_c_system, list_reconcile_d_system, DomTarget, DomWrite, ListRows, LoomApp,
+    list_reconcile_c_system, list_reconcile_d_system, list_reconcile_d_unconditional_system, DomTarget, DomWrite, ListRows, LoomApp,
     PendingDomWrites, Signal, WriteVariant,
 };
 
@@ -47,6 +47,14 @@ fn set_texts_for(
         .count();
     app.tick(&mut dom);
     n
+}
+
+/// **G0R1(개정 #12)**: D 무조건 변형은 별도 monomorph(`const UNCOND`)이고, retain = 값 채널 write →
+/// `Changed` 게이팅 patch System이 `SetText`를 낸다. patch는 row_patch 창(후보 System의 sync point 뒤)에 건다.
+fn register_d_unconditional(a: &mut LoomApp) {
+    a.add_instrumented_systems(list_reconcile_d_unconditional_system::<String>);
+    a.add_row_patch_window();
+    a.add_row_value_patch::<String>();
 }
 
 /// 순서만 뒤집는다 — **아이템 집합은 그대로**다. 그래야 "비교했으면 안 써도 되는"
@@ -92,7 +100,7 @@ fn d_unconditional_rewrites_retained_rows_but_conditional_does_not() {
         reversed(),
     );
     let uncond = set_texts_for(
-        |a| { a.add_instrumented_systems(list_reconcile_d_system::<String>); },
+        register_d_unconditional,
         WriteVariant::Unconditional,
         reversed(),
     );
@@ -113,7 +121,7 @@ fn unconditional_does_not_rewrite_freshly_spawned_rows() {
     let mut grown: Vec<String> = ITEMS.iter().map(|s| s.to_string()).collect();
     grown.push("zz".to_string());
     let uncond = set_texts_for(
-        |a| { a.add_instrumented_systems(list_reconcile_d_system::<String>); },
+        register_d_unconditional,
         WriteVariant::Unconditional,
         grown,
     );

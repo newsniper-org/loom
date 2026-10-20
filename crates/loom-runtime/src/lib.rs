@@ -57,11 +57,17 @@ use bevy_ecs::schedule::Schedule;
 pub mod list;
 pub use list::{
     list_reconcile_c_system, list_reconcile_c_system_with, list_reconcile_d_lis_system, list_reconcile_d_lis_system_with,
-    list_reconcile_d_system, list_reconcile_d_system_with, list_reconcile_e_lis_system,
+    list_reconcile_d_lis_unconditional_system, list_reconcile_d_lis_unconditional_system_with,
+    list_reconcile_d_system, list_reconcile_d_system_with, list_reconcile_d_unconditional_system,
+    list_reconcile_d_unconditional_system_with, list_reconcile_e_lis_system,
     list_reconcile_e_lis_system_with, list_reconcile_e_system, list_reconcile_e_system_with,
     OrderKey, OrderKeyMembers, SlotValue,
 };
 pub use list_key::{row_key, OrderedKey, RowKey, RowValue};
+
+/// `add_row_patch_window`가 심는 표식 — 창 중복 등록을 막는다.
+#[derive(Resource)]
+pub struct RowPatchWindow;
 
 pub mod stage;
 pub use stage::{now_ms, StageTimings};
@@ -1378,6 +1384,44 @@ impl LoomApp {
             )
                 .chain_ignore_deferred()
                 .after(stage::stage_mark_sync_end),
+        );
+        self
+    }
+
+    /// **D 무조건 변형(G0R1)의 row_patch 창만** 등록한다 — 표식 System 둘뿐이고 `stage_mark_sync_end` 뒤에 건다.
+    /// `add_row_depth_systems`(R2/R3의 patch 묶음 + 창)는 바이트 그대로 두고, R1에서 D 무조건의 `SetText`
+    /// 방출을 `row_patch_ms`에 귀속시키기 위한 창을 따로 둔다. 개정 #12 계측 대칭 규칙: **R1 × 무조건 셀에서는 그 셀의
+    /// 전 후보에 이 창을 등록한다**(D만 표식 비용을 지는 비대칭 제거). 같은 앱에서 `add_row_depth_systems`와 함께
+    /// 부르면 창이 중복된다 — `RowPatchWindow` 자원으로 이 함수끼리의 중복은 막고, depth와의 중복은 하네스 규칙이다.
+    pub fn add_row_patch_window(&mut self) -> &mut Self {
+        assert!(
+            self.world.get_resource::<StageTimings>().is_some(),
+            "add_row_patch_window는 add_instrumented_systems 뒤에 불러야 한다 (순서 기준점이 stage_mark_sync_end다)"
+        );
+        assert!(
+            self.world.get_resource::<RowPatchWindow>().is_none(),
+            "row_patch 창이 이미 등록돼 있다"
+        );
+        self.world.insert_resource(RowPatchWindow);
+        self.schedule.add_systems(
+            (stage::stage_mark_row_patch_start, stage::stage_mark_row_patch_end)
+                .chain_ignore_deferred()
+                .after(stage::stage_mark_sync_end),
+        );
+        self
+    }
+
+    /// `patch_row_value_system::<T>`를 row_patch 창 안에 끼운다. 창은 만들지 않는다 —
+    /// `add_row_patch_window` 또는 `add_row_depth_systems`가 먼저 창을 만들어야 한다.
+    pub fn add_row_value_patch<T: Send + Sync + ToString + 'static>(&mut self) -> &mut Self {
+        assert!(
+            self.world.get_resource::<StageTimings>().is_some(),
+            "add_row_value_patch는 add_instrumented_systems 뒤에 불러야 한다"
+        );
+        self.schedule.add_systems(
+            list_key::patch_row_value_system::<T>
+                .after(stage::stage_mark_row_patch_start)
+                .before(stage::stage_mark_row_patch_end),
         );
         self
     }
