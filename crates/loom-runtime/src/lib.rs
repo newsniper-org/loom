@@ -59,8 +59,9 @@ pub use list::{
     list_reconcile_c_system, list_reconcile_c_system_with, list_reconcile_d_lis_system, list_reconcile_d_lis_system_with,
     list_reconcile_d_system, list_reconcile_d_system_with, list_reconcile_e_lis_system,
     list_reconcile_e_lis_system_with, list_reconcile_e_system, list_reconcile_e_system_with,
-    OrderKey, OrderKeyMembers, OrderedKey, RowKey, SlotValue,
+    OrderKey, OrderKeyMembers, SlotValue,
 };
+pub use list_key::{row_key, OrderedKey, RowKey, RowValue};
 
 pub mod stage;
 pub use stage::{now_ms, StageTimings};

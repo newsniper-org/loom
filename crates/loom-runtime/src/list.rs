@@ -202,44 +202,88 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
 // Shared matching/reposition logic for candidates D and E
 // ============================================================================
 
-/// Key-matches `old_order` against `new_keys` and reports the result as an
-/// **index selection**: `take_old[i]` is the old index new slot `i` takes
-/// over, or `>= old_order.len()` when slot `i` is fresh.
+// **2026-10-20 (G0R1, 개정 #12)** — 아래 이력 주석이 달려 있던 `match_keys`(`Vec::position` + `remove` 기반
+// Θ(n·m) 매처)는 `list_key::match_by_key`(안정 radix + 병합 조인, 충돌 run만 `Item` 비교)로 교체됐다. 반환
+// 계약은 같다: `take_old[i] < m`이면 retained, `== m`이면 fresh. 옛 본문은 `list_key.rs`의
+// `tests::legacy::match_keys`에 글자 그대로 보존돼 있고 무작위 동치 테스트가 그것을 오라클로 쓴다.
+// first-match-wins + 소비 규율과 중복 key 처리는 동치 증명(설계 §2.2)으로 그대로 보존된다.
+// ---- 이하 옛 doc comment(이력 보존) ----
+// Key-matches `old_order` against `new_keys` and reports the result as an
+// **index selection**: `take_old[i]` is the old index new slot `i` takes
+// over, or `>= old_order.len()` when slot `i` is fresh.
+//
+// **2026-08-11 — 조립이 검증 크레이트로 넘어갔다.** 예전에는 이 함수가
+// `(retained, removed)`를 내고 호출부 네 곳이 거기서 `current`와 `target`을
+// *따로* 조립했다. 그래서 `plan_writes`의 사전조건 Q("`current`에 target 밖
+// 원소가 없다")가 릴리스 빌드에서 사라지는 `debug_assert!` 하나에만 걸려
+// 있었다. 지금은 `loom_flush_core::plan_inputs`가 이 선택 하나로부터
+// `current`와 `target_ids`를 **함께** 만들므로 Q가 그 함수의 **사후조건으로
+// 증명**된다 — 매칭이 옳든 그르든 상관없이 구조적으로 참이다. 여기 남은 것은
+// 키 비교(String)뿐이다.
+//
+// first-match-wins + 소비(`pool.remove`) 규율은 그대로다. **중복 키는 실제로
+// 발생한다**: `crates/loom-bench`의 POD 축 × W7(`value_update`) 셀에서
+// fresh 민터의 공역(100만)이 n=10,000에서 부족해지며 rep의 34%가 중복 키를
+// D/E에 먹인다. 그 경우 같은 키의 두 번째 등장은 pool에 짝이 남아 있으면
+// 그것과 매치되고 없으면 fresh가 되며, 필요한 성질은 전부 성립한다(전수 확인:
+// `formal-verification/verus/match-keys-exhaustive.py`). 이 자리에 있던
+// "Phase 1's demo doesn't exercise duplicate keys"는 사실이 아니어서 함께
+// 정정했다.
+
+/// D의 매칭: `rows`의 옛 행들(`RowKey`·`RowValue<T>`)을 `items`와 맞춘다. 반환은
+/// `(옛 행 Entity bits, take_old, 새 슬롯별 key)`.
 ///
-/// **2026-08-11 — 조립이 검증 크레이트로 넘어갔다.** 예전에는 이 함수가
-/// `(retained, removed)`를 내고 호출부 네 곳이 거기서 `current`와 `target`을
-/// *따로* 조립했다. 그래서 `plan_writes`의 사전조건 Q("`current`에 target 밖
-/// 원소가 없다")가 릴리스 빌드에서 사라지는 `debug_assert!` 하나에만 걸려
-/// 있었다. 지금은 `loom_flush_core::plan_inputs`가 이 선택 하나로부터
-/// `current`와 `target_ids`를 **함께** 만들므로 Q가 그 함수의 **사후조건으로
-/// 증명**된다 — 매칭이 옳든 그르든 상관없이 구조적으로 참이다. 여기 남은 것은
-/// 키 비교(String)뿐이다.
-///
-/// first-match-wins + 소비(`pool.remove`) 규율은 그대로다. **중복 키는 실제로
-/// 발생한다**: `crates/loom-bench`의 POD 축 × W7(`value_update`) 셀에서
-/// fresh 민터의 공역(100만)이 n=10,000에서 부족해지며 rep의 34%가 중복 키를
-/// D/E에 먹인다. 그 경우 같은 키의 두 번째 등장은 pool에 짝이 남아 있으면
-/// 그것과 매치되고 없으면 fresh가 되며, 필요한 성질은 전부 성립한다(전수 확인:
-/// `formal-verification/verus/match-keys-exhaustive.py`). 이 자리에 있던
-/// "Phase 1's demo doesn't exercise duplicate keys"는 사실이 아니어서 함께
-/// 정정했다.
-fn match_keys(old_order: &[(String, Entity)], new_keys: &[String]) -> Vec<usize> {
-    let mut pool: Vec<(String, usize)> = old_order
-        .iter()
-        .enumerate()
-        .map(|(j, (key, _))| (key.clone(), j))
-        .collect();
-    let mut take_old = Vec::with_capacity(new_keys.len());
-    for key in new_keys {
-        if let Some(pos) = pool.iter().position(|(k, _)| k == key) {
-            let (_, j) = pool.remove(pos);
-            take_old.push(j);
-        } else {
-            take_old.push(old_order.len());
+/// `filter_map`이 `RowKey` 없는 row를 조용히 빼면 stale DOM이 남는다(2026-08-08 트랙 N 결함과 같은 형태) —
+/// 그래서 `debug_assert_eq!`로 길이를 확인한다(`#[should_panic]` 테스트: `tests/g0r1_select.rs`).
+fn select_d<T: Ord + std::hash::Hash + Send + Sync + 'static>(
+    items: &[T],
+    rows: &[Entity],
+    keys: &Query<(&RowKey, &mut RowValue<T>)>,
+) -> (Vec<u64>, Vec<usize>, Vec<u64>) {
+    let mut old_ids = Vec::with_capacity(rows.len());
+    let mut old_keys = Vec::with_capacity(rows.len());
+    let mut old_vals: Vec<&T> = Vec::with_capacity(rows.len());
+    for &e in rows {
+        if let Ok((k, v)) = keys.get(e) {
+            old_ids.push(e.to_bits());
+            old_keys.push(k.0);
+            old_vals.push(&v.0);
         }
     }
-    take_old
+    debug_assert_eq!(old_ids.len(), rows.len(), "{ROW_WITHOUT_KEY_MSG}");
+    let new_keys: Vec<u64> = items.iter().map(|x| row_key(x)).collect();
+    let new_vals: Vec<&T> = items.iter().collect();
+    let sel = match_by_key(&old_keys, &old_vals, &new_keys, &new_vals);
+    note_collisions(sel.collisions);
+    (old_ids, sel.take_old, new_keys)
 }
+
+/// E의 매칭: 옛 행을 `OrderKey` 순으로 세운 뒤 맞춘다(`select_d`와 같은 계약).
+fn select_e<T: Ord + std::hash::Hash + Send + Sync + 'static>(
+    items: &[T],
+    members: &[Entity],
+    keyed: &Query<(&OrderedKey, &RowValue<T>, &mut OrderKey)>,
+) -> (Vec<u64>, Vec<usize>, Vec<u64>) {
+    let mut old_sorted: Vec<(OrderKey, Entity, u64, &T)> = Vec::with_capacity(members.len());
+    for &e in members {
+        if let Ok((k, v, ord)) = keyed.get(e) {
+            old_sorted.push((*ord, e, k.0, &v.0));
+        }
+    }
+    debug_assert_eq!(old_sorted.len(), members.len(), "{ROW_WITHOUT_KEY_MSG}");
+    old_sorted.sort_by_key(|(ord, ..)| *ord);
+    let old_ids: Vec<u64> = old_sorted.iter().map(|(_, e, ..)| e.to_bits()).collect();
+    let old_keys: Vec<u64> = old_sorted.iter().map(|(_, _, k, _)| *k).collect();
+    let old_vals: Vec<&T> = old_sorted.iter().map(|(.., v)| *v).collect();
+    let new_keys: Vec<u64> = items.iter().map(|x| row_key(x)).collect();
+    let new_vals: Vec<&T> = items.iter().collect();
+    let sel = match_by_key(&old_keys, &old_vals, &new_keys, &new_vals);
+    note_collisions(sel.collisions);
+    (old_ids, sel.take_old, new_keys)
+}
+
+const ROW_WITHOUT_KEY_MSG: &str =
+    "ListRows/OrderKeyMembers에 key·값 채널이 없는 row가 있다 — 조용히 빼면 stale DOM이 남는다(2026-08-08 결함과 같은 형태).";
 
 /// `loom_flush_core::plan_inputs`(및 두 래퍼)의 **구조적 사전조건 넷**을
 /// 디버그 빌드에서 실제로 검사한다.
@@ -448,12 +492,10 @@ fn emit_plan<R: crate::RowSpawner>(
 // Candidate D — Keyed sequence sync (controller-side ordered Vec)
 // ============================================================================
 
-/// D's per-row key component (Phase 1 scope: key == an entity's own display
-/// text — no separate key/value channel; see
-/// research-questions/RQ1-dynamic-control-flow-scheduling.md's candidate D
-/// write-up for the fuller design this simplifies).
-#[derive(Component, Debug, Clone)]
-pub struct RowKey(pub String);
+// D's per-row key는 `list_key::RowKey(u64)`(아이템 전체의 고정 해시)로 옮겨 갔다 —
+// **2026-10-20 G0R1(개정 #12)**. 이전 정의는 `RowKey(pub String)`이었고 key가 곧 표시 텍스트
+// (Phase 1 범위, 별도 값 채널 없음)였다. G0 첫 실행이 그 `String` key를 P1로 기각했다.
+use crate::list_key::{match_by_key, note_collisions, row_key, OrderedKey, RowKey, RowValue};
 
 /// RQ1 candidate **D** ("Keyed 시퀀스 동기화", controller-Vec storage
 /// variant): `rows.0` (reused from `lib.rs`'s `ListRows`) holds the DOM
@@ -465,7 +507,7 @@ pub struct RowKey(pub String);
 fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), F>,
-    keys: Query<&RowKey>,
+    keys: Query<(&RowKey, &mut RowValue<T>)>,
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
@@ -474,18 +516,13 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     write_variant: Res<crate::WriteVariant>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
-    T: Send + Sync + Clone + ToString + 'static,
+    T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
 {
     for (items, mut rows, anchor) in &mut lists {
+        // 표시 텍스트. G0R1 C4에서는 전 슬롯분을 그대로 만든다(골든 바이트 동일 게이트) — fresh 행에만
+        // 만들도록 줄이는 것은 C5.
         let new_keys: Vec<String> = items.0.iter().map(ToString::to_string).collect();
-        let old_order: Vec<(String, Entity)> = rows
-            .0
-            .iter()
-            .filter_map(|&e| keys.get(e).ok().map(|k| (k.0.clone(), e)))
-            .collect();
-
-        let take_old = match_keys(&old_order, &new_keys);
-        let old_ids: Vec<u64> = old_order.iter().map(|(_, e)| e.to_bits()).collect();
+        let (old_ids, take_old, new_hash) = select_d(&items.0, &rows.0, &keys);
         // fresh row는 **슬롯 순서대로** spawn한다 — 옛 코드가 target을 조립하며
         // 하던 것과 같은 순서라 Entity id 배정이 그대로다. despawn보다 앞서지만
         // `Commands::despawn`은 sync point까지 미뤄지므로 id 재활용이 끼어들 수
@@ -493,9 +530,12 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
         let fresh_ids: Vec<u64> = new_keys
             .iter()
             .enumerate()
-            .map(|(i, key)| {
+            .map(|(i, _)| {
                 if take_old[i] >= old_ids.len() {
-                    commands.spawn(RowKey(key.clone())).id().to_bits()
+                    commands
+                        .spawn((RowKey(new_hash[i]), RowValue(items.0[i].clone())))
+                        .id()
+                        .to_bits()
                 } else {
                     0
                 }
@@ -562,7 +602,7 @@ fn d_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
 fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut crate::ListRows, &DomTarget), F>,
-    keys: Query<&RowKey>,
+    keys: Query<(&RowKey, &mut RowValue<T>)>,
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
@@ -571,25 +611,23 @@ fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     write_variant: Res<crate::WriteVariant>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
-    T: Send + Sync + Clone + ToString + 'static,
+    T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
 {
     for (items, mut rows, anchor) in &mut lists {
+        // 표시 텍스트. G0R1 C4에서는 전 슬롯분을 그대로 만든다(골든 바이트 동일 게이트) — fresh 행에만
+        // 만들도록 줄이는 것은 C5.
         let new_keys: Vec<String> = items.0.iter().map(ToString::to_string).collect();
-        let old_order: Vec<(String, Entity)> = rows
-            .0
-            .iter()
-            .filter_map(|&e| keys.get(e).ok().map(|k| (k.0.clone(), e)))
-            .collect();
-
-        let take_old = match_keys(&old_order, &new_keys);
-        let old_ids: Vec<u64> = old_order.iter().map(|(_, e)| e.to_bits()).collect();
+        let (old_ids, take_old, new_hash) = select_d(&items.0, &rows.0, &keys);
         // D와 같은 순서·같은 이유 — `list_reconcile_d_system` 참고.
         let fresh_ids: Vec<u64> = new_keys
             .iter()
             .enumerate()
-            .map(|(i, key)| {
+            .map(|(i, _)| {
                 if take_old[i] >= old_ids.len() {
-                    commands.spawn(RowKey(key.clone())).id().to_bits()
+                    commands
+                        .spawn((RowKey(new_hash[i]), RowValue(items.0[i].clone())))
+                        .id()
+                        .to_bits()
                 } else {
                     0
                 }
@@ -656,10 +694,7 @@ fn d_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OrderKey(pub u64);
 
-/// E's per-entity key (Phase 1 scope: key == display text, same
-/// simplification as D's `RowKey`).
-#[derive(Component, Debug, Clone)]
-pub struct OrderedKey(pub String);
+// E's per-entity key도 `list_key::OrderedKey(u64)`로 옮겨 갔다(2026-10-20 G0R1, D의 `RowKey`와 같은 사유).
 
 /// The set of row entities currently belonging to this list (an unordered
 /// membership set — DOM order is *derived* from `OrderKey`, never stored
@@ -680,7 +715,7 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     // over the same component conflict under Bevy's system-param checker
     // (B0001) even though they're used at disjoint times within this one
     // system; merging avoids that without a `ParamSet`.
-    mut keyed: Query<(&OrderedKey, &mut OrderKey)>,
+    mut keyed: Query<(&OrderedKey, &RowValue<T>, &mut OrderKey)>,
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
@@ -688,32 +723,25 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     row_inner: Res<crate::RowInner>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
-    T: Send + Sync + Clone + ToString + 'static,
+    T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
 {
     for (items, mut members, anchor) in &mut lists {
         let new_keys: Vec<String> = items.0.iter().map(ToString::to_string).collect();
-
-        let mut old_sorted: Vec<(String, Entity, OrderKey)> = members
-            .0
-            .iter()
-            .filter_map(|&e| keyed.get(e).ok().map(|(k, ord)| (k.0.clone(), e, *ord)))
-            .collect();
-        old_sorted.sort_by_key(|(_, _, ord)| *ord);
-        let old_order: Vec<(String, Entity)> =
-            old_sorted.iter().map(|(k, e, _)| (k.clone(), *e)).collect();
-
-        let take_old = match_keys(&old_order, &new_keys);
-        let old_ids: Vec<u64> = old_order.iter().map(|(_, e)| e.to_bits()).collect();
+        let (old_ids, take_old, new_hash) = select_e(&items.0, &members.0, &keyed);
         // D와 같은 순서·같은 이유(`list_reconcile_d_system` 참고). **E의 차이는
         // 유지된다** — fresh row가 `OrderedKey` + 슬롯 인덱스 `OrderKey`로
         // 태어난다.
         let fresh_ids: Vec<u64> = new_keys
             .iter()
             .enumerate()
-            .map(|(i, key)| {
+            .map(|(i, _)| {
                 if take_old[i] >= old_ids.len() {
                     commands
-                        .spawn((OrderedKey(key.clone()), OrderKey(i as u64)))
+                        .spawn((
+                            OrderedKey(new_hash[i]),
+                            RowValue(items.0[i].clone()),
+                            OrderKey(i as u64),
+                        ))
                         .id()
                         .to_bits()
                 } else {
@@ -744,7 +772,7 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
         for (i, &t) in take_old.iter().enumerate() {
             if t < old_ids.len() {
                 let entity = Entity::from_bits(plan.target_ids[i]);
-                if let Ok((_, mut key)) = keyed.get_mut(entity) {
+                if let Ok((_, _, mut key)) = keyed.get_mut(entity) {
                     if key.0 != i as u64 {
                         key.0 = i as u64;
                     }
@@ -777,7 +805,7 @@ fn e_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
 fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     site: &R::Ctx,
     mut lists: Query<(&Signal<Vec<T>>, &mut OrderKeyMembers, &DomTarget), F>,
-    mut keyed: Query<(&OrderedKey, &mut OrderKey)>,
+    mut keyed: Query<(&OrderedKey, &RowValue<T>, &mut OrderKey)>,
     dom_targets: Query<&DomTarget>,
     mut commands: Commands,
     mut pending: ResMut<PendingDomWrites>,
@@ -785,29 +813,22 @@ fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
     row_inner: Res<crate::RowInner>,
     variant_mode: Res<crate::RowVariantMode>,
 ) where
-    T: Send + Sync + Clone + ToString + 'static,
+    T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
 {
     for (items, mut members, anchor) in &mut lists {
         let new_keys: Vec<String> = items.0.iter().map(ToString::to_string).collect();
-
-        let mut old_sorted: Vec<(String, Entity, OrderKey)> = members
-            .0
-            .iter()
-            .filter_map(|&e| keyed.get(e).ok().map(|(k, ord)| (k.0.clone(), e, *ord)))
-            .collect();
-        old_sorted.sort_by_key(|(_, _, ord)| *ord);
-        let old_order: Vec<(String, Entity)> =
-            old_sorted.iter().map(|(k, e, _)| (k.clone(), *e)).collect();
-
-        let take_old = match_keys(&old_order, &new_keys);
-        let old_ids: Vec<u64> = old_order.iter().map(|(_, e)| e.to_bits()).collect();
+        let (old_ids, take_old, new_hash) = select_e(&items.0, &members.0, &keyed);
         let fresh_ids: Vec<u64> = new_keys
             .iter()
             .enumerate()
-            .map(|(i, key)| {
+            .map(|(i, _)| {
                 if take_old[i] >= old_ids.len() {
                     commands
-                        .spawn((OrderedKey(key.clone()), OrderKey(i as u64)))
+                        .spawn((
+                            OrderedKey(new_hash[i]),
+                            RowValue(items.0[i].clone()),
+                            OrderKey(i as u64),
+                        ))
                         .id()
                         .to_bits()
                 } else {
@@ -837,7 +858,7 @@ fn e_lis_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
         for (i, &t) in take_old.iter().enumerate() {
             if t < old_ids.len() {
                 let entity = Entity::from_bits(plan.target_ids[i]);
-                if let Ok((_, mut key)) = keyed.get_mut(entity) {
+                if let Ok((_, _, mut key)) = keyed.get_mut(entity) {
                     if key.0 != i as u64 {
                         key.0 = i as u64;
                     }
@@ -1000,7 +1021,7 @@ macro_rules! keyed_candidate_systems {
             $($wv: Res<crate::WriteVariant>,)?
             variant_mode: Res<crate::RowVariantMode>,
         ) where
-            T: Send + Sync + Clone + ToString + 'static,
+            T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
         {
             $body::<T, crate::DefaultRow, _>(
                 &crate::NoRowCtx,
@@ -1031,7 +1052,7 @@ macro_rules! keyed_candidate_systems {
             variant_mode: Res<crate::RowVariantMode>,
             site: Res<R::Ctx>,
         ) where
-            T: Send + Sync + Clone + ToString + 'static,
+            T: Send + Sync + Clone + ToString + Ord + std::hash::Hash + 'static,
         {
             $body::<T, R, _>(
                 &site,
@@ -1054,7 +1075,7 @@ keyed_candidate_systems!(
     list_reconcile_d_system,
     list_reconcile_d_system_with,
     crate::ListRows,
-    Query<&RowKey>,
+    Query<(&RowKey, &mut RowValue<T>)>,
     write_variant
 );
 keyed_candidate_systems!(
@@ -1062,7 +1083,7 @@ keyed_candidate_systems!(
     list_reconcile_d_lis_system,
     list_reconcile_d_lis_system_with,
     crate::ListRows,
-    Query<&RowKey>,
+    Query<(&RowKey, &mut RowValue<T>)>,
     write_variant
 );
 keyed_candidate_systems!(
@@ -1070,14 +1091,14 @@ keyed_candidate_systems!(
     list_reconcile_e_system,
     list_reconcile_e_system_with,
     OrderKeyMembers,
-    Query<(&OrderedKey, &mut OrderKey)>
+    Query<(&OrderedKey, &RowValue<T>, &mut OrderKey)>
 );
 keyed_candidate_systems!(
     e_lis_body,
     list_reconcile_e_lis_system,
     list_reconcile_e_lis_system_with,
     OrderKeyMembers,
-    Query<(&OrderedKey, &mut OrderKey)>
+    Query<(&OrderedKey, &RowValue<T>, &mut OrderKey)>
 );
 
 /// 후보 C — 접미사 없는 판본과 사이트별 monomorphize 판본.
