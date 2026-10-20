@@ -1060,6 +1060,7 @@ name = "loom-runtime"
 version = "0.0.1-phase1"
 dependencies = [
  "bevy_ecs",
+ "bevy_platform",
  "js-sys",
  "loom-flush-core",
  "smallvec",

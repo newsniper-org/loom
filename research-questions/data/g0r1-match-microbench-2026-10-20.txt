@@ -1,0 +1,12 @@
+# G0R1 C3 사전 등록 마이크로벤치 (개정 #12) — 2026-10-20, rustc rustc 1.98.1 (48a229cea 2026-09-01), release, min-of-R(1000:201 / 10000:41), 번갈아 실행, seed 0x2026_1020_0000_00c3
+# 해시맵형 = HashMap<u64,Vec<usize>> + 통과 hasher(최선형), 버킷 안 Item 동등 검증. 두 구현의 take_old 동일을 먼저 단언함.
+cell,n,item,radix_us,hashmap_us,ratio_radix_over_hash
+W2-shuffle,1000,ItemId,26.8,36.6,0.733
+W2-shuffle,1000,String128,32.6,40.4,0.807
+W2-reverse,1000,ItemId,26.6,36.5,0.729
+W2-reverse,1000,String128,31.7,39.6,0.799
+W2-shuffle,10000,ItemId,260.7,515.0,0.506
+W2-shuffle,10000,String128,408.6,685.5,0.596
+W2-reverse,10000,ItemId,274.5,480.6,0.571
+W2-reverse,10000,String128,411.9,521.8,0.789
+worst ratio radix/hash = 0.807  (1.10 초과 = 해시맵형이 1.10배 넘게 우세 → 판정례 (마) 선행)

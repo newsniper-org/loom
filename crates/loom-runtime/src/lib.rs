@@ -1530,3 +1530,6 @@ impl LoomApp {
         }
     }
 }
+
+// G0R1(개정 #12): key 표현·값 채널·radix 병합 매칭. 새 코드를 별도 모듈에 둔다 — list.rs 줄 번호 보존.
+pub mod list_key;

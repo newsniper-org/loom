@@ -5,6 +5,7 @@ version.workspace = true
 
 [dependencies]
 bevy_ecs.workspace = true
+bevy_platform.workspace = true
 # RQ5 후보 #4 — Verus로 검증된 Chain(순서 재결선). place_in_order가 이것을
 # 호출한다: 검증된 코드가 곧 배포되는 코드. vstd는 ghost가 컴파일 시점에
 # 지워지므로 wasm32 빌드에 짐을 남기지 않는다(실측 확인).

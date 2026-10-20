@@ -46,3 +46,5 @@ panic = "unwind"
 [workspace.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
 bevy_ecs = "0.19"
+# G0R1(개정 #12): `row_key`의 고정 hasher(`FixedHasher`) — 잠금 파일에는 bevy_ecs 경유로 이미 있다.
+bevy_platform = { version = "0.19", default-features = false }
