@@ -1324,3 +1324,27 @@ cargo run --release -p loom-track-n -- --cases 40          → 6 arm 전부 통�
   뒷받침된다.
 - **`lis_keep`은 `Vec<usize>`를 받는다**(`&[usize]`가 아니라). vstd의 슬라이스
   스펙이 얇아서 그렇게 뒀다. 호출부가 이미 `Vec`을 들고 있어 실제 비용은 없다.
+
+---
+
+## 2026-10-20 — G0R1 C10: 호출부 key 표현이 바뀐 뒤의 재실행 (로직 변경 0줄)
+
+프로토콜 개정 #12(G0R1)로 `loom-runtime`의 D·D-LIS·E·E-LIS 호출부가 key를 `to_string()`으로 만든 `String`에서 아이템 전체의
+고정 해시 `u64` + `Item` 동등 검증으로 바꿨다. 이 크레이트(`loom-flush-core`)의 **로직은 한 줄도 바뀌지 않았다** — 입력 `take_old`의 계약이
+같고(동치 증명: `crates/loom-runtime/src/list_key.rs` 머리말, 무작위 오라클 테스트 `match_equivalence_against_legacy_oracle`),
+이 크레이트가 매칭을 안 본다는 점도 그대로다. 바뀐 것은 `plan_inputs` 앞 doc 주석 한 줄뿐이다("키 비교(String)는 호출부에 남고" →
+"키 매칭은 호출부에 남고" + 날짜 정정 블록). 그래도 주석이 바뀌면 소스 바이트가 바뀌므로(panic 위치 줄 번호 → wasm 바이트, memory
+`comment-edits-change-wasm`) "검증된 소스 = 배포되는 소스" 대응을 새 sha256으로 다시 세운다.
+
+| 항목 | 값 |
+|---|---|
+| `crates/loom-flush-core/src/lib.rs` sha256 (전) | `61575b9e791df0e7ca0728d7be10487a453be79bb75422d920faec28d36623d5` (0ff9bd5) |
+| 같은 파일 sha256 (후) | `393f3523ba0d2d9128fc48ca2667260b0f300391266795ff35d62afdf0389db9` (이 커밋) |
+| `verus --crate-type=lib crates/loom-flush-core/src/lib.rs` | **90 verified, 0 errors** (전 기록과 같다) |
+| `verus formal-verification/verus/flush_order.rs` | **28 verified, 0 errors** |
+| 툴체인 | `/usr/bin/verus` → `/opt/verus/verus`, 패키지 `verus-singular 0.2026.07.27.31579f0-2`, `--version`은 "Version: Unknown / Profile: release" |
+
+**증명 범위(숨기지 않음)**: 이 재실행은 `plan_inputs`·`plan_*`·`lis_keep`·`Chain`의 사후조건이 이 소스에서 여전히 성립함을 보인다. 호출부의
+`match_by_key`(radix 병합)는 **검증 대상이 아니다** — 그것은 Rust 테스트(무작위 동치 3×4 조합 + 변이 점검)와
+`match-keys-exhaustive.py`의 모형 전수 조사(sweep 6)로만 뒷받침된다. 모형과 Rust 소스 사이의 대응은 "한 줄씩" 읽어서 맞춘 것이지
+기계가 검사한 것이 아니다.
