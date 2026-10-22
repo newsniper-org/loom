@@ -2416,3 +2416,18 @@ n∈{1,000, 10,000} × {ItemId, String}. v22와 v23의 차이는 7c와 환경 �
 RQ6 픽스처(K 전용 — 바이트 비교, 다르면 v23 RQ6 재측정에 포함) · `Cargo.toml`/`Cargo.lock`(`loom-runtime`에 `bevy_platform` 직접 의존 추가).
 
 **동결 기록(C13에서 후속 등재)**: 기반 커밋 해시 `____` · 산출물 sha256 `____` · 툴체인 `____`.
+
+#### 개정 #12 적용 기록 — G0R1 구현 (2026-10-20, 브랜치 `g0-repair`, C0–C10·C2)
+
+| 커밋 | 내용 | 검증 |
+|---|---|---|
+| C0 59100df | 규칙부 선등재 + RQ1 D·E 명세 갱신 | 성능 데이터 0건 시점 |
+| C1·C3 d5d268b | `list_key.rs`: 오라클 보존, radix 병합 `match_by_key`, 사전 등록 마이크로벤치 | 해시맵형(통과 hasher 최선형) 대비 8조건 모두 radix 우세(최악 0.81) → 판정례 (마) 불필요. `data/g0r1-match-microbench-2026-10-20.txt` |
+| C4 c83761b | key u64 + `RowValue<T>` + 매처 연결 | 골든 4개 바이트 동일, 변이 점검(uniform 검증 제거 시 실패) |
+| C5 637fee9 | D 무조건 = 값 채널 write → `Changed` patch, `const UNCOND` | 골든: 무조건 D·D-LIS 틱 2의 SetText 순서만 변경(다중집합·나머지 동일). 변이 점검: patch를 창 밖에 두면 실패 → 초기값 재패치 없음(B5 대안 불필요) |
+| C6·C7 d252d62.. | C 대칭(`SlotValue<T>`), 측정 경로 Item 비교 == n 정확히 | 골든 바이트 동일 |
+| C8·C9 7ac81ba, 53706e0 | 컴파일러 row_identity, loom-bench | 컴파일러 소비자 산출물 비교(BASE 0ff9bd5): A 22행 중 18행 동일, 달라진 4행은 loom-track-n의 arm_d·arm_d_lis·arm_e·arm_e_lis뿐(예상대로). SSR 5건 동일. `data/g0r1-c9-byte-record-2026-10-20.json` |
+| C10 fcdb894 | flush-core 주석 1건 + Verus 재실행 | 90 verified, 28 verified, 로직 0줄 |
+| C2 7e25cd3 | 모형 전수 동치 약 199만 건 | 불일치 0, 변이 점검 통과 |
+
+**남은 것(숨기지 않음)**: 7c(`DomWrite::Surface`)·G0 재심사(C12)·동결(C13)·P1/P2 산출물 sha256(P1은 C10 이후 소스에서 다시 빌드해야 한다 — flush-core 주석이 wasm 바이트를 바꾼다)·G1·트랙 N G2 재인증. 이 시점의 어떤 wasm도 동결 산출물이 아니다.
