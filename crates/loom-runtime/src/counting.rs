@@ -21,7 +21,7 @@
 //! 계측이 마커 System을 쓴 것과 같은 원리). `LoomApp::tick`도, 후보 System도,
 //! `DomWrite` 열거형도 무변경.
 
-use crate::{DomOps, NodeHandle};
+use crate::{BoolProp, DomOps, Namespace, NodeHandle};
 
 /// `DomOps` 호출 횟수를 op 종류별로 센 것. §7 M2가 열거한 op 종류
 /// (insertBefore/moveBefore/removeChild/setText/setAttr/detach/attach)와
@@ -112,6 +112,68 @@ impl DomOpCounts {
     }
 }
 
+/// Phase 7c(`DomWrite::Surface`)가 **새로 추가한** `DomOps` 메서드의 호출 수. `DomOpCounts`에 붙이지 않고 따로 둔다:
+/// `total_mutations`(§9 E 기각 (i)의 "셀당 총 DOM op 수")·`mutation_observer_channel`·`to_json`·`counts()`의
+/// 정의와 본문이 **한 글자도 바뀌지 않아야** M2의 정의가 그대로이기 때문이다(측정 정의 개정 불필요).
+/// 7c 경로는 v23의 RQ1 측정 arm이 쓰지 않으므로 측정 셀에서 이 값은 전부 0이어야 한다.
+///
+/// 기존 메서드(`set_attribute`, `append_static_text`, `reposition`)를 `Surface`가 부를 때는 **기존 카운터**에 센다 —
+/// 그 호출은 같은 메서드의 호출이라서다.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfaceOpCounts {
+    pub create_element_ns: u32,
+    pub remove_attribute: u32,
+    pub toggle_class: u32,
+    pub set_bool_prop: u32,
+    pub create_text_node: u32,
+    pub set_text_data: u32,
+    pub set_style: u32,
+    // --- 읽기 전용(변이 아님) — 변이 합계에 넣지 않는다 ---
+    pub adopt_element_children: u32,
+}
+
+impl SurfaceOpCounts {
+    pub fn total_mutations(&self) -> u32 {
+        self.create_element_ns
+            + self.remove_attribute
+            + self.toggle_class
+            + self.set_bool_prop
+            + self.create_text_node
+            + self.set_text_data
+            + self.set_style
+    }
+
+    /// MutationObserver 채널 대응. **카운트가 관측값보다 클 수 있다**: `classList.toggle(c, force)`가 이미 그 상태일 때,
+    /// 없는 속성을 `removeAttribute`할 때는 MutationRecord가 생기지 않는다(`moveBefore` 주석과 같은 형식의 한계).
+    /// `setAttribute`는 값이 같아도 항상 기록된다.
+    pub fn observer_channel(op: &str) -> &'static str {
+        match op {
+            "create_element_ns" | "create_text_node" => "childList",
+            "remove_attribute" | "toggle_class" | "set_style" => "attributes",
+            "set_text_data" => "characterData",
+            "set_bool_prop" => "unobservable(property)",
+            // 읽기 전용 그룹 — `adopt_children`과 같다.
+            "adopt_element_children" => "n/a",
+            _ => "n/a",
+        }
+    }
+
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"create_element_ns\": {}, \"remove_attribute\": {}, \"toggle_class\": {}, \"set_bool_prop\": {}, \
+             \"create_text_node\": {}, \"set_text_data\": {}, \"set_style\": {}, \"total_mutations\": {}}}",
+            self.create_element_ns,
+            self.remove_attribute,
+            self.toggle_class,
+            self.set_bool_prop,
+            self.create_text_node,
+            self.set_text_data,
+            self.set_style,
+            self.total_mutations(),
+        )
+    }
+}
+
 /// 임의의 `DomOps` 구현을 감싸 호출 수를 세는 데코레이터. 후보 코드도
 /// `LoomApp`도 이 타입의 존재를 모른다 — 하네스가 `BrowserDom` 대신 이걸
 /// 넘기기만 하면 된다.
@@ -130,15 +192,21 @@ impl DomOpCounts {
 pub struct CountingDom<D: DomOps> {
     inner: D,
     counts: DomOpCounts,
+    surface: SurfaceOpCounts,
 }
 
 impl<D: DomOps> CountingDom<D> {
     pub fn new(inner: D) -> Self {
-        CountingDom { inner, counts: DomOpCounts::default() }
+        CountingDom { inner, counts: DomOpCounts::default(), surface: SurfaceOpCounts::default() }
     }
 
     pub fn counts(&self) -> DomOpCounts {
         self.counts
+    }
+
+    /// 7c 신규 메서드의 호출 수(`DomOpCounts`와 별개 — `SurfaceOpCounts` 문서 참고).
+    pub fn surface_counts(&self) -> SurfaceOpCounts {
+        self.surface
     }
 
     /// 반복(rep) 경계에서 0으로 되돌린다 — §8의 "각 반복 전 초기 상태 복원"과
@@ -146,6 +214,7 @@ impl<D: DomOps> CountingDom<D> {
     /// 것을 막는다.
     pub fn reset_counts(&mut self) {
         self.counts = DomOpCounts::default();
+        self.surface = SurfaceOpCounts::default();
     }
 
     pub fn inner_mut(&mut self) -> &mut D {
@@ -243,5 +312,48 @@ impl<D: DomOps> DomOps for CountingDom<D> {
     fn get_input_value(&mut self, node: NodeHandle) -> String {
         self.counts.get_input_value += 1;
         self.inner.get_input_value(node)
+    }
+
+    // --- Phase 7c 신규 메서드 — 전부 명시적으로 위임하고 센다(2026-08-03 F-i 트랩: 위임 누락은 기본 구현 패닉으로
+    //     떨어진다). 기본 구현이 `unimplemented!`이므로 빠뜨리면 감싸는 순간 터진다. ---
+
+    fn create_element_ns(&mut self, parent: NodeHandle, ns: Namespace, tag: &str, class: Option<&str>) -> NodeHandle {
+        self.surface.create_element_ns += 1;
+        self.inner.create_element_ns(parent, ns, tag, class)
+    }
+
+    fn remove_attribute(&mut self, node: NodeHandle, name: &str) {
+        self.surface.remove_attribute += 1;
+        self.inner.remove_attribute(node, name);
+    }
+
+    fn toggle_class(&mut self, node: NodeHandle, class: &str, on: bool) {
+        self.surface.toggle_class += 1;
+        self.inner.toggle_class(node, class, on);
+    }
+
+    fn set_bool_prop(&mut self, node: NodeHandle, prop: BoolProp, value: bool) {
+        self.surface.set_bool_prop += 1;
+        self.inner.set_bool_prop(node, prop, value);
+    }
+
+    fn create_text_node(&mut self, parent: NodeHandle, text: &str) -> NodeHandle {
+        self.surface.create_text_node += 1;
+        self.inner.create_text_node(parent, text)
+    }
+
+    fn set_text_data(&mut self, node: NodeHandle, text: &str) {
+        self.surface.set_text_data += 1;
+        self.inner.set_text_data(node, text);
+    }
+
+    fn set_style(&mut self, node: NodeHandle, prop: &str, value: Option<&str>) {
+        self.surface.set_style += 1;
+        self.inner.set_style(node, prop, value);
+    }
+
+    fn adopt_element_children(&mut self, parent: NodeHandle) -> Vec<(NodeHandle, String)> {
+        self.surface.adopt_element_children += 1;
+        self.inner.adopt_element_children(parent)
     }
 }

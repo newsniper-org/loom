@@ -73,7 +73,7 @@ pub mod stage;
 pub use stage::{now_ms, StageTimings};
 
 pub mod counting;
-pub use counting::{CountingDom, DomOpCounts};
+pub use counting::{CountingDom, DomOpCounts, SurfaceOpCounts};
 
 pub mod cond;
 pub use cond::{
@@ -212,6 +212,11 @@ pub trait DomOps {
     /// Sets an element's entire text content in one call (`Node.textContent`
     /// semantics: replaces whatever children it had). This is the one
     /// operation every dynamic patch in Phase 1 performs — no VDOM diff.
+    ///
+    /// **2026-10-26 정정(7c)**: 위 "replaces whatever children it had"는 2026-08-07 이후 사실이 아니다 —
+    /// `BrowserDom`/`MockDom`의 계약은 **첫 텍스트 노드만 제자리에서 바꾸고, 없으면 맨 앞에 하나 만들며, 엘리먼트
+    /// 자식은 건드리지 않는다**(`web.rs`의 `set_text_content` 주석: R2 row의 binding span이 전멸하던 결함의 수리).
+    /// 위 서술은 이력으로 남긴다.
     fn set_text_content(&mut self, target: NodeHandle, text: &str);
     /// RQ1 A-보강 fast path: remove every child of `parent` in one call
     /// rather than N individual despawns.
@@ -282,7 +287,9 @@ pub trait DomOps {
     fn attach_from_fragment(&mut self, _parent: NodeHandle, _fragment: FragmentHandle) {
         unimplemented!("attach_from_fragment: 이 DomOps 구현은 F 계열 토글을 지원하지 않는다(SSR 전용)")
     }
-    /// Sets a single attribute on an element — outside the reactive patch
+    /// Sets a single attribute on an element. **2026-10-26 정정(7c)**: 아래 "no `DomWrite` variant emits this"는
+    /// `Surface`(`SetAttr`/`SpawnSpec`의 정적 속성 등) 이전의 서술이다 — 이제 `DomWrite::Surface`가 이 메서드를
+    /// 반응 경로에서도 부른다. 원문: outside the reactive patch
     /// pipeline (no `DomWrite` variant emits this; codegen calls it directly
     /// during `setup()`, once, same as static markup). Phase 2 resumability
     /// codegen uses this to tag SSR output with `data-loom-id` (a binding
@@ -316,6 +323,48 @@ pub trait DomOps {
     /// time in the first place), so resume recovers it from the live DOM
     /// instead of ever attempting to serialize it into a capture.
     fn get_input_value(&mut self, node: NodeHandle) -> String;
+
+    // ---- Phase 7c(`DomWrite::Surface`)가 쓰는 메서드들 — `surface.rs` 모듈 문서 참고 -------------------------
+    // 전부 기본 구현이 `unimplemented!`이다(`detach_to_fragment`의 관례): SSR `StringDom` 등 이 표면을 아직 구현하지
+    // 않은 백엔드가 불리면 조용히 잘못 동작하지 않고 즉시 실패한다. 특히 `create_element_ns`를 `create_element`로 조용히
+    // 폴백하는 기본 구현은 두지 않는다 — SVG가 HTML 엘리먼트로 만들어지는 R43과 같은 종류의 조용한 결함을 되만든다.
+    // 쓰기 메서드는 DOM의 **현재 값을 읽어 같으면 건너뛰지 않는다**(N1/N4).
+
+    /// `create_element`의 네임스페이스 판. SVG 엘리먼트의 `className`은 `SVGAnimatedString`이라 쓰기가 반영되지
+    /// 않으므로 구현은 비-HTML에서 `class` 속성으로 쓴다.
+    fn create_element_ns(&mut self, _parent: NodeHandle, _ns: Namespace, _tag: &str, _class: Option<&str>) -> NodeHandle {
+        unimplemented!("create_element_ns: 이 DomOps 구현은 7c Surface 표면을 지원하지 않는다")
+    }
+    fn remove_attribute(&mut self, _node: NodeHandle, _name: &str) {
+        unimplemented!("remove_attribute: 이 DomOps 구현은 7c Surface 표면을 지원하지 않는다")
+    }
+    /// `classList.toggle(class, on)` — 강제 상태 판. 이미 그 상태여도 호출하며, 비교는 하지 않는다.
+    fn toggle_class(&mut self, _node: NodeHandle, _class: &str, _on: bool) {
+        unimplemented!("toggle_class: 이 DomOps 구현은 7c Surface 표면을 지원하지 않는다")
+    }
+    /// 반사되지 않는 불리언 **프로퍼티** 대입(`el.checked = ...`).
+    fn set_bool_prop(&mut self, _node: NodeHandle, _prop: BoolProp, _value: bool) {
+        unimplemented!("set_bool_prop: 이 DomOps 구현은 7c Surface 표면을 지원하지 않는다")
+    }
+    /// `parent`의 마지막 자식으로 **텍스트 노드**를 만들고 그 핸들을 돌려준다(혼합 텍스트의 동적 조각).
+    fn create_text_node(&mut self, _parent: NodeHandle, _text: &str) -> NodeHandle {
+        unimplemented!("create_text_node: 이 DomOps 구현은 7c Surface 표면을 지원하지 않는다")
+    }
+    /// 텍스트 노드의 `data`를 쓴다(`CharacterData.data`).
+    fn set_text_data(&mut self, _node: NodeHandle, _text: &str) {
+        unimplemented!("set_text_data: 이 DomOps 구현은 7c Surface 표면을 지원하지 않는다")
+    }
+    /// `style.setProperty(prop, value)`, `value == None`이면 `removeProperty(prop)`.
+    fn set_style(&mut self, _node: NodeHandle, _prop: &str, _value: Option<&str>) {
+        unimplemented!("set_style: 이 DomOps 구현은 7c Surface 표면을 지원하지 않는다")
+    }
+    /// Resume 전용 읽기: `adopt_children`의 **엘리먼트 자식만** 판. 공백·주석 노드가 원리적으로 빠진다.
+    /// 텍스트는 `text_content`라 자손 텍스트를 이어 붙인다 — `<li>v<span>..</span></li>` 같은 복합 row는 값이
+    /// 틀리게 복구된다(R35는 "공백 노드"만 해결, "복합 row 텍스트"는 남는다). **소비 codegen은 N1 판정례 후보
+    /// (docs/03)가 판정될 때까지 켜지 않는다.**
+    fn adopt_element_children(&mut self, _parent: NodeHandle) -> Vec<(NodeHandle, String)> {
+        unimplemented!("adopt_element_children: 이 DomOps 구현은 7c Surface 표면을 지원하지 않는다")
+    }
 }
 
 /// A DOM write emitted by a patch System this tick. Systems never touch a
@@ -417,11 +466,11 @@ pub enum DomWrite {
     /// 지연 경로에도 적용한 것이다 — HTML 문자열은 컴파일타임에 완성되고
     /// 런타임에는 호출 한 번만 남는다.
     AppendStaticHtml { parent: WriteParent, html: String },
-    /// R2 축: 이미 만들어진 파생 binding들의 텍스트를 **다시 쓴다**. 슬롯의
-    /// 아이템이 바뀌면 그 아이템에서 파생된 binding이 전부 바뀌므로, 후보 C의
-    /// 재정렬(= 슬롯 값 교체)은 이 write를 row마다 한 번씩 내게 된다 —
-    /// 그것이 §9 C 기각 조항이 겨냥하는 비용이다. keyed 후보(D/E)는 retained
-    /// row의 아이템이 바뀌지 않으므로 이 write를 내지 않는다(그 비대칭이 곧
+    /// **2026-10-26 정정(7c)**: 이 doc의 앞부분은 R2 축 변형 `SetRowBindingTexts`("R2 축: 이미 만들어진 파생
+    /// binding들의 텍스트를 **다시 쓴다** … 그것이 §9 C 기각 조항이 겨냥하는 비용이다 … (그 비대칭이 곧")의
+    /// 설명이었는데, 그 변형이 개정 #9-11(98c5d25)에서 제거될 때 이 변형의 doc과 문장 중간에서 이어 붙은 채
+    /// 남아 있었다. 지금은 그 변형이 없으므로 잘린 앞부분을 뺀다(docs/09 §3 "문서와 코드가 어긋난 곳").
+    ///
     /// RQ1 Track T F 계열: 노드를 fragment로 분리한다. 결과 핸들은
     /// `LoomApp::tick`이 `FragmentTable`에 적재해 `CondBlock`이 정수로만
     /// 참조하게 한다.
@@ -435,6 +484,10 @@ pub enum DomWrite {
     /// of a list/conditional spawn batch that would need `Entity`
     /// resolution.
     SetInputValue { node: NodeHandle, value: String },
+    /// Phase 7c 표면(`surface.rs`). **반드시 마지막 variant로 둔다.** 앞에 끼우면 niche 인코딩된 기존 variant들의
+    /// 판별값이 바뀌어, 기존 생성 지점(`DefaultRow::emit`, `cond.rs`의 방출부)의 코드가 달라진다.
+    /// `tests/surface_writes.rs`가 크기와 대표 판별값을 고정한다.
+    Surface(surface::SurfaceWrite),
 }
 
 /// row 스코프 파생값의 **결과**들 (2026-08-07). 파생 *계산*은 컴파일러가
@@ -1532,6 +1585,7 @@ impl LoomApp {
                     None => self.dropped_writes += 1,
                 },
                 DomWrite::SetInputValue { node, value } => dom.set_input_value(node, &value),
+                DomWrite::Surface(w) => surface::apply_surface(self, dom, w),
             }
         }
         // **Bevy의 removed-component 이중 버퍼를 비운다** (2026-08-13 수리).
@@ -1582,3 +1636,11 @@ impl LoomApp {
 
 // G0R1(개정 #12): key 표현·값 채널·radix 병합 매칭. 새 코드를 별도 모듈에 둔다 — list.rs 줄 번호 보존.
 pub mod list_key;
+
+// Phase 7c(`DomWrite::Surface`): 최소 런타임 표면. 새 코드를 별도 모듈에 둔다 — 기존 소스 줄 번호 보존.
+pub mod surface;
+pub use surface::{
+    patch_attr_system, patch_bool_prop_system, patch_class_toggle_system, patch_opt_attr_system, patch_style_system,
+    patch_text_node_system, AttrSite, AttrTarget, BoolProp, BoolPropSite, ClassSite, ElementSpec, Namespace, StyleSite,
+    SurfaceStats, SurfaceWrite, TextNodeTarget,
+};

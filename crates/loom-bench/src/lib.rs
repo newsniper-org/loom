@@ -3343,6 +3343,46 @@ mod tests {
         assert!(r.is_err(), "창 중복 등록이 막히지 않았다");
     }
 
+    /// Phase 7c tripwire(설계 §4): 측정 arm(K/C/D/E/D-LIS/E-LIS와 D 무조건 2종)의 write-stream에 `DomWrite::Surface`가
+    /// 없다 — 7c 경로는 v23에서 7b 생성 코드 전용이고 RQ1 측정 arm은 이것을 안 쓴다. **검출기가 심어 둔 1건을 세는지**를
+    /// 먼저 확인하고(아니면 아래 0은 공허하다), 후보가 실제로 write를 냈다는 존재 단언을 둔다.
+    #[test]
+    fn no_measured_arm_emits_surface_writes() {
+        use loom_runtime::*;
+        let count = |w: &[DomWrite]| w.iter().filter(|x| matches!(x, DomWrite::Surface(_))).count();
+        let planted = vec![DomWrite::Surface(SurfaceWrite::SetTextData { node: NodeHandle(0), text: String::new() })];
+        assert_eq!(count(&planted), 1, "검출기가 심어 둔 Surface 1건을 세지 못한다");
+        type Reg = fn(&mut LoomApp);
+        let regs: Vec<(&str, Reg, bool)> = vec![
+            ("K", |a| { a.add_systems(list_reconcile_k_system::<String>); }, true),
+            ("C", |a| { a.add_systems(list_reconcile_c_system::<String>); }, true),
+            ("D", |a| { a.add_systems(list_reconcile_d_system::<String>); }, true),
+            ("D-LIS", |a| { a.add_systems(list_reconcile_d_lis_system::<String>); }, true),
+            ("E", |a| { a.add_systems(list_reconcile_e_system::<String>); }, false),
+            ("E-LIS", |a| { a.add_systems(list_reconcile_e_lis_system::<String>); }, false),
+            ("D-UNCOND", |a| { a.add_systems(list_reconcile_d_unconditional_system::<String>); }, true),
+            ("D-LIS-UNCOND", |a| { a.add_systems(list_reconcile_d_lis_unconditional_system::<String>); }, true),
+        ];
+        let mut emitting = 0;
+        for (name, reg, must_emit) in &regs {
+            let mut app = LoomApp::new();
+            reg(&mut app);
+            app.world.spawn((
+                Signal(vec!["a".to_string(), "b".to_string(), "c".to_string()]),
+                ListRows::default(),
+                DomTarget(NodeHandle(0)),
+            ));
+            app.run_schedule_for_test();
+            let w = std::mem::take(&mut app.world.resource_mut::<PendingDomWrites>().0);
+            if *must_emit {
+                assert!(w.len() >= 3, "{name}: 존재 단언 — 후보가 write를 내지 않았다");
+            }
+            emitting += (!w.is_empty()) as usize;
+            assert_eq!(count(&w), 0, "{name}이 Surface를 방출했다");
+        }
+        assert!(emitting >= 6);
+    }
+
     #[test]
     fn write_axis_marks_exactly_c_and_the_d_family() {
         let m = all_makers::<ItemId>();

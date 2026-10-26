@@ -3,7 +3,7 @@
 //! `browser` cargo feature (wasm-bindgen/web-sys aren't needed for the
 //! native `Changed<T>`/reconciliation tests in `tests/`).
 
-use crate::{DomOps, FragmentHandle, NodeHandle, SharedStore};
+use crate::{BoolProp, DomOps, FragmentHandle, Namespace, NodeHandle, SharedStore};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -498,5 +498,78 @@ impl DomOps for BrowserDom {
 
     fn live_node_count(&self) -> Option<usize> {
         Some(self.nodes.iter().filter(|n| n.is_some()).count())
+    }
+
+    // ---- Phase 7c 표면 (`surface.rs`). 쓰기 메서드는 DOM의 현재 값을 읽지 않는다(N1/N4) — `get_attribute`,
+    //      `classList.contains`, `text_content()`로 "같으면 건너뛰기"를 넣지 말 것. 읽기는 `adopt_element_children`만. ----
+
+    fn create_element_ns(&mut self, parent: NodeHandle, ns: Namespace, tag: &str, class: Option<&str>) -> NodeHandle {
+        let el = self
+            .document
+            .create_element_ns(Some(ns.uri()), tag)
+            .unwrap_or_else(|e| panic!("create_element_ns({}, {tag}) failed: {e:?}", ns.uri()));
+        if let Some(class) = class {
+            // SVG의 `className`은 `SVGAnimatedString`이라 대입이 반영되지 않는다 — HTML만 `set_class_name`.
+            if ns == Namespace::Html {
+                el.set_class_name(class);
+            } else {
+                el.set_attribute("class", class).expect("set_attribute(class) failed");
+            }
+        }
+        self.node(parent).append_child(&el).expect("append_child failed");
+        self.alloc_under(el.unchecked_into(), Some(parent))
+    }
+
+    fn remove_attribute(&mut self, node: NodeHandle, name: &str) {
+        let el: web_sys::Element = self.node(node).clone().unchecked_into();
+        el.remove_attribute(name).expect("remove_attribute failed");
+    }
+
+    fn toggle_class(&mut self, node: NodeHandle, class: &str, on: bool) {
+        let el: web_sys::Element = self.node(node).clone().unchecked_into();
+        el.class_list().toggle_with_force(class, on).expect("classList.toggle failed");
+    }
+
+    fn set_bool_prop(&mut self, node: NodeHandle, prop: BoolProp, value: bool) {
+        // 프로퍼티 이름은 닫힌 열거형에서만 나온다(`move_before`와 같은 Reflect 방식).
+        let el = self.node(node).clone();
+        js_sys::Reflect::set(&el, &JsValue::from_str(prop.js_name()), &JsValue::from_bool(value))
+            .expect("set bool property failed");
+    }
+
+    fn create_text_node(&mut self, parent: NodeHandle, text: &str) -> NodeHandle {
+        let t = self.document.create_text_node(text);
+        self.node(parent).append_child(&t).expect("append_child(text) failed");
+        self.alloc_under(t.unchecked_into(), Some(parent))
+    }
+
+    fn set_text_data(&mut self, node: NodeHandle, text: &str) {
+        self.node(node).unchecked_ref::<web_sys::CharacterData>().set_data(text);
+    }
+
+    fn set_style(&mut self, node: NodeHandle, prop: &str, value: Option<&str>) {
+        // SVG 엘리먼트에도 `style` getter가 있으므로 `HtmlElement`로 덕타이핑한다(`set_visible`과 같은 방식).
+        let el: web_sys::HtmlElement = self.node(node).clone().unchecked_into();
+        match value {
+            Some(v) => el.style().set_property(prop, v).expect("set style property failed"),
+            None => {
+                el.style().remove_property(prop).expect("remove style property failed");
+            }
+        }
+    }
+
+    fn adopt_element_children(&mut self, parent: NodeHandle) -> Vec<(NodeHandle, String)> {
+        let parent_node = self.node(parent).clone();
+        let parent_el: web_sys::Element = parent_node.unchecked_into();
+        // `children()`는 Element만 담는 HTMLCollection이라 공백·주석 노드가 원리적으로 빠진다.
+        let children = parent_el.children();
+        let mut out = Vec::with_capacity(children.length() as usize);
+        for i in 0..children.length() {
+            let Some(child) = children.item(i) else { continue };
+            let text = child.text_content().unwrap_or_default();
+            let handle = self.alloc_under(child.unchecked_into(), Some(parent));
+            out.push((handle, text));
+        }
+        out
     }
 }
