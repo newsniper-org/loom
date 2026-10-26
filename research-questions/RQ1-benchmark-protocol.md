@@ -2310,6 +2310,11 @@ D 기각 (ii)·E 기각 (iii) 발동과 C-4 기준선 K 이동(→ C 채택 (a) 
 - 트랙 N: `loom-track-n`은 resume을 호출하지 않고, 입력 `nested-list-derived.tsx`의 6개 팔에는 히트가 없다. G2(cycle1,
   recert-v21-R1/R2)를 유지한다(인증 기반 98f2d3d — 개정 #11 참고).
 - 트랙 L·T: 결함이 runtime에 없고, `loom-bench`는 `adopt_children`·`set_visible`을 쓰지 않는다.
+  - **2026-10-26 정정(7c 설계 검토에서 발견)**: 위 문장 중 "`loom-bench`는 `set_visible`을 쓰지 않는다"는 틀렸다. 트랙 T의 `"F"` arm
+    (`cond_reconcile_f_system`, CSS 은닉 대조군)이 `SetVisible`을 내고 `BrowserDom::set_visible`을 실행한다. 컴파일러 생성 조건부의 else 분기
+    (`codegen.rs`의 `SetVisible` 방출 2곳)와 손코딩 Island 둘(`loom-island-demo`, `loom-island-productcard`)도 쓴다. 그래서 R36을 `web.rs`에서
+    고치면 트랙 T·트랙 N·RQ6 측정 경로가 **모두** 바뀐다 — R36 수리는 미룬다. `adopt_children` 쪽 서술("bench에서 호출 0건")은 맞다.
+    은닉 수단의 계약은 §10 "은닉 수단 사전 선언: inline style `display:none`"이 이미 갖고 있어 새 계약이 필요 없다. 원문은 이력으로 남긴다.
 - 개정 #11 적용: R11·R32 수리는 `loom-nested-fixture` OUT_DIR의 바이트를 바꾸므로 면제되지 않는다. G2는 옵션 3 새 기반에서
   어차피 다시 받는다. R11 수리가 `web.rs`를 건드리면 `pkg-bench` 바이트를 비교해 기록한다(codegen만으로 고치는 방식 우선).
 - R28(`item.length`의 `chars().count()`)은 잠복이다. 트랙 N 오라클이 같은 길이 의미를 복제하므로(`loom-track-n/src/model.rs`)
@@ -2431,3 +2436,66 @@ RQ6 픽스처(K 전용 — 바이트 비교, 다르면 v23 RQ6 재측정에 포�
 | C2 7e25cd3 | 모형 전수 동치 약 199만 건 | 불일치 0, 변이 점검 통과 |
 
 **남은 것(숨기지 않음)**: 7c(`DomWrite::Surface`)·G0 재심사(C12)·동결(C13)·P1/P2 산출물 sha256(P1은 C10 이후 소스에서 다시 빌드해야 한다 — flush-core 주석이 wasm 바이트를 바꾼다)·G1·트랙 N G2 재인증. 이 시점의 어떤 wasm도 동결 산출물이 아니다.
+
+#### 개정 #12 후속 1 (2026-10-26, **v23 수집 전**) — 7c(`DomWrite::Surface`) 적용 기록 · v23 기반 구성 · 귀속 대조 규칙 사전 등재
+
+**이 절은 개정 #12의 후속이다.** 개정 #12 규칙부가 "7c는 새 variant 추가만 하고 커밋을 분리한다"고 정했고, 그 이행 기록과, 7c가 만드는 기반 변경을 K·C·D·E에
+어떻게 귀속할지에 대한 **데이터 수집 전** 규칙을 함께 등재한다(§11-5: 이 절을 담은 커밋은 v23 원시 데이터의 첫 커밋보다 앞선다). 새 변형·새 기반에서 성능
+데이터는 아직 한 건도 없다.
+
+**적용 기록 — 7c 런타임 표면**
+- 커밋 2779566(브랜치 `g0-repair`). 내용: `DomWrite`에 **마지막 variant** `Surface(SurfaceWrite)` 하나, 새 모듈 `surface.rs`, `DomOps` 신규 메서드 8개(기본
+  `unimplemented!`), `CountingDom`의 `SurfaceOpCounts`, `BrowserDom` 구현, 사이트 마커 patch System 6종. 상세와 행별 결과: docs/09 "2026-10-26 갱신(7c)", 설계
+  원문 `roadmap/phase7c-runtime-surface-design.md`.
+- **바꾸지 않은 것**: 기존 `DomWrite` variant 12종, `tick`의 기존 arm, `DefaultRow`, `set_text_content`, `set_visible`, `adopt_children`, 그리고
+  `DomOpCounts`·`total_mutations`·`mutation_observer_channel`·`to_json`·`counts()` — **M2의 정의는 한 글자도 바뀌지 않았다**(새 카운터는 별도 `SurfaceOpCounts`,
+  `to_json`이 같음을 테스트가 고정). 따라서 측정 정의 개정은 없다.
+- 설계와 다른 점 1건: `SpawnSpec`/`SpawnRowSpec`이 `ElementHandle` 대신 `DomTarget`을 붙인다(근거: `surface.rs` 모듈 문서, docs/09 갱신 절).
+- 검증: `tests/surface_writes.rs` 24건(구조 단언 4·tripwire·위임·수명·교차 매칭·재패치 순서, 존재 대조 포함), 변이 2건(사이트 마커 필터 제거 → 실패, 앵커 집계
+  제거 → 실패), loom-runtime 전 테스트 통과(기존 골든 4개 바이트 동일), `cargo check --workspace --all-targets` 통과, wasm32 `browser` feature 빌드 통과.
+  `size_of::<DomWrite>()` 88(x86_64)은 7c 이전 HEAD 0500448에서 같은 방식으로 측정한 값과 같고, 기존 variant 판별값 다섯 개도 같다.
+- **tripwire**: `loom-bench`의 `no_measured_arm_emits_surface_writes`와 `loom-runtime`의 `tripwire_existing_list_and_cond_paths_emit_zero_surface_writes`가
+  측정 arm의 write-stream에 `Surface` 0건을 고정한다(검출기가 심어 둔 1건을 세는지 먼저 시험). 트랙 N의 `RecordingDom`·`loom-nested-fixture`의 `TreeDom`은
+  신규 메서드를 구현하지 않아 `Surface`가 오면 즉시 `unimplemented!` 패닉한다(2차 tripwire — 기본 구현이 있다는 것만 보이며 1차는 위 두 테스트다).
+
+**v23 기반 구성 (사전 선언)**
+- **B0** = G0R1 최종 코드 상태(코드 변경은 fcdb894까지; 0500448은 문서·데이터만 더한 커밋). **B1** = B0 + 7c 코드 커밋(2779566 및 이후 7c 코드 커밋).
+  **B2** = B1 + v23 하네스 변경(Firefox BiDi 재개 시점의 하네스 수정, 트랙 L 하네스 등). B1→B2는 **따로 diff하고 따로 기록**한다. v23 측정 산출물은 B2에서 만든다.
+- **P1** = B0에서 빌드한 `pkg-bench`(G0R1만), **P2** = B1에서 빌드한 `pkg-bench`(G0R1+7c). 둘 다 동결 산출물이 아니라 귀속 대조용이다. 개정 #12 규칙부의
+  4점 sha256 표(a55ba87 / P1 / P2 / 최종)는 동결 시점에 채운다.
+- **개정 #11 "산출물이 바이트 단위로 같으면 재인증하지 않아도 된다" 면제를 쓰지 않는다.** 이번 변경은 `loom-runtime` 소스를 바꾸므로 측정 산출물 바이트가 반드시
+  바뀐다. 함수 단위 diff(B0 대 B1)는 면제 근거가 아니라 "K/C가 자연 대조군이다"라는 **공평성 서술의 근거**로만 쓴다.
+
+**공평성 영향 진술**
+- 7c는 **전 arm에 같은 기반 변경**이다(공유 `loom-runtime` 크레이트 안에서 `DomWrite` 크기·`LoomApp::tick`의 match·`CountingDom` 크기가 바뀐다). 어느 후보도 새 경로를
+  실행하지 않으므로 직접 효과는 없어야 하고, 간접 효과(코드 배치·`tick` 분기표·`CountingDom` 필드 오프셋)는 방향을 알 수 없다 — 그래서 아래 귀속 대조를 둔다.
+- `DomWrite` 크기가 7c 이전과 같으므로(88/56 예상, wasm32는 함수 diff에서 확인) `PendingDomWrites` 큐의 메모리 배치는 변하지 않는다. `CountingDom`은 `SurfaceOpCounts`(u32 8개)가
+  늘어 `Candidate` 단형화의 필드 오프셋이 달라질 수 있다 — 허용된 변경으로 분류하고 측정 괄호 안의 변경이 오프셋 상수뿐임을 확인한다(함수 diff 기록).
+- 7c 경로는 v23의 RQ1 측정 arm이 쓰지 않는 **7b 전용 경로**다. 그러므로 7c가 "초기값 후속 재패치"(§2.2 v1.1 주석: 스폰 번들에 초기값을 싣는 것이 최선형이고, 스폰 write와
+  분리된 후속 write는 체크리스트 미달)에 걸리는지는 **판정하지 않는다** — 7c의 동적 속성 초기값은 같은 배치 안 스폰 write 바로 뒤의 별도 `SetAttr`이고 §2.2의 최선형과
+  같은지 가리지 않았다. **7b 산출물을 측정 arm에 넣기 전에 이 조항에 대해 다시 심사한다.**
+
+**사전 선언 규칙 (a)** — 공유 코드가 바뀌었으면 K·C는 자연 대조군이 아니다. 아래 함수 diff에서 K/C/cond/`DefaultRow::emit`(lib.rs)·`RowSpawnCtx`·`list.rs` 공통 헬퍼·`loom-flush-core`
+`plan_writes*`·`BrowserDom` 함수 본문 중 **허용된 변경 목록(7c 설계 §5(b)) 밖의 변경이 하나라도** 있으면 아래 (c)의 드리프트 관찰을 하지 않고 v23 단독 판정만 한다.
+함수 diff의 존재 단언: "허용 변경 ≥ 1(`LoomApp::tick`)" — 같게 나오면 도구가 `Surface` arm을 보지 못하는 것이다.
+
+**(c) 탐색적 관찰 — 판정 비관여** (공평성 진술: 전 arm에 같은 기반 변경이고 7c 경로는 전 arm에서 실행되지 않는다)
+- (i) **M2 결정성**: K·C 전 셀과 트랙 T 전 arm의 M2 JSON이 v22와 v23에서 완전히 같아야 한다. 비교기는 **키 집합이 같다는 것과 비교한 셀 수 > 0**을 먼저 단언한다.
+  전제: `PROTOCOL_TAG`(`crates/loom-bench/src/lib.rs:55`, `"RQ1-benchmark-protocol/v1.1"`)는 시드에 들어가므로 **v23에서 이 태그를 바꾸지 않는다**. 결과가 다르면 기반 변경이 행동으로 샌
+  것이므로 캠페인을 중단한다. (K/C의 M2는 G0R1·7c 모두에서 불변이어야 하고, D·E 계열은 G0R1로 달라지는 것이 정상이라 비교 대상이 아니다.)
+- (ii) **시간 지표**: K/C의 v22→v23 이동은 관찰로만 기록한다. 이 이동에는 G0R1의 공유 코드 변경과 환경 드리프트가 섞여 있어 7c에 귀속하지 않는다. §9 판정은 v23 데이터만으로 한다(§2.5).
+- (iii) **귀속 대조 (병익님 결정 B4, 2026-10-20 등록 — 규칙은 아래)**.
+
+**귀속 대조 판정 규칙 (데이터 수집 전 등재)**
+- 대상 (후보, 셀) 8쌍: 후보 {K, C} × 셀 {W2 셔플 × R1 × n ∈ {1,000, 10,000} × Item ∈ {ItemId, String}}. 빌드 {P1, P2}를 **같은 세션**에서 교차 수집한다(셀 단위로 P1/P2
+  번갈아, 순서는 시드 셔플). 워밍업 50 + 측정 200, 지표는 M1(a), 시드 열은 두 빌드가 공유한다(같은 `PROTOCOL_TAG`·셀 ID·반복 번호).
+- 통계: 쌍(P1, P2)마다 **시드-쌍대 부트스트랩 median 비율(P2/P1)의 99% CI**(§8 판정 어휘 그대로, 10^4 리샘플), 95% 병기.
+- 판정: 8쌍 모두 CI ⊂ [1/1.1, 1.1]이면 **"7c 기반 변경은 K·C 시간에 영향이 있다는 증거가 없다(등가)"**. 한 쌍이라도 그 밖이면 **"비결정/영향 가능"** — 이 경우 (c)(ii)의 이동을
+  7c 또는 환경 어느 쪽에도 귀속하지 않고 서술을 보류한다. **어느 결과도 §9 판정에 입력되지 않는다**(v23 단독 판정은 그대로).
+- 비공허 장치(분석 코드가 먼저 단언한다): 두 산출물의 sha256이 서로 다르다(같은 파일을 두 번 읽은 것이 아님) · 쌍마다 표본 수가 200 · 두 빌드의 시드 열이 같다 · 비교한 쌍 수가 8.
+- 한계: 이 대조는 P1(G0R1 단독)과 P2(G0R1+7c)의 차이만 본다. v22(a55ba87) 대 P1의 차이(G0R1의 공유 코드 변경+환경)는 분해하지 않는다.
+
+**남은 것(숨기지 않음)**: 함수 단위 diff 도구와 기록(a55ba87 대 B0, B0 대 B1) · 브라우저 프로브(SVG 렌더, 사용자가 클릭한 뒤의 `checked`, `toggle_class` no-op 시 MutationRecord 부재, 공백이 끼어 재포맷된
+HTML과 복합 row의 `adopt_element_children`, `<textarea>`/`<select>`의 `set_input_value`) · 혼합 텍스트 SSR 마커 규약(결정 B2: 주석 마커, v23 동결 전 확정) · R34 기존 arm 집계(결정 B1: 미룸) ·
+`adopt_element_children`의 N1 판정(결정 B6: G0 재심사 C12, docs/03 판정례 후보 (바)) · G0 재심사(C12)·동결(C13)·P1/P2 sha256. 이 시점의 어떤 wasm도 동결 산출물이 아니다.
+

@@ -107,6 +107,10 @@ System + 닫힌 열거형이 정본이고 opcode는 재개 조건부 대안(docs
   바꾸는 묶음(공백 규칙·bootstrap-flat)은 RQ6 재측정 1회에 모은다.
 - **7c 런타임 표면**: `DomWrite` 추가(속성·class·checked·SVG 네임스페이스·`SpawnRow` tag/class 등). §2.5 동결을 깨므로 **G0 수리 캠페인의 새
   동결 기반에 합류**(옵션 3). 새 variant 추가만 하고 커밋을 분리한다.
+  - **2026-10-26 구현됨(런타임 표면만)**: 브랜치 `g0-repair` 커밋 2779566 — `DomWrite::Surface`(마지막 variant 하나), `surface.rs`, `DomOps` 신규
+    메서드 8개(기본 `unimplemented!`), `SurfaceOpCounts`(`DomOpCounts`는 불변), `BrowserDom` 구현, 사이트 마커 patch System. 소비 codegen은 7b.
+    `size_of::<DomWrite>()` 88(x86_64) 불변, 기존 판별값 불변. 설계 원문 `roadmap/phase7c-runtime-surface-design.md`, 행별 결과 docs/09
+    "2026-10-26 갱신(7c)". **남은 것**: 함수 단위 B0/B1 diff 기록(7c-7), 브라우저 프로브(SVG 렌더·`checked`·`toggle` no-op·복합 row `adopt`·`<select>` value).
 - **7d 결정 의존 표면**: props/children(CAP를 RQ로 먼저), key(G0 P1 이후), 폼 이벤트, effect·비동기, 동적 컴포넌트(PatchTable 재개 조건).
 - 순서: 7a → (G0 수리 결정 시 7c를 그 기반에 합류) → 7b → 7d. 제약: No-VDOM, Component에 클로저 금지(핸들러는 생성된 `Action` 정적 `match`),
   다른 프레임워크 API 복사 금지.

@@ -559,3 +559,55 @@ signal 이름에 대해 **사실이 아니었다** — 7a 이전 컴파일러 + 
 - Playwright 재검증(`research-questions/data/phase7a-followup-F3-resume-reverify-2026-10-18.json`): 새 판 통과(count 2→2→3→3, materialize 1회, 입력값 유지). 수리 전 판(음성 대조): 다른 요소
   첫 클릭에 count 0 리셋, materialize 4회, input 클릭에 값 소거 — 결함 재현.
 - R38(Flatten `bootstrap-flat.js`의 input 결함)은 측정 산출물(RQ6 Flatten 팔 로더)이라 7b(RQ6 재측정과 함께)에 남는다.
+
+## 2026-10-26 갱신(7c) — 런타임 표면 추가 결과 (행별)
+
+> 위 표(§1)와 §0.3의 원문은 감사 시점 기록이라 고치지 않는다. 출처: 브랜치 `g0-repair` 커밋 2779566(`DomWrite::Surface`), 설계 원문
+> `roadmap/phase7c-runtime-surface-design.md`(개정판), 사전 등재와 적용 기록은 RQ1 프로토콜 "개정 #12 후속 1".
+
+**7c가 한 일의 범위**: 런타임에 **표면을 추가**했다. 이 표면을 쓰는 코드는 아직 없다 — 소비자는 7b의 컴파일러 생성 코드다. 그래서 아래 "지원"은
+전부 "런타임이 받을 수 있다"이고, 사용자 소스에서 쓸 수 있게 되는 것은 7b 이후다. 측정 arm(K/C/D/E/T, 트랙 N, RQ6)은 이 경로를 방출하지 않는다
+(`loom-bench`와 `loom-runtime`의 tripwire 테스트가 write-stream에서 `Surface` 0건을 고정한다).
+
+| 행 | 2026-10-26 갱신(7c) | 남은 것 |
+|---|---|---|
+| R9 (row class·태그) | `SpawnRowSpec`(class·ns·attrs·tag를 `ElementSpec`으로). `SpawnRow`는 **바꾸지 않았다**(필드를 더하면 K/C/D/E 공유 생성 지점과 codegen 산출물이 바뀐다 — 새 variant로 분리). R9의 tag 부분은 `SpawnRow.tag`가 이미 있어 7b에서 런타임 변경 없이 풀린다 | 7b: codegen이 `row_tag`·class를 `SpawnRowSpec`으로 방출 |
+| R34 (앵커 실패 무집계) | **새 경로(`SpawnRowSpec`)에서만** `SurfaceStats.anchor_misses`로 집계. 기존 `SpawnRow`/`Reposition` arm은 그대로 — 병익님 결정 B1(2026-10-20): 기존 arm 무변경 원칙 유지, 미룸. debug 전용 집계는 트랙 N이 release라 작동하지 않고 줄 번호가 밀려 release 바이트도 바꾼다 | 기존 arm의 R34는 미해결(결정 B1) |
+| R35 (공백·주석 노드 입양) | `adopt_element_children`(Element 자식만)을 **제공만** 한다. `text_content()`가 자손 텍스트를 이어 붙이므로 `<li>v<span>..</span></li>` 같은 복합 row 값은 여전히 틀리게 복구된다 — "공백 노드"만 해결, "복합 row 텍스트"는 남는다. 소비 codegen은 N1 판정례 후보 (바)가 판정될 때까지 켜지 않는다(docs/03 정정 절) | 판정 + 7b resume codegen |
+| R36 (`set_visible`) | 손대지 않았다. **영향 범위 정정**: `set_visible`은 트랙 T "F" arm(`cond_reconcile_f_system`), 컴파일러 생성 조건부 else 분기(`codegen.rs`의 `SetVisible` 방출 2곳), 손코딩 Island 둘이 쓴다 — web.rs를 고치면 트랙 T·트랙 N·RQ6 측정 경로가 모두 바뀐다. 은닉 수단 계약은 프로토콜 §10 "은닉 수단 사전 선언: inline style `display:none`"이 이미 정했으므로 이 조항을 인용한다 | 미룸(측정 경로 변경) |
+| R43 (동적 서브트리 SVG) | `SpawnSpec` + `DomOps::create_element_ns`(네임스페이스 실림; SVG는 `class` 속성으로 씀). **기존 `SpawnElement` 경로는 7b가 생성 코드를 `SpawnSpec`으로 옮기기 전까지 결함을 유지한다**(HTML 네임스페이스로만 만든다). 브라우저 렌더는 여전히 추론 — 프로브 대기 | 7b + 브라우저 프로브 |
+| §2.3 동적 attr·`disabled`·Option attr | `SetAttr`/`RemoveAttr` + `patch_attr_system<T, A>`/`patch_opt_attr_system<T, A>`(사이트 마커 `A`로 같은 `T` 사이트끼리 교차 매칭 방지) | 7b/7d |
+| §2.3 `class:` 토글·삼항 class | `ToggleClass` + `patch_class_toggle_system<C>` | 7b |
+| §2.3 `style` 프로퍼티 바인딩 | `SetStyle`(병익님 결정 B3: 포함) + `patch_style_system<S>` | 7d |
+| §2.4 혼합 텍스트 `Count: {n()}` | `SpawnText`/`SetTextData` + `create_text_node`/`set_text_data` + `patch_text_node_system<T>`. 형제 정적 텍스트가 보존됨을 테스트로 고정. **SSR 마커 규약은 아직 없다**: SSR된 `Count: 5`는 HTML 파서가 텍스트 노드 하나로 합치므로 resume은 런타임 원시 연산만으로 풀리지 않는다 — 결정 B2: 주석 마커(`<!--l:...-->` 류)로 v23 동결 전에 확정. 클라이언트에서 새로 만드는 경우는 영향 없음 | B2 확정 + 7b |
+| §2.8 `checked`·`selected` | `SetBoolProp`(반사되지 않는 dirty-state 프로퍼티 세 개로 한정; `disabled`/`hidden` 등 반사 속성은 `SetAttr`) + `patch_bool_prop_system<P>`. `<textarea>`/`<select>`의 value는 기존 `set_input_value`가 덕타이핑으로 처리할 것으로 **추정**(브라우저 프로브 대기) | 7b/7d + 프로브 |
+
+**설계와 다르게 구현한 곳(숨기지 않음)**: 설계안은 `SpawnSpec`/`SpawnRowSpec`이 `DomTarget` 대신 `ElementHandle`을 붙이게 했다. 구현은 **`DomTarget`을
+붙인다** — 기존 `SpawnElement`/`SpawnRow`와 같은 계약이라 `WriteParent::Entity` 해석, `Reposition`/`RemoveNode` 앵커, 엘리먼트 자체가 텍스트
+binding인 경우의 `patch_text_system`이 그대로 작동한다(`ElementHandle`로는 7b가 리스트 row를 `SpawnRowSpec`으로 옮길 수 없다). 설계가
+`ElementHandle`로 막으려던 교차 매칭(`patch_text_system::<String>`이 속성 binding에 `SetText`를 내고 그것이 Text 노드에서 `insert_before`로
+패닉하는 것)은 **속성·텍스트노드 binding을 엘리먼트 entity와 분리된 별도 entity에 두고 `AttrTarget`/`TextNodeTarget`만 붙이는 규약**으로 같게
+막힌다(그 entity에는 `DomTarget`이 없으므로 쿼리가 맞지 않는다 — 테스트 `cross_match_*`). **7b 생성 코드의 제약**: 속성 binding의 `Signal<String>`을
+엘리먼트 entity 자신에 두면 안 된다.
+
+**binding 수명 규약(7b 제약)**: binding entity는 반드시 `ChildOf(소유 엘리먼트 또는 row entity)`로 단다. 아니면 소유자 삭제 뒤 `BrowserDom`이
+슬롯을 재사용했을 때 옛 binding이 다른 노드에 쓴다(음성 대조 테스트가 실제로 패닉하는 것을 보인다).
+
+**patch System 순서 규약(7b 제약, §2.2 관련)**: row 스코프 binding처럼 `Commands`로 같은 tick에 spawn되는 binding의 patch System은 **spawn의
+sync point 뒤**에 둔다. 앞에 두면 다음 tick에 `Changed`가 참이 되어 초기값이 한 번 더 나간다(§2.2의 "초기값 후속 재패치") — 테스트가 두 순서를 모두
+고정한다(뒤: 0건, 앞: 1건). 이 규약을 지키면 병익님 결정 B5의 대안은 필요 없다.
+
+**크기·판별값**: `size_of::<DomWrite>()`는 7c 전후 모두 88(x86_64) — 7c 이전 HEAD(0500448)에서 같은 방식으로 측정해 대조했다. 기존 variant 판별값(niche
+인코딩: SetText=0x8000…00, ClearChildren=…01, RemoveNode=…04, SetVisible=…05, SetInputValue=…0a)은 `Surface`를 **마지막**에 붙여 불변이고 테스트가 고정한다.
+wasm32(56)는 §5 함수 diff로 확인한다(아직 아님).
+
+**No-VDOM 사전 점검(N1–N4)**: 새 patch System은 전부 `Changed` 게이팅이고 값을 그대로 쓴다. 새 쓰기 메서드(`web.rs` 506–558)는 DOM의 현재 값을 읽지
+않는다(`get_attribute`/`classList.contains`/`text_content` 없음 — 구조 단언 테스트). **DOM을 읽는 새 메서드는 `adopt_element_children` 하나**
+(`web.rs` 561–575: `children()`, `text_content()`)이고 `apply_surface`는 이것을 부르지 않는다. D/E가 새 variant를 방출하는가: **아니오**
+(`no_measured_arm_emits_surface_writes`, 8 arm). `ElementSpec`은 `static`이며 비교·조정 알고리즘의 입력이 아니다(구조 단언: `list.rs`/`cond.rs`/
+`loom-flush-core`가 `SurfaceWrite`·`ElementSpec`을 참조하지 않음).
+
+**문서와 코드가 어긋난 곳 (§3 목록) 정정**: `lib.rs:205-208`(`set_text_content` doc의 "replaces whatever children it had")와 `:413-421`(`DetachToFragment` doc에
+제거된 R2 변형 `SetRowBindingTexts` doc의 앞부분이 문장 중간에서 이어 붙어 있던 것)을 7c 커밋에서 정정했다. `DomOps::set_attribute` doc의 "no `DomWrite`
+variant emits this"도 정정했다. 나머지 항목(lower.rs 모듈 문서, `compile_tsx_to_rust` 호출처, ir.rs 주석, 예제 목업 표시)은 그대로다.
+

@@ -442,6 +442,12 @@ RQ1 후보 C의 "고정 슬롯"(개수가 count-diff로 가변인 슬롯 entity)
   대상이다. 그 결과를 RQ1에 기록하고, 경계 사례가 있으면 여기에 판정례로 등재해야 한다.
 - 판정례 7·8의 "PatchTable"은 위 "반응성 파이프라인" 정정대로 현행 구현에서 제네릭 patch System +
   `DomWrite` 큐를 가리킨다. 판정 결론은 바뀌지 않는다.
+- **2026-10-26 판정례 후보 (바) 등재 — 미판정.** 질문: *resume 시점의 SSR DOM 상태 복구(`DomOps::adopt_children` /
+  7c의 `adopt_element_children`이 DOM에서 읽은 텍스트로 `Signal`과 리스트 `Signal<Vec<_>>`을 시드하는 것)가 N1의 "알고리즘 입력이
+  렌더 산출물이 아니다"에 해당하는가.* 쟁점: 읽은 값이 다음 reconcile의 "이전 값"이 되므로 "읽은 값을 비교 기준으로 시드하면 N1 위반"이라는
+  단서가 걸릴 수 있다. 그런데 기존 list resume 생성 코드(`crates/loom-compiler/src/codegen.rs`의 `adopt_children` 시드)가 이미 이 형태라서,
+  7c의 새 메서드만의 문제가 아니라 기존 resume 경로 전체의 문제다. 감으로 정하지 않는다(CLAUDE.md 1) — G0 재심사(C12)에서 병익님이 판정한다
+  (결정 B6). **판정 전까지 `adopt_element_children`은 제공만 하고 소비 codegen은 켜지 않는다.** (RQ1 G0 기록의 (가)(나)(다)(라)(마)와 별개 번호.)
 
 ### 부기 — 이 조문이 하지 않는 것
 
