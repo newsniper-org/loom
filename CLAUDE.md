@@ -71,7 +71,7 @@
   모델**은 Lean 4, `Vec<DomWrite>`처럼 **배포되는 Rust 코드 자체**에 계약을 걸 수 있는 대상은 Verus
   (RQ5 후보 #4, 2026-07-28 병익님 제안). 도구는 대상의 성질로 고른다. `cargo verus verify`는 vstd
   불일치로 동작하지 않으므로 `verus --crate-type=lib crates/loom-flush-core/src/lib.rs`와
-  `verus formal-verification/verus/flush_order.rs`를 쓴다(`formal-verification/verus/README.md`).
+  `verus formal-verification/verus/flush_order.rs`를 쓴다(`formal-verification/verus/README.md`). **2026-10-26**: Verus 0.2026.10.18 이후 기본 rlimit로는 `chain_unlink_denotes_remove`가 자원 한도를 넘는다 — 두 명령 모두 `--rlimit 60`을 붙이면 90/28 verified로 통과한다(README 맨 끝).
 
 ## 진행 중 발견한 것은 문서에 반영
 

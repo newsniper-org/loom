@@ -1348,3 +1348,21 @@ cargo run --release -p loom-track-n -- --cases 40          → 6 arm 전부 통�
 `match_by_key`(radix 병합)는 **검증 대상이 아니다** — 그것은 Rust 테스트(무작위 동치 3×4 조합 + 변이 점검)와
 `match-keys-exhaustive.py`의 모형 전수 조사(sweep 6)로만 뒷받침된다. 모형과 Rust 소스 사이의 대응은 "한 줄씩" 읽어서 맞춘 것이지
 기계가 검사한 것이 아니다.
+
+## 2026-10-26 — Verus 갱신 뒤 기본 rlimit로는 검증이 깨진다: `--rlimit 60`을 붙인다
+
+시스템 패키지 `verus-singular`가 2026-10-20 14:56에 `0.2026.07.27.31579f0-2` → `0.2026.10.18.7d82994-1`로 갱신됐다(`/var/log/pacman.log`). 같은 소스
+(`crates/loom-flush-core/src/lib.rs`, 7c 커밋 2779566 기준; 증명 로직은 G0R1 C10에서 바꾼 주석 1건 외 무변경)를 새 버전으로 돌리면:
+
+| 명령 | 결과 |
+|---|---|
+| `verus --crate-type=lib crates/loom-flush-core/src/lib.rs` (기본 rlimit) | **실패**: `chain_unlink_denotes_remove`(lib.rs:438) "function body check: Resource limit (rlimit) exceeded" |
+| 같은 명령 + `--rlimit 20` | 89 verified, **1 errors** |
+| 같은 명령 + `--rlimit 60` | **90 verified, 0 errors** (이전 기준선과 같음) |
+| `verus --rlimit 60 formal-verification/verus/flush_order.rs` | **28 verified, 0 errors** (이전과 같음) |
+
+해석: 위 "검증이 rlimit 경계에 붙어 있다" 절들이 이미 경고한 취약성이 도구 버전 갱신으로 다시 드러난 것이다. 증명이 틀려진 것이 아니라 새 Z3/Verus 조합에서
+한 증명(`chain_unlink_denotes_remove`)이 더 많은 자원을 쓴다. **`--rlimit 60`은 검증 기준을 느슨하게 하는 것이 아니라 자원 한도를 올리는 것이다** — 증명 의무는
+같고, 통과했다는 사실이 같은 뜻이다(`assume`/`external_body` 증가 없음). 앞으로 이 둘을 돌릴 때는 `--rlimit 60`을 붙이고 Verus 버전을 함께 기록한다.
+프로토콜 개정 #12 규칙부의 "Verus 재실행 기록(90/28)"은 갱신 이전 버전(0.2026.07.27) 기준이며, 동결 기록에는 갱신 이후 버전과 rlimit를 적는다.
+

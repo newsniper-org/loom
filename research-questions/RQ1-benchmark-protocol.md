@@ -2499,3 +2499,63 @@ RQ6 픽스처(K 전용 — 바이트 비교, 다르면 v23 RQ6 재측정에 포�
 HTML과 복합 row의 `adopt_element_children`, `<textarea>`/`<select>`의 `set_input_value`) · 혼합 텍스트 SSR 마커 규약(결정 B2: 주석 마커, v23 동결 전 확정) · R34 기존 arm 집계(결정 B1: 미룸) ·
 `adopt_element_children`의 N1 판정(결정 B6: G0 재심사 C12, docs/03 판정례 후보 (바)) · G0 재심사(C12)·동결(C13)·P1/P2 sha256. 이 시점의 어떤 wasm도 동결 산출물이 아니다.
 
+#### 개정 #12 후속 2 (2026-10-26, **v23 수집 전**) — 7c 함수 단위 diff 결과 · 사전 선언 규칙 (a) 발동 · 환경 드리프트 발견 3건
+
+**이 절은 후속 1이 "남은 것"으로 둔 함수 단위 diff의 결과와, 그 작업 중 발견한 환경 변화를 기록한다.** 성능 데이터는 여전히 한 건도 없다. 기록: `research-questions/data/phase7c-func-diff-2026-10-26.json`(요약),
+`…-B0-B1-full-2026-10-26.json`(B0→B1 전 diff), 도구 `tools/wasm-func-diff/`(커밋과 함께).
+
+**방법과 비공허 장치**
+- 측정 wasm은 이름 구역이 없어(`wasm-pack --release`) 함수 신원을 못 잡는다. `tools/wasm-func-diff/build-named.sh`가 같은 파이프라인(cargo → wasm-bindgen 0.2.126 → wasm-opt -O)에서 이름 구역만
+  남겨 다시 만든다. **검증**: B0·B1·A(재빌드) 세 산출물 모두 이름 구역을 뺀 **11개 구역 전부의 바이트가 `wasm-pack --release` 산출물과 같다** — 이름 달린 사본이 측정되는 프로그램 그 자체다.
+  (설계 §5(b)가 걱정한 "wasm-opt 이전 산출물로는 측정 wasm을 보증할 수 없다"는 이 방법으로 해소됐다. `wasm-pack --profiling`은 이름을 남기지 못했다 — 산출물이 `--release`와 바이트 동일.)
+- 정규화: 인덱스 주석, 타입 번호→시그니처, 데이터 세그먼트 주소 범위의 상수(`i32.const`·`offset=`·`i64.const` 묶음) 마스킹, 크레이트 식별 해시 제거, **함수 포인터(테이블 인덱스)의 이동 용서**(텍스트가 다른 줄 쌍이
+  모두 `i32.const X/Y`이고 두 빌드의 함수 테이블에서 같은 함수를 가리킬 때만; 같은 텍스트는 이 경로를 타지 않는다).
+- 공허한 확인 방지: 함수 수를 `wasm-tools objdump`의 code 구역 개수와 대조(첫 판은 한 줄 함수 3개가 뒤 함수를 삼켜 2221/2248로 읽었고, 이 대조로 2224/2251임을 알아 고쳤다) · 동일+변경+삭제 = A 전체 ·
+  동일+변경+추가 = B 전체 · `LoomApp::tick` 단형화가 변경 목록에 있어야 한다는 존재 단언(통과) · 이름 구역 부재 시 중단.
+
+**산출물 (rustc 1.99.1, wasm-pack 0.14.0, wasm-bindgen 0.2.126, wasm-opt version_117; 전부 `wasm-pack build crates/loom-bench --target web --release`)**
+
+| | 소스 | sha256(wasm) | 바이트 | 코드 | 데이터 | 함수 |
+|---|---|---|---|---|---|---|
+| A 재빌드 | a55ba87 | 3e173297… | 928,556 | 839,982 | 74,114 | 2,085 |
+| B0 | 0500448 | 139d0935… | 996,055 | 906,532 | 77,349 | 2,224 |
+| B1 | 2779566 | eace5d64… | 1,017,265 | 926,361 | 78,382 | 2,251 |
+
+(전체 sha256과 JS 글루 sha256은 데이터 파일.) **7c는 측정 wasm에 코드 19,829바이트(+2.2%)를 더한다** — 쓰이지 않는 `apply_surface`·신규 `BrowserDom` 메서드의 단형화와 web-sys import 때문이다. 이 크기는 M3(WASM 크기)에
+**전 후보에 같이** 얹히고, `loom-runtime`을 쓰는 RQ6 픽스처의 청크 크기에도 같은 방향으로 영향을 준다 — v23의 RQ6 재측정에서 해석에 넣는다.
+
+**결과 — B0 → B1 (7c의 효과)**: 함수 B0 2,224 / B1 2,251 · 동일 2,106 · **변경 108**(상수만 75, 구조 33) · 추가 37 · 삭제 10. 구조 변경 33건의 분포: `loom_runtime` 24 · `loom_bench` 4 · 그 밖(bevy_ecs/std/dlmalloc 등) 5.
+- **허용 목록(설계 §5(b)) 안**: `LoomApp::tick` 단형화 둘(1,404→2,692줄 / 1,293→2,484줄: 새 arm 블록), `Candidate::set_and_tick` 둘(+2줄), `drop_in_place`/`IntoIter<DomWrite>::drop`/`ComponentDescriptor::drop_ptr<PendingDomWrites>`(새 variant의 drop), 추가 함수(`apply_surface` 등).
+- **허용 목록 밖 — 사전 선언 규칙 (a)가 발동한다**: ① **K 리스트 reconcile**의 `FunctionSystem::run_unsafe` 둘(String/ItemId; 369→368줄, 스택 프레임 정리·레지스터 스필 차이), ② `patch_row_binding_system`(358→322줄), ③ `cond_reconcile_b/f/f_i/f_ii/f_iii_system`·
+  `bump_version_system`·`derive1_*`·`patch_text_f_*`(cond.rs 전반), ④ **`BrowserDom`의 `create_element`(352→116줄)·`set_attribute`(시그니처 4→6 매개변수)·`set_text_content`·`set_visible`** — 전 arm이 쓰는 DOM 브리지, ⑤ `Schedule::run`(19,390→19,180줄).
+  변경 내용은 **표본**(`create_element`·`set_attribute`·`patch_row_binding_system`·K `run_unsafe`)을 읽었고 옵티마이저 수준으로 보인다: 웹 sys 래퍼 호출 형태(`set_class_name` 호출 경로, `set_attribute`의 인자 수), 인라인된 `QueryIterationCursor::init`의 유무,
+  스택 프레임·로컬 수 — 인라이닝 결정의 변화로 **추정**하며 원인(예: 신규 메서드가 `alloc_under`의 호출처를 늘린 것)을 확인하지는 않았다. **33건 전수를 읽지는 않았다.** 소스 쪽 사실은 확정이다: 7c 코드 커밋이 건드린 소스는 `counting.rs`·`lib.rs`·`web.rs`·`surface.rs`·
+  테스트·`loom-bench`의 `cfg(test)` 구역뿐이고(`git diff 0500448 2779566 --stat`), K·C·D·E reconcile·`cond.rs`·`list.rs`의 소스는 한 줄도 안 바뀌었다. D·E reconcile 단형화는 아예 동일이다. 그러나 **측정되는 기계어는 실제로 달라졌다** — "K·C가 자연 대조군"이라는 서술은 함수 수준에서 성립하지 않는다.
+  - `list_reconcile_c/d/e`·`emit_plan`·`DefaultRow::emit`·`place_in_order`·`plan_writes*`·`loom-flush-core` 함수는 전부 **동일**이다.
+
+**결과 — A(a55ba87) → B0 (G0R1의 효과)**: 함수 2,085 → 2,224 · 동일 1,011 · 변경 **924**(상수만 51) · 추가 289 · 삭제 150. G0R1은 `list.rs` 공유 경로를 다시 짰으므로(`SlotValue`, `RowValue`, 매처, 새 번들) 변경이 많은 것이 정상이다. 다만 이것은 같은 소스를
+현재 툴체인으로 다시 빌드한 A와의 비교이고(아래 발견 1), v22 측정 산출물 자체와의 비교가 아니다.
+
+**사전 선언 규칙 (a)의 발동과 그 범위의 명확화 (병익님 확인 요청)**
+- 규칙 (a)의 조건("허용 목록 밖의 변경이 하나라도")이 위 ①–⑤로 충족됐다. 후속 1의 문언은 "(c)의 드리프트 관찰을 하지 않고 v23 단독 판정만 한다"인데, (c)는 (i) M2 결정성 (ii) 시간 드리프트 (iii) 귀속 대조 셋이다.
+  설계 원문(§5(a))은 (c) 전체를 건너뛰는 것으로 읽힌다. **그러나 (iii)은 병익님 결정 B4(2026-10-20)로 등록된 항목이고, 이 대조는 "K·C가 자연 대조군이다"라는 전제에 의존하지 않는다** — P1·P2를 직접 교차 측정하는 것이 바로
+  전제의 성립 여부를 경험적으로 묻는 방법이다. 그래서 이 절은 **(a)가 건너뛰는 것을 (ii)로 한정**하고 (i)·(iii)은 그대로 수행하는 것으로 명확화한다. 이 명확화는 **데이터 수집 전**에, 함수 diff 결과를 본 뒤에 하는 것이므로 숨기지 않고
+  적는다: 결과를 본 뒤의 해석이라는 점, 그리고 설계 원문의 더 좁은 읽기가 가능하다는 점. 병익님이 설계 원문대로 (iii)도 건너뛰라고 하시면 이 절을 정정한다(§11-5: 정정 절 추가).
+- (ii)를 하지 않는 이유가 이제 구체적이다: v22→v23의 K·C 이동에는 G0R1의 공유 코드 변경(924함수), 7c의 기계어 변경(108함수), 툴체인 변경(발견 1)이 섞여 분해할 수 없다.
+- 7c가 K·C 시간에 영향이 있는지는 (iii) 하나만이 답한다. 그 판정 규칙은 후속 1에 등재돼 있고 바뀌지 않았다.
+
+**발견 1 — 툴체인이 바뀌었다: rustc 1.98.1 → 1.99.1.** 개정 #11·#12가 기록한 rustc 1.98.1은 더 이상 설치돼 있지 않다(`stable`이 갱신; `rustup toolchain list`에 1.98.x 없음). 결과: ① **v22 측정 산출물 `demo/pkg-bench`(sha256 fb81633a…)는 a55ba87에서 현재 툴체인으로 재현되지 않는다**
+(재빌드 3e173297…). 개정 #11 적용 조건 2("재현성 전제")가 지금은 성립하지 않는다. 산출물 파일 자체는 디스크에 있다(`demo/pkg-bench`는 `.gitignore`의 `/demo/pkg-bench`라 저장소에는 없다 — 이 사실도 기록한다). ② v23은 새 기반이라 영향이 없지만,
+**동결 기록에 툴체인을 정확히 적고 그 툴체인으로만 빌드해야 한다.** ③ 아래 발견 2 때문에 "어떤 이름의 툴체인으로 빌드하는가"도 동결 항목이다.
+
+**발견 2 — 툴체인 디렉터리 이름이 wasm 바이트에 박힌다.** `rust-toolchain.toml`로 `channel = "1.99.1"`을 고정하면(툴체인 경로가 `stable-…` → `1.99.1-…`) **같은 소스·같은 컴파일러에서도 wasm이 달라진다**(B1: eace5d64… → 2b78f5d0…; 코드 686바이트·
+데이터 16,737바이트, JS 글루는 동일). std의 panic 위치 문자열이 툴체인 경로를 담기 때문이다(같은 계열: 주석·의존성·OUT_DIR 경로가 바이트를 바꾼다는 기존 교훈). 고정 파일을 지워 `stable`로 돌아가자 eace5d64…가 정확히 재현됐다. **결정이 필요한 항목**:
+동결에서 (가) `rust-toolchain.toml`로 버전을 고정(자동 갱신을 막는다; 이후 모든 빌드가 `1.99.1-…` 경로) 하거나 (나) `stable`을 두고 갱신을 수동으로 관리(재현성이 사람의 주의에 달림). 이 절은 (가)를 권고하고, **동결(C13) 시점에 결정·기록**한다.
+그때까지 `rust-toolchain.toml`을 저장소에 넣지 않았다 — 넣으면 지금까지의 B0/B1 증거와 바이트 비교가 안 된다.
+
+**발견 3 — Verus가 갱신돼 기본 rlimit로는 검증이 깨진다.** `verus-singular`가 2026-10-20 14:56에 `0.2026.10.18.7d82994`로 갱신됐다(내 C10 재실행은 그 이전 버전 `0.2026.07.27.31579f0-2` 기준 90/28). 새 버전에서 기본 rlimit로는 `chain_unlink_denotes_remove`가 초과하고,
+`--rlimit 60`을 주면 90 verified / 28 verified로 이전과 같다(`loom-flush-core`는 fcdb894 이후 무변경). 상세와 표: `formal-verification/verus/README.md` 맨 끝. 동결 기록에는 Verus 버전과 `--rlimit 60`을 적는다. 증명 자체는 깨지지 않았으나, "Verus 검증 통과"라는 서술이
+**도구 버전과 자원 한도에 의존한다**는 점이 한 번 더 드러났다.
+
+**공평성 영향 진술**: 중립에서 방향 불명. 7c의 기계어 변경은 전 arm에 같은 기반 변경이나, `BrowserDom::create_element` 같은 공유 DOM 브리지의 호출 비용이 달라졌으므로 element 생성이 많은 arm(K의 전량 재생성)과 적은 arm(D·E의 retain)에 미치는 영향의 크기는 알 수 없다. (iii)이 이를 직접 묻는다.
+
