@@ -99,7 +99,9 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                 {
                     // G0R1(C6): 표시 텍스트는 실제로 write할 때만 만든다(이전에는 공통 슬롯마다 `to_string`).
                     let new_text = items.0[i].to_string();
-                    let old_text = slot_value.0.to_string();
+                    // 2026-10-30(G0 재심사 C12): 옛 텍스트는 R3 브랜치 전환 판정(`row_variant_is_a`)에만 쓰인다. 이전에는 모든 write마다
+                    // 만들어 `to_string`이 write당 2번이었다(C 불리 비대칭) — R3 셀에서만 만든다.
+                    let old_text = if variant_mode.0 { Some(slot_value.0.to_string()) } else { None };
                     slot_value.0 = items.0[i].clone();
                     pending.0.push(DomWrite::SetText {
                         target: target.0,
@@ -136,7 +138,7 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                         };
                         R::revalue(site, &mut out, entity, owned_slice, &new_text);
                     }
-                    if variant_mode.0 {
+                    if let Some(old_text) = old_text {
                         let was_a = crate::row_variant_is_a(&old_text);
                         let now_a = crate::row_variant_is_a(&new_text);
                         if was_a != now_a {
@@ -198,6 +200,14 @@ fn c_body<T, R: crate::RowSpawner, F: bevy_ecs::query::QueryFilter>(
                     // 꼬리 성장은 항상 append이므로 앵커 없음.
                     R::emit(site, &mut out, entity, anchor.0, &text, None);
                 }
+            }
+        } else if new_len == 0 && old_len > 0 {
+            // 2026-10-30(G0 재심사 C12): §2.4 [C] A-보강 2 — 전량 삭제는 `clear_children` fast path(행마다 `RemoveNode` 아님).
+            // 이전 구현은 이 분기가 없어 W9에서 C가 자기 최선형이 아니라 K보다 약한 형태로 측정됐다(§3.4 W9 "K, C (fast path)").
+            // K의 Clear 분기와 같은 가정: 이 앵커의 자식은 리스트 행뿐이다. entity는 아래에서 despawn(linked_spawn 연쇄).
+            pending.0.push(DomWrite::ClearChildren { parent: anchor.0 });
+            for stale in std::mem::take(&mut rows.0) {
+                commands.entity(stale).despawn();
             }
         } else if new_len < old_len {
             for stale in rows.0.split_off(new_len) {

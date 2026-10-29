@@ -2190,3 +2190,84 @@ list.rs:665-668의 OrderKeyMembers "비순서" 주석은 실제 동작과 다르
 4. **D 무조건**: retained 행의 `RowValue<T>`에 무조건 write → `Changed<RowValue<T>>` 게이팅 patch System이 `SetText`. 직접 발행 폐기.
 5. **충돌 정책**: "충돌 시 무감지 상태 오염"은 값 채널 `Item` 동등 검증으로 해소(128비트 이월 불필요). debug 충돌 계수기는 계측용이며 assert가 아니다.
 6. **D의 "이중 저장 약 2배"**: G0R1에서 실재 비용이 된다(String 축은 128B heap 사본).
+
+
+---
+
+## G0 재심사 — G0R1 + 7c 최종 기반 (2026-10-30) — **병익님 확인 대기**
+
+> **상태**: 심사는 실행됐고 조문 적용 결과는 아래 라벨이다. 라벨 중 둘은 **경계 사례 판정례(병익님 몫)에 달려 있다**. 이 기록은 판정·채택 상태를 바꾸지 않는다. 앞선 "G0 — D·E No-VDOM 구현 재심사 기록"(2026-10-17)은 HEAD b30251f의 이전 구현에 대한 것이고 지우지 않는다 — 이 절은 그 기각 사유가 새 변형에서 해소됐는지와 새 위반이 없는지를 본다.
+
+**심사 대상**: 브랜치 `g0-repair` HEAD 1709597(G0R1 C0–C10·C2 + 7c) — 심사 중 C 수리 둘이 더해졌다(아래 "심사 중 발견·수리"). 방법: docs/03 "No-VDOM 판별 기준"(P1–P3, N1–N5)을 조문 문언대로, 독립 리뷰 4건(D·D-LIS / D 무조건 / E·E-LIS / 대조군·C 적대 교차 리뷰)을 격리 worktree에서 받았다. 리뷰어에게는 이 저장소의 결론을 주지 않고 조문과 코드 위치만 줬다. **v21/v22 성능 데이터는 근거로 쓰지 않았다.** 리뷰어는 읽기 전용이고 테스트를 거의 돌리지 않았다 — 아래 "제가 직접 재확인한 것"만 심사자(저)가 코드를 열어 확인했다.
+
+### 변형 축 (N5 — 이 판정은 아래 변형에만 적용된다)
+
+| 축 | D / D-LIS | E / E-LIS |
+|---|---|---|
+| 순서 저장 | 컨트롤러 `ListRows(Vec<Entity>)` + 행마다 `RowKey(u64)`·`RowValue<T>` | 행마다 `OrderedKey(u64)`·`OrderKey`·`RowValue<T>`. **단 reconcile 끝에 `members.0`에 목표 순서(`plan.target_ids`)가 대입되고 다음 갱신이 `OrderKey`로 `sort_by_key`해 옛 순서를 되살린다 — "순서는 per-entity 데이터"는 코드상 명목이고 실제 순서 저장은 D처럼 컨트롤러 Vec이다**(list.rs:707 doc의 2026-10-20 정정이 이미 적음) |
+| key 표현 | 아이템 전체의 고정 해시 `u64`(`row_key`, `T: Hash` 제네릭 + `FixedHasher`) | 같음 |
+| 매칭 | `match_by_key`: 안정 LSD radix + 병합 조인, 해시 테이블 없음, 충돌 run만 `(Item, idx)` 정렬 | 같음 |
+| 정체성 확정 | 충돌 검증에 값 채널 `Item` 동등/순서 비교 | 같음 |
+| 이동 최소화 | D `plan_from_selection`, D-LIS `lis_keep` | E `plan_from_selection`, E-LIS `plan_lis_from_selection_auto` |
+| retain 쓰기 | Conditional: 출력 0 / Unconditional: `RowValue` write → `Changed` → `patch_row_value_system`의 `SetText` | 쓰기 변형 축 없음 |
+| prefix/suffix 절단 | **없음**(아래 발견 1) | 해당 없음([E] 체크리스트에 없음) |
+| OrderKey 방식 | — | 0..n-1 밀집 재태깅(fractional·Relabel·Move patch System 없음); `bypass_change_detection` 부재 |
+
+### 조항별 결과 (리뷰 4건의 일치된 독해)
+
+- **P1 충족.** 비교 지점 전수: u64 key(범주 i), 충돌 run의 `Item` 비교(ii — 사용자 데이터 값 자체), 인덱스·길이(iv), `OrderKey` 정렬(iii). radix 패스는 비교자가 없다. `String` 비교는 사라졌다. 첫 G0의 P1 기각 사유 해소. (남는 독해: 전체 해시를 "컴파일타임 고정 key_op"로 볼지 — 후보 (라).)
+- **P2 충족.** 심사 단위에 재귀·워크리스트가 없다. 출력은 insert/delete/move뿐. Conditional의 retain 출력 0. Unconditional의 retain은 값 채널 write이고 `SetText`는 단위 밖 patch System이 낸다 — 첫 G0의 P2-(iii) 기각 사유는 구조적으로 해소. (남는 독해: 후보 (나), (가)의 읽기 부분.)
+- **P3 충족.** 매칭 입력은 flat 슬라이스. 무충돌 경로 O(n)(비교 0회 radix 8패스 + 병합 조인, `Item` 비교는 run마다 `|옛|-1+|새|`회 — 역순 무충돌에서 정확히 n), 충돌 run은 O(r log r)·Σr ≤ N이라 최악 O(N log N). 구조 단언 테스트 있음(`new_matcher_is_linear_*`, `g0r1_cost_path.rs`, 상수 해시 n log n 상한). 첫 G0의 Θ(n·m) 기각 사유 해소.
+- **N1·N2·N4 무저촉, N3**: 진입 `Changed<Signal<Vec<T>>>` 게이팅. 단 `patch_row_value_system`은 게이트 없이 같은 `T`의 모든 `RowValue`를 `Changed`로 훑는다(판정례 9(다)는 이 형태를 `Res::is_changed`로 막았다) — 기존 `patch_text_system` 등과 같은 형태라 일관 적용하면 통과, 9(다)로 엄격히 읽으면 걸린다(리뷰어 확신도 하) → 후보 (다).
+- **bypass-change-detection**: 여전히 **대상 부재**(`bypass_change_detection`·Relabel·`Changed<OrderKey>` 소비자 0건). 통과가 아니라 부재이며, 도입 시 별도 심사 의무 유지. E의 이중 발행(`Reposition` + `OrderKey` write)은 "OrderKey 쓰기에 소비자가 없다"에 기대 있다 — 소비자가 생기면 재심사.
+
+### 라벨 (잠정 — 병익님 판정례 확인 전)
+
+| 후보 | 라벨 | 조건 |
+|---|---|---|
+| D, D-LIS (Conditional) | **통과**(자격 획득, 채택 아님) | 후보 (가)(라) 허용 시 |
+| D, D-LIS (Unconditional) | **통과** | 위 + **후보 (나) 허용 시**(새로 만든 `patch_row_value_system`을 "기존 Changed 파이프라인"으로 보아 단위 밖에 둠). 불허하면 `set_text_content`의 자식 순회가 단위에 합산돼 P2가 첫 G0와 같은 형태로 되살아난다 |
+| E, E-LIS | **통과**(자격 획득, 채택 아님) | 후보 (가)(라) 허용 시 |
+
+"성능과 무관한 자격 판정"이며 **"VDOM이다/아니다"의 일반 판정이 아니다**. §2.4 체크리스트는 별도 관문이다(아래 발견 1).
+
+### 심사 중 발견 (리뷰어 보고 → 제가 코드에서 재확인한 것은 ✔)
+
+1. **✔ [D] 체크리스트의 "prefix/suffix 절단"이 D·D-LIS 구현에 없다**(`list.rs`·`list_key.rs`·`loom-flush-core`에 해당 코드 0건; flush-core의 `already_adjacent` 스킵은 op 방출만 줄인다). W4(head-insert)·W5·W11처럼 공통 prefix/suffix가 긴 셀에서 D는 매번 전 행을 radix 매칭한다. 이것은 No-VDOM이 아니라 **§2.4 [D] 최선형 미달**이고 첫 G0 때부터 있던 결손이다(첫 G0는 이 항목을 점검하지 않았다). **수리는 단순하지 않다**: prefix/suffix를 위치로 짝짓는 것은 중복 key에서 first-match-wins와 다른 `take_old`를 낼 수 있어(전역 첫 일치와 중간 구간 첫 일치가 갈린다) 새 변형 + 동치 재검증(match-keys-exhaustive 모형)이 필요하다. → **병익님 결정**(아래).
+2. **✔ C: `clear_children` fast path 부재(§2.4 [C] A-보강 2, §3.4 W9 "K, C (fast path)")** — 전량 삭제가 행별 `RemoveNode`였다. **수리함**(아래).
+3. **✔ C: write마다 옛 텍스트(`old_text`)까지 `to_string`** — R3 브랜치 전환 판정에만 쓰이는 값인데 모든 write에서 만들어 write당 2번이었다(개정 #12 "C 조건부의 `to_string` n회 제거" 진술이 R1에서 부분적으로만 성립). **수리함**(R3 셀에서만 만든다).
+4. **✔ `g0r1_cost_path.rs`는 C를 다루지 않는다**(D·D-LIS·E·E-LIS 매크로 4건뿐) — 개정 #12 적용 기록 표의 "C6·C7: 측정 경로 Item 비교 == n"은 D/E에 대한 것이고 C의 비용 성질은 골든(write 열)으로만 고정돼 있었다. **`tests/g0r1_c_best_form.rs`로 C의 `to_string` 횟수(write당 정확히 1, 변경 없으면 0)를 고정**했다(수리를 되돌리면 실패함을 확인).
+5. (리뷰어, 미재확인) K: `KPrevItems` 갱신이 변경마다 `extend_from_slice`로 n개를 clone한다(lib.rs:1296) — 명세상 필요한 직전 시퀀스 보관이지만 heap 아이템 축에서 K 불리 요인이고 문서에 기록이 없었다. 여기 기록한다.
+6. (리뷰어 추정) D 무조건의 patch 구간이 `systems_ms`에서 `row_patch_ms`로 옮겨 가므로 `systems_ms`를 직접 읽는 판정(E 기각 (ii)의 "매칭 비용")이 D 무조건을 읽는지에 따라 D 유리로 기울 수 있다. 개정 #12 선행 조건의 **판정기 사전 점검** 항목이다 — 아직 안 했다.
+7. **A/A 귀속 대조(B4)는 K·C만 대상이다.** D·E의 7c 영향은 대조가 없다. 규칙 (a) 발동으로 K·C가 자연 대조군 지위를 잃었고 D·E의 `LoomApp::tick`·DOM 브리지 경로도 같은 기계어 변경을 받으므로, D(와 E)를 A/A에 추가할지는 **병익님 결정**.
+8. (리뷰어) `row_key`의 해시(foldhash)는 버전·플랫폼 간 안정성이 없다 — P1과 무관하나 resume 직렬화에 key를 싣게 될 때 선결 과제.
+9. (리뷰어) UNCOND 변형과 `add_row_value_patch` 등록의 결합이 타입이 아니라 하네스 관례다(UNCOND인데 patch가 없으면 조용히 무출력). loom-bench 단위 테스트가 8 인스턴스에서 등록을 확인하나 `Conditional`에 patch가 걸려도 무해하다는 점 포함 구조 단언은 더 필요하면 추가.
+
+### 심사 중 수리 (C 최선형 — 명세 준수 수리, 성능 데이터 0건 시점)
+
+`crates/loom-runtime/src/list.rs`의 `c_body`: (a) 새 길이 0이면 `ClearChildren` 1건 + 행 despawn(K의 Clear 분기와 같은 가정: 앵커의 자식은 행뿐), (b) `old_text`는 R3 셀에서만 계산. 테스트 `g0r1_c_best_form.rs` 2건, 골든 `list-candidate-writes-axes.txt` 갱신(이전본 `.pre-c12.txt` 보존; C 5개 절의 전량 삭제 틱만 `RemoveNode`×k → `ClearChildren`으로 바뀜 — `c12_changes_only_the_full_clear_of_c_sections`가 그 차이만 허용). 프로토콜 "개정 #12 후속 3" 참고.
+
+### 판정례 등재 후보 (docs/03, N5-(ii) — **아직 등재 안 함**, 병익님 판정 대기)
+
+- **(가)** 값 채널 `Item`을 **정체성 확정(충돌 검증)**에 읽는 것이 P2·N1의 "retain의 값 채널 입력/사용자 데이터"에 드는가. 리뷰어 의견: 통과(0.7). *2026-10-20 병익님: 허용 의향.*
+- **(나)** D 무조건을 위해 **새로 만든** patch System을 "기존 `Changed` 파이프라인"으로 보아 심사 단위 밖에 둘 수 있는가. 리뷰어 의견: 단위 밖(0.55 — Unconditional의 통과를 좌우).
+- **(다)** 게이트 없는 `Changed<RowValue<T>>` 스캔을 N3에서 기록만 하고 G0 사안으로 보지 않는가(판정례 9(다)와의 긴장). 리뷰어 의견: 통과하되 문언 정리 필요(0.5).
+- **(라)** 아이템 전체 해시(`T: Hash` + `FixedHasher`)가 P1-(i)의 "컴파일타임 고정 key_op"에 드는가. 리뷰어 의견: 든다(0.8).
+- **(마)** 해시맵형이 radix를 1.10배 넘게 이기는 경우 — **발동하지 않았다**(마이크로벤치 8조건 모두 radix 우세).
+- **(바)** resume 시점 SSR DOM 상태 복구(`adopt_children`/`adopt_element_children`)가 N1에 해당하는가 — docs/03에 이미 등재(미판정, 결정 B6).
+- 첫 G0의 (d) 삭제 대상 행 루트 `DomTarget` 읽기 + `RemoveNode` 직접 발행(K의 lib.rs에도 같은 패턴) — 미결인 채 남음. 리뷰어 의견: 경계 handle이라 내부 접근 아님(0.7).
+- 첫 G0의 (a)(우발적 이차 매칭)는 이번 수리로 실질 해소. (b)(c)(e)(f)(g)(h)는 이번 변경과 무관하거나 위 후보에 흡수.
+
+### 병익님 결정이 필요한 것
+
+1. **판정례 (가)(나)(다)(라)와 (d)** — 위 라벨이 이 판정에 달려 있다. (가)는 이미 허용 의향. 가장 갈리는 것은 (나)와 (다).
+2. **D의 prefix/suffix 절단 (발견 1)**: (A) 구현한다 — 새 변형(동치 재검증 + 이 재심사 다시) / (B) 구현하지 않고 §2.4 [D]·RQ1 D 항목에서 이 요소를 명세 변경으로 뺀다(§11-1(a), 데이터 수집 전이라 가능) — D가 약해지는 W4·W5·W11을 결과 해석에 명기 / (C) 구현하되 매칭 의미를 "중복 key는 전역 first-match-wins"로 두고 절단은 key가 모두 고유한 prefix/suffix에만 적용(중복 key가 있으면 건너뜀). 권고: **(B) 또는 (C)** — (A)의 재검증 부담이 크고 이번 G0R1의 결론(radix가 해시맵보다 빠름)은 절단 없이도 성립했다. 단 (B)는 D 불리 영역을 사전에 인정하는 것이므로 공평성 진술에 방향을 적는다.
+3. **A/A 대상에 D(·E)를 추가할지** (발견 7). 권고: D 추가(비용 작음 — 같은 세션 교차 셀 몇 개).
+4. 위 C 수리 둘의 승인(명세 준수 수리라 개정 #12 후속 3으로 등재했으나 병익님 확인 요청).
+
+### 이 기록이 정하지 **않는** 것
+G1 판정 · 어느 후보의 채택 · §9 성능 판정 · 판정례의 최종 등재 · 트랙 T(구 기반 동결, 변경 없음).
+
+### 한계
+리뷰어 4건은 읽기 전용이고 `list_key`·`g0r1_*` 테스트를 대부분 직접 돌리지 않았다(제가 전체 테스트를 돌려 통과를 확인했다). flush-core의 `plan_*`·`lis_keep`은 첫 G0 이후 주석 외 무변경이라 재심사하지 않았다(Verus 90/28이 그 성질을 지킨다). `web.rs` 적용부(`set_text_content`)의 노드 순회는 판정례 9(가)가 다루지 않은 채로 남는다. 리뷰어 보고 중 file:line은 위에서 ✔ 표시한 것만 제가 열어 확인했다.
+

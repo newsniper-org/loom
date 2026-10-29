@@ -1,0 +1,1258 @@
+======== C R1 ========
+--- tick 0 (4 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+SpawnRow(e1, NodeHandle(0), li, "b", before=None)
+SpawnRow(e2, NodeHandle(0), li, "c", before=None)
+SpawnRow(e3, NodeHandle(0), li, "d", before=None)
+--- tick 1 (1 writes) ---
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (2 writes) ---
+SetText { target: NodeHandle(100), text: "b" }
+SetText { target: NodeHandle(101), text: "a" }
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(101))
+--- tick 5 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "x", before=None)
+SpawnRow(e6, NodeHandle(0), li, "y", before=None)
+--- tick 6 (0 writes) ---
+======== K R1 ========
+--- tick 0 (5 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+SpawnRow(e1, NodeHandle(0), li, "b", before=None)
+SpawnRow(e2, NodeHandle(0), li, "c", before=None)
+SpawnRow(e3, NodeHandle(0), li, "d", before=None)
+--- tick 1 (1 writes) ---
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (3 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e5, NodeHandle(0), li, "b", before=None)
+SpawnRow(e6, NodeHandle(0), li, "a", before=None)
+--- tick 4 (1 writes) ---
+ClearChildren(NodeHandle(0))
+--- tick 5 (2 writes) ---
+SpawnRow(e7, NodeHandle(0), li, "x", before=None)
+SpawnRow(e8, NodeHandle(0), li, "y", before=None)
+--- tick 6 (0 writes) ---
+======== D R1 ========
+--- tick 0 (4 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "a", before=e2)
+--- tick 1 (1 writes) ---
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e3, before=None)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "y", before=None)
+SpawnRow(e6, NodeHandle(0), li, "x", before=e5)
+--- tick 6 (0 writes) ---
+======== D-LIS R1 ========
+--- tick 0 (4 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "a", before=e2)
+--- tick 1 (1 writes) ---
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e2, before=e3)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "y", before=None)
+SpawnRow(e6, NodeHandle(0), li, "x", before=e5)
+--- tick 6 (0 writes) ---
+======== E R1 ========
+--- tick 0 (4 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "a", before=e2)
+--- tick 1 (1 writes) ---
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e3, before=None)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "y", before=None)
+SpawnRow(e6, NodeHandle(0), li, "x", before=e5)
+--- tick 6 (0 writes) ---
+======== E-LIS R1 ========
+--- tick 0 (4 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "a", before=e2)
+--- tick 1 (1 writes) ---
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e2, before=e3)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "y", before=None)
+SpawnRow(e6, NodeHandle(0), li, "x", before=e5)
+--- tick 6 (0 writes) ---
+======== C R2 ========
+--- tick 0 (38 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+SpawnElement(e1, parent=e0, span, class=None, loom_id=None, text=Some("a-bind1"))
+SpawnElement(e2, parent=e0, span, class=None, loom_id=None, text=Some("a-bind2"))
+SpawnElement(e3, parent=e0, span, class=None, loom_id=None, text=Some("a-bind3"))
+SpawnElement(e4, parent=e0, span, class=None, loom_id=None, text=Some("a-bind4"))
+SpawnElement(e5, parent=e0, span, class=None, loom_id=None, text=Some("a-bind5"))
+SpawnElement(e6, parent=e0, span, class=None, loom_id=None, text=Some("a-bind6"))
+SpawnElement(e7, parent=e0, span, class=None, loom_id=None, text=Some("a-bind7"))
+SpawnElement(e8, parent=e0, span, class=None, loom_id=None, text=None)
+SpawnElement(e9, parent=e8, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e10, NodeHandle(0), li, "b", before=None)
+SpawnElement(e11, parent=e10, span, class=None, loom_id=None, text=Some("b-bind1"))
+SpawnElement(e12, parent=e10, span, class=None, loom_id=None, text=Some("b-bind2"))
+SpawnElement(e13, parent=e10, span, class=None, loom_id=None, text=Some("b-bind3"))
+SpawnElement(e14, parent=e10, span, class=None, loom_id=None, text=Some("b-bind4"))
+SpawnElement(e15, parent=e10, span, class=None, loom_id=None, text=Some("b-bind5"))
+SpawnElement(e16, parent=e10, span, class=None, loom_id=None, text=Some("b-bind6"))
+SpawnElement(e17, parent=e10, span, class=None, loom_id=None, text=Some("b-bind7"))
+SpawnElement(e18, parent=e10, span, class=None, loom_id=None, text=None)
+SpawnRow(e19, NodeHandle(0), li, "c", before=None)
+SpawnElement(e20, parent=e19, span, class=None, loom_id=None, text=Some("c-bind1"))
+SpawnElement(e21, parent=e19, span, class=None, loom_id=None, text=Some("c-bind2"))
+SpawnElement(e22, parent=e19, span, class=None, loom_id=None, text=Some("c-bind3"))
+SpawnElement(e23, parent=e19, span, class=None, loom_id=None, text=Some("c-bind4"))
+SpawnElement(e24, parent=e19, span, class=None, loom_id=None, text=Some("c-bind5"))
+SpawnElement(e25, parent=e19, span, class=None, loom_id=None, text=Some("c-bind6"))
+SpawnElement(e26, parent=e19, span, class=None, loom_id=None, text=Some("c-bind7"))
+SpawnElement(e27, parent=e19, span, class=None, loom_id=None, text=None)
+SpawnRow(e28, NodeHandle(0), li, "d", before=None)
+SpawnElement(e29, parent=e28, span, class=None, loom_id=None, text=Some("d-bind1"))
+SpawnElement(e30, parent=e28, span, class=None, loom_id=None, text=Some("d-bind2"))
+SpawnElement(e31, parent=e28, span, class=None, loom_id=None, text=Some("d-bind3"))
+SpawnElement(e32, parent=e28, span, class=None, loom_id=None, text=Some("d-bind4"))
+SpawnElement(e33, parent=e28, span, class=None, loom_id=None, text=Some("d-bind5"))
+SpawnElement(e34, parent=e28, span, class=None, loom_id=None, text=Some("d-bind6"))
+SpawnElement(e35, parent=e28, span, class=None, loom_id=None, text=Some("d-bind7"))
+SpawnElement(e36, parent=e28, span, class=None, loom_id=None, text=None)
+SpawnElement(e37, parent=e36, span, class=None, loom_id=None, text=Some("0"))
+--- tick 1 (10 writes) ---
+SpawnRow(e38, NodeHandle(0), li, "e", before=None)
+SpawnElement(e39, parent=e38, span, class=None, loom_id=None, text=Some("e-bind1"))
+SpawnElement(e40, parent=e38, span, class=None, loom_id=None, text=Some("e-bind2"))
+SpawnElement(e41, parent=e38, span, class=None, loom_id=None, text=Some("e-bind3"))
+SpawnElement(e42, parent=e38, span, class=None, loom_id=None, text=Some("e-bind4"))
+SpawnElement(e43, parent=e38, span, class=None, loom_id=None, text=Some("e-bind5"))
+SpawnElement(e44, parent=e38, span, class=None, loom_id=None, text=Some("e-bind6"))
+SpawnElement(e45, parent=e38, span, class=None, loom_id=None, text=Some("e-bind7"))
+SpawnElement(e46, parent=e38, span, class=None, loom_id=None, text=None)
+SpawnElement(e47, parent=e46, span, class=None, loom_id=None, text=Some("0"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (2 writes) ---
+SetText { target: NodeHandle(100), text: "b" }
+SetText { target: NodeHandle(101), text: "a" }
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(101))
+--- tick 5 (20 writes) ---
+SpawnRow(e48, NodeHandle(0), li, "x", before=None)
+SpawnElement(e49, parent=e48, span, class=None, loom_id=None, text=Some("x-bind1"))
+SpawnElement(e50, parent=e48, span, class=None, loom_id=None, text=Some("x-bind2"))
+SpawnElement(e51, parent=e48, span, class=None, loom_id=None, text=Some("x-bind3"))
+SpawnElement(e52, parent=e48, span, class=None, loom_id=None, text=Some("x-bind4"))
+SpawnElement(e53, parent=e48, span, class=None, loom_id=None, text=Some("x-bind5"))
+SpawnElement(e54, parent=e48, span, class=None, loom_id=None, text=Some("x-bind6"))
+SpawnElement(e55, parent=e48, span, class=None, loom_id=None, text=Some("x-bind7"))
+SpawnElement(e56, parent=e48, span, class=None, loom_id=None, text=None)
+SpawnElement(e57, parent=e56, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e58, NodeHandle(0), li, "y", before=None)
+SpawnElement(e59, parent=e58, span, class=None, loom_id=None, text=Some("y-bind1"))
+SpawnElement(e60, parent=e58, span, class=None, loom_id=None, text=Some("y-bind2"))
+SpawnElement(e61, parent=e58, span, class=None, loom_id=None, text=Some("y-bind3"))
+SpawnElement(e62, parent=e58, span, class=None, loom_id=None, text=Some("y-bind4"))
+SpawnElement(e63, parent=e58, span, class=None, loom_id=None, text=Some("y-bind5"))
+SpawnElement(e64, parent=e58, span, class=None, loom_id=None, text=Some("y-bind6"))
+SpawnElement(e65, parent=e58, span, class=None, loom_id=None, text=Some("y-bind7"))
+SpawnElement(e66, parent=e58, span, class=None, loom_id=None, text=None)
+SpawnElement(e67, parent=e66, span, class=None, loom_id=None, text=Some("0"))
+--- tick 6 (0 writes) ---
+======== K R2 ========
+--- tick 0 (39 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+SpawnElement(e1, parent=e0, span, class=None, loom_id=None, text=Some("a-bind1"))
+SpawnElement(e2, parent=e0, span, class=None, loom_id=None, text=Some("a-bind2"))
+SpawnElement(e3, parent=e0, span, class=None, loom_id=None, text=Some("a-bind3"))
+SpawnElement(e4, parent=e0, span, class=None, loom_id=None, text=Some("a-bind4"))
+SpawnElement(e5, parent=e0, span, class=None, loom_id=None, text=Some("a-bind5"))
+SpawnElement(e6, parent=e0, span, class=None, loom_id=None, text=Some("a-bind6"))
+SpawnElement(e7, parent=e0, span, class=None, loom_id=None, text=Some("a-bind7"))
+SpawnElement(e8, parent=e0, span, class=None, loom_id=None, text=None)
+SpawnElement(e9, parent=e8, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e10, NodeHandle(0), li, "b", before=None)
+SpawnElement(e11, parent=e10, span, class=None, loom_id=None, text=Some("b-bind1"))
+SpawnElement(e12, parent=e10, span, class=None, loom_id=None, text=Some("b-bind2"))
+SpawnElement(e13, parent=e10, span, class=None, loom_id=None, text=Some("b-bind3"))
+SpawnElement(e14, parent=e10, span, class=None, loom_id=None, text=Some("b-bind4"))
+SpawnElement(e15, parent=e10, span, class=None, loom_id=None, text=Some("b-bind5"))
+SpawnElement(e16, parent=e10, span, class=None, loom_id=None, text=Some("b-bind6"))
+SpawnElement(e17, parent=e10, span, class=None, loom_id=None, text=Some("b-bind7"))
+SpawnElement(e18, parent=e10, span, class=None, loom_id=None, text=None)
+SpawnRow(e19, NodeHandle(0), li, "c", before=None)
+SpawnElement(e20, parent=e19, span, class=None, loom_id=None, text=Some("c-bind1"))
+SpawnElement(e21, parent=e19, span, class=None, loom_id=None, text=Some("c-bind2"))
+SpawnElement(e22, parent=e19, span, class=None, loom_id=None, text=Some("c-bind3"))
+SpawnElement(e23, parent=e19, span, class=None, loom_id=None, text=Some("c-bind4"))
+SpawnElement(e24, parent=e19, span, class=None, loom_id=None, text=Some("c-bind5"))
+SpawnElement(e25, parent=e19, span, class=None, loom_id=None, text=Some("c-bind6"))
+SpawnElement(e26, parent=e19, span, class=None, loom_id=None, text=Some("c-bind7"))
+SpawnElement(e27, parent=e19, span, class=None, loom_id=None, text=None)
+SpawnRow(e28, NodeHandle(0), li, "d", before=None)
+SpawnElement(e29, parent=e28, span, class=None, loom_id=None, text=Some("d-bind1"))
+SpawnElement(e30, parent=e28, span, class=None, loom_id=None, text=Some("d-bind2"))
+SpawnElement(e31, parent=e28, span, class=None, loom_id=None, text=Some("d-bind3"))
+SpawnElement(e32, parent=e28, span, class=None, loom_id=None, text=Some("d-bind4"))
+SpawnElement(e33, parent=e28, span, class=None, loom_id=None, text=Some("d-bind5"))
+SpawnElement(e34, parent=e28, span, class=None, loom_id=None, text=Some("d-bind6"))
+SpawnElement(e35, parent=e28, span, class=None, loom_id=None, text=Some("d-bind7"))
+SpawnElement(e36, parent=e28, span, class=None, loom_id=None, text=None)
+SpawnElement(e37, parent=e36, span, class=None, loom_id=None, text=Some("0"))
+--- tick 1 (10 writes) ---
+SpawnRow(e38, NodeHandle(0), li, "e", before=None)
+SpawnElement(e39, parent=e38, span, class=None, loom_id=None, text=Some("e-bind1"))
+SpawnElement(e40, parent=e38, span, class=None, loom_id=None, text=Some("e-bind2"))
+SpawnElement(e41, parent=e38, span, class=None, loom_id=None, text=Some("e-bind3"))
+SpawnElement(e42, parent=e38, span, class=None, loom_id=None, text=Some("e-bind4"))
+SpawnElement(e43, parent=e38, span, class=None, loom_id=None, text=Some("e-bind5"))
+SpawnElement(e44, parent=e38, span, class=None, loom_id=None, text=Some("e-bind6"))
+SpawnElement(e45, parent=e38, span, class=None, loom_id=None, text=Some("e-bind7"))
+SpawnElement(e46, parent=e38, span, class=None, loom_id=None, text=None)
+SpawnElement(e47, parent=e46, span, class=None, loom_id=None, text=Some("0"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (20 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e48, NodeHandle(0), li, "b", before=None)
+SpawnElement(e49, parent=e48, span, class=None, loom_id=None, text=Some("b-bind1"))
+SpawnElement(e50, parent=e48, span, class=None, loom_id=None, text=Some("b-bind2"))
+SpawnElement(e51, parent=e48, span, class=None, loom_id=None, text=Some("b-bind3"))
+SpawnElement(e52, parent=e48, span, class=None, loom_id=None, text=Some("b-bind4"))
+SpawnElement(e53, parent=e48, span, class=None, loom_id=None, text=Some("b-bind5"))
+SpawnElement(e54, parent=e48, span, class=None, loom_id=None, text=Some("b-bind6"))
+SpawnElement(e55, parent=e48, span, class=None, loom_id=None, text=Some("b-bind7"))
+SpawnElement(e56, parent=e48, span, class=None, loom_id=None, text=None)
+SpawnRow(e57, NodeHandle(0), li, "a", before=None)
+SpawnElement(e58, parent=e57, span, class=None, loom_id=None, text=Some("a-bind1"))
+SpawnElement(e59, parent=e57, span, class=None, loom_id=None, text=Some("a-bind2"))
+SpawnElement(e60, parent=e57, span, class=None, loom_id=None, text=Some("a-bind3"))
+SpawnElement(e61, parent=e57, span, class=None, loom_id=None, text=Some("a-bind4"))
+SpawnElement(e62, parent=e57, span, class=None, loom_id=None, text=Some("a-bind5"))
+SpawnElement(e63, parent=e57, span, class=None, loom_id=None, text=Some("a-bind6"))
+SpawnElement(e64, parent=e57, span, class=None, loom_id=None, text=Some("a-bind7"))
+SpawnElement(e65, parent=e57, span, class=None, loom_id=None, text=None)
+SpawnElement(e66, parent=e65, span, class=None, loom_id=None, text=Some("0"))
+--- tick 4 (1 writes) ---
+ClearChildren(NodeHandle(0))
+--- tick 5 (20 writes) ---
+SpawnRow(e67, NodeHandle(0), li, "x", before=None)
+SpawnElement(e68, parent=e67, span, class=None, loom_id=None, text=Some("x-bind1"))
+SpawnElement(e69, parent=e67, span, class=None, loom_id=None, text=Some("x-bind2"))
+SpawnElement(e70, parent=e67, span, class=None, loom_id=None, text=Some("x-bind3"))
+SpawnElement(e71, parent=e67, span, class=None, loom_id=None, text=Some("x-bind4"))
+SpawnElement(e72, parent=e67, span, class=None, loom_id=None, text=Some("x-bind5"))
+SpawnElement(e73, parent=e67, span, class=None, loom_id=None, text=Some("x-bind6"))
+SpawnElement(e74, parent=e67, span, class=None, loom_id=None, text=Some("x-bind7"))
+SpawnElement(e75, parent=e67, span, class=None, loom_id=None, text=None)
+SpawnElement(e76, parent=e75, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e77, NodeHandle(0), li, "y", before=None)
+SpawnElement(e78, parent=e77, span, class=None, loom_id=None, text=Some("y-bind1"))
+SpawnElement(e79, parent=e77, span, class=None, loom_id=None, text=Some("y-bind2"))
+SpawnElement(e80, parent=e77, span, class=None, loom_id=None, text=Some("y-bind3"))
+SpawnElement(e81, parent=e77, span, class=None, loom_id=None, text=Some("y-bind4"))
+SpawnElement(e82, parent=e77, span, class=None, loom_id=None, text=Some("y-bind5"))
+SpawnElement(e83, parent=e77, span, class=None, loom_id=None, text=Some("y-bind6"))
+SpawnElement(e84, parent=e77, span, class=None, loom_id=None, text=Some("y-bind7"))
+SpawnElement(e85, parent=e77, span, class=None, loom_id=None, text=None)
+SpawnElement(e86, parent=e85, span, class=None, loom_id=None, text=Some("0"))
+--- tick 6 (0 writes) ---
+======== D R2 ========
+--- tick 0 (38 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnElement(e1, parent=e0, span, class=None, loom_id=None, text=Some("d-bind1"))
+SpawnElement(e2, parent=e0, span, class=None, loom_id=None, text=Some("d-bind2"))
+SpawnElement(e3, parent=e0, span, class=None, loom_id=None, text=Some("d-bind3"))
+SpawnElement(e4, parent=e0, span, class=None, loom_id=None, text=Some("d-bind4"))
+SpawnElement(e5, parent=e0, span, class=None, loom_id=None, text=Some("d-bind5"))
+SpawnElement(e6, parent=e0, span, class=None, loom_id=None, text=Some("d-bind6"))
+SpawnElement(e7, parent=e0, span, class=None, loom_id=None, text=Some("d-bind7"))
+SpawnElement(e8, parent=e0, span, class=None, loom_id=None, text=None)
+SpawnElement(e9, parent=e8, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e10, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e11, parent=e10, span, class=None, loom_id=None, text=Some("c-bind1"))
+SpawnElement(e12, parent=e10, span, class=None, loom_id=None, text=Some("c-bind2"))
+SpawnElement(e13, parent=e10, span, class=None, loom_id=None, text=Some("c-bind3"))
+SpawnElement(e14, parent=e10, span, class=None, loom_id=None, text=Some("c-bind4"))
+SpawnElement(e15, parent=e10, span, class=None, loom_id=None, text=Some("c-bind5"))
+SpawnElement(e16, parent=e10, span, class=None, loom_id=None, text=Some("c-bind6"))
+SpawnElement(e17, parent=e10, span, class=None, loom_id=None, text=Some("c-bind7"))
+SpawnElement(e18, parent=e10, span, class=None, loom_id=None, text=None)
+SpawnRow(e19, NodeHandle(0), li, "b", before=e10)
+SpawnElement(e20, parent=e19, span, class=None, loom_id=None, text=Some("b-bind1"))
+SpawnElement(e21, parent=e19, span, class=None, loom_id=None, text=Some("b-bind2"))
+SpawnElement(e22, parent=e19, span, class=None, loom_id=None, text=Some("b-bind3"))
+SpawnElement(e23, parent=e19, span, class=None, loom_id=None, text=Some("b-bind4"))
+SpawnElement(e24, parent=e19, span, class=None, loom_id=None, text=Some("b-bind5"))
+SpawnElement(e25, parent=e19, span, class=None, loom_id=None, text=Some("b-bind6"))
+SpawnElement(e26, parent=e19, span, class=None, loom_id=None, text=Some("b-bind7"))
+SpawnElement(e27, parent=e19, span, class=None, loom_id=None, text=None)
+SpawnRow(e28, NodeHandle(0), li, "a", before=e19)
+SpawnElement(e29, parent=e28, span, class=None, loom_id=None, text=Some("a-bind1"))
+SpawnElement(e30, parent=e28, span, class=None, loom_id=None, text=Some("a-bind2"))
+SpawnElement(e31, parent=e28, span, class=None, loom_id=None, text=Some("a-bind3"))
+SpawnElement(e32, parent=e28, span, class=None, loom_id=None, text=Some("a-bind4"))
+SpawnElement(e33, parent=e28, span, class=None, loom_id=None, text=Some("a-bind5"))
+SpawnElement(e34, parent=e28, span, class=None, loom_id=None, text=Some("a-bind6"))
+SpawnElement(e35, parent=e28, span, class=None, loom_id=None, text=Some("a-bind7"))
+SpawnElement(e36, parent=e28, span, class=None, loom_id=None, text=None)
+SpawnElement(e37, parent=e36, span, class=None, loom_id=None, text=Some("0"))
+--- tick 1 (10 writes) ---
+SpawnRow(e38, NodeHandle(0), li, "e", before=None)
+SpawnElement(e39, parent=e38, span, class=None, loom_id=None, text=Some("e-bind1"))
+SpawnElement(e40, parent=e38, span, class=None, loom_id=None, text=Some("e-bind2"))
+SpawnElement(e41, parent=e38, span, class=None, loom_id=None, text=Some("e-bind3"))
+SpawnElement(e42, parent=e38, span, class=None, loom_id=None, text=Some("e-bind4"))
+SpawnElement(e43, parent=e38, span, class=None, loom_id=None, text=Some("e-bind5"))
+SpawnElement(e44, parent=e38, span, class=None, loom_id=None, text=Some("e-bind6"))
+SpawnElement(e45, parent=e38, span, class=None, loom_id=None, text=Some("e-bind7"))
+SpawnElement(e46, parent=e38, span, class=None, loom_id=None, text=None)
+SpawnElement(e47, parent=e46, span, class=None, loom_id=None, text=Some("0"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e28, before=None)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (20 writes) ---
+SpawnRow(e48, NodeHandle(0), li, "y", before=None)
+SpawnElement(e49, parent=e48, span, class=None, loom_id=None, text=Some("y-bind1"))
+SpawnElement(e50, parent=e48, span, class=None, loom_id=None, text=Some("y-bind2"))
+SpawnElement(e51, parent=e48, span, class=None, loom_id=None, text=Some("y-bind3"))
+SpawnElement(e52, parent=e48, span, class=None, loom_id=None, text=Some("y-bind4"))
+SpawnElement(e53, parent=e48, span, class=None, loom_id=None, text=Some("y-bind5"))
+SpawnElement(e54, parent=e48, span, class=None, loom_id=None, text=Some("y-bind6"))
+SpawnElement(e55, parent=e48, span, class=None, loom_id=None, text=Some("y-bind7"))
+SpawnElement(e56, parent=e48, span, class=None, loom_id=None, text=None)
+SpawnElement(e57, parent=e56, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e58, NodeHandle(0), li, "x", before=e48)
+SpawnElement(e59, parent=e58, span, class=None, loom_id=None, text=Some("x-bind1"))
+SpawnElement(e60, parent=e58, span, class=None, loom_id=None, text=Some("x-bind2"))
+SpawnElement(e61, parent=e58, span, class=None, loom_id=None, text=Some("x-bind3"))
+SpawnElement(e62, parent=e58, span, class=None, loom_id=None, text=Some("x-bind4"))
+SpawnElement(e63, parent=e58, span, class=None, loom_id=None, text=Some("x-bind5"))
+SpawnElement(e64, parent=e58, span, class=None, loom_id=None, text=Some("x-bind6"))
+SpawnElement(e65, parent=e58, span, class=None, loom_id=None, text=Some("x-bind7"))
+SpawnElement(e66, parent=e58, span, class=None, loom_id=None, text=None)
+SpawnElement(e67, parent=e66, span, class=None, loom_id=None, text=Some("0"))
+--- tick 6 (0 writes) ---
+======== D-LIS R2 ========
+--- tick 0 (38 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnElement(e1, parent=e0, span, class=None, loom_id=None, text=Some("d-bind1"))
+SpawnElement(e2, parent=e0, span, class=None, loom_id=None, text=Some("d-bind2"))
+SpawnElement(e3, parent=e0, span, class=None, loom_id=None, text=Some("d-bind3"))
+SpawnElement(e4, parent=e0, span, class=None, loom_id=None, text=Some("d-bind4"))
+SpawnElement(e5, parent=e0, span, class=None, loom_id=None, text=Some("d-bind5"))
+SpawnElement(e6, parent=e0, span, class=None, loom_id=None, text=Some("d-bind6"))
+SpawnElement(e7, parent=e0, span, class=None, loom_id=None, text=Some("d-bind7"))
+SpawnElement(e8, parent=e0, span, class=None, loom_id=None, text=None)
+SpawnElement(e9, parent=e8, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e10, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e11, parent=e10, span, class=None, loom_id=None, text=Some("c-bind1"))
+SpawnElement(e12, parent=e10, span, class=None, loom_id=None, text=Some("c-bind2"))
+SpawnElement(e13, parent=e10, span, class=None, loom_id=None, text=Some("c-bind3"))
+SpawnElement(e14, parent=e10, span, class=None, loom_id=None, text=Some("c-bind4"))
+SpawnElement(e15, parent=e10, span, class=None, loom_id=None, text=Some("c-bind5"))
+SpawnElement(e16, parent=e10, span, class=None, loom_id=None, text=Some("c-bind6"))
+SpawnElement(e17, parent=e10, span, class=None, loom_id=None, text=Some("c-bind7"))
+SpawnElement(e18, parent=e10, span, class=None, loom_id=None, text=None)
+SpawnRow(e19, NodeHandle(0), li, "b", before=e10)
+SpawnElement(e20, parent=e19, span, class=None, loom_id=None, text=Some("b-bind1"))
+SpawnElement(e21, parent=e19, span, class=None, loom_id=None, text=Some("b-bind2"))
+SpawnElement(e22, parent=e19, span, class=None, loom_id=None, text=Some("b-bind3"))
+SpawnElement(e23, parent=e19, span, class=None, loom_id=None, text=Some("b-bind4"))
+SpawnElement(e24, parent=e19, span, class=None, loom_id=None, text=Some("b-bind5"))
+SpawnElement(e25, parent=e19, span, class=None, loom_id=None, text=Some("b-bind6"))
+SpawnElement(e26, parent=e19, span, class=None, loom_id=None, text=Some("b-bind7"))
+SpawnElement(e27, parent=e19, span, class=None, loom_id=None, text=None)
+SpawnRow(e28, NodeHandle(0), li, "a", before=e19)
+SpawnElement(e29, parent=e28, span, class=None, loom_id=None, text=Some("a-bind1"))
+SpawnElement(e30, parent=e28, span, class=None, loom_id=None, text=Some("a-bind2"))
+SpawnElement(e31, parent=e28, span, class=None, loom_id=None, text=Some("a-bind3"))
+SpawnElement(e32, parent=e28, span, class=None, loom_id=None, text=Some("a-bind4"))
+SpawnElement(e33, parent=e28, span, class=None, loom_id=None, text=Some("a-bind5"))
+SpawnElement(e34, parent=e28, span, class=None, loom_id=None, text=Some("a-bind6"))
+SpawnElement(e35, parent=e28, span, class=None, loom_id=None, text=Some("a-bind7"))
+SpawnElement(e36, parent=e28, span, class=None, loom_id=None, text=None)
+SpawnElement(e37, parent=e36, span, class=None, loom_id=None, text=Some("0"))
+--- tick 1 (10 writes) ---
+SpawnRow(e38, NodeHandle(0), li, "e", before=None)
+SpawnElement(e39, parent=e38, span, class=None, loom_id=None, text=Some("e-bind1"))
+SpawnElement(e40, parent=e38, span, class=None, loom_id=None, text=Some("e-bind2"))
+SpawnElement(e41, parent=e38, span, class=None, loom_id=None, text=Some("e-bind3"))
+SpawnElement(e42, parent=e38, span, class=None, loom_id=None, text=Some("e-bind4"))
+SpawnElement(e43, parent=e38, span, class=None, loom_id=None, text=Some("e-bind5"))
+SpawnElement(e44, parent=e38, span, class=None, loom_id=None, text=Some("e-bind6"))
+SpawnElement(e45, parent=e38, span, class=None, loom_id=None, text=Some("e-bind7"))
+SpawnElement(e46, parent=e38, span, class=None, loom_id=None, text=None)
+SpawnElement(e47, parent=e46, span, class=None, loom_id=None, text=Some("0"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e19, before=e28)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (20 writes) ---
+SpawnRow(e48, NodeHandle(0), li, "y", before=None)
+SpawnElement(e49, parent=e48, span, class=None, loom_id=None, text=Some("y-bind1"))
+SpawnElement(e50, parent=e48, span, class=None, loom_id=None, text=Some("y-bind2"))
+SpawnElement(e51, parent=e48, span, class=None, loom_id=None, text=Some("y-bind3"))
+SpawnElement(e52, parent=e48, span, class=None, loom_id=None, text=Some("y-bind4"))
+SpawnElement(e53, parent=e48, span, class=None, loom_id=None, text=Some("y-bind5"))
+SpawnElement(e54, parent=e48, span, class=None, loom_id=None, text=Some("y-bind6"))
+SpawnElement(e55, parent=e48, span, class=None, loom_id=None, text=Some("y-bind7"))
+SpawnElement(e56, parent=e48, span, class=None, loom_id=None, text=None)
+SpawnElement(e57, parent=e56, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e58, NodeHandle(0), li, "x", before=e48)
+SpawnElement(e59, parent=e58, span, class=None, loom_id=None, text=Some("x-bind1"))
+SpawnElement(e60, parent=e58, span, class=None, loom_id=None, text=Some("x-bind2"))
+SpawnElement(e61, parent=e58, span, class=None, loom_id=None, text=Some("x-bind3"))
+SpawnElement(e62, parent=e58, span, class=None, loom_id=None, text=Some("x-bind4"))
+SpawnElement(e63, parent=e58, span, class=None, loom_id=None, text=Some("x-bind5"))
+SpawnElement(e64, parent=e58, span, class=None, loom_id=None, text=Some("x-bind6"))
+SpawnElement(e65, parent=e58, span, class=None, loom_id=None, text=Some("x-bind7"))
+SpawnElement(e66, parent=e58, span, class=None, loom_id=None, text=None)
+SpawnElement(e67, parent=e66, span, class=None, loom_id=None, text=Some("0"))
+--- tick 6 (0 writes) ---
+======== E R2 ========
+--- tick 0 (38 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnElement(e1, parent=e0, span, class=None, loom_id=None, text=Some("d-bind1"))
+SpawnElement(e2, parent=e0, span, class=None, loom_id=None, text=Some("d-bind2"))
+SpawnElement(e3, parent=e0, span, class=None, loom_id=None, text=Some("d-bind3"))
+SpawnElement(e4, parent=e0, span, class=None, loom_id=None, text=Some("d-bind4"))
+SpawnElement(e5, parent=e0, span, class=None, loom_id=None, text=Some("d-bind5"))
+SpawnElement(e6, parent=e0, span, class=None, loom_id=None, text=Some("d-bind6"))
+SpawnElement(e7, parent=e0, span, class=None, loom_id=None, text=Some("d-bind7"))
+SpawnElement(e8, parent=e0, span, class=None, loom_id=None, text=None)
+SpawnElement(e9, parent=e8, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e10, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e11, parent=e10, span, class=None, loom_id=None, text=Some("c-bind1"))
+SpawnElement(e12, parent=e10, span, class=None, loom_id=None, text=Some("c-bind2"))
+SpawnElement(e13, parent=e10, span, class=None, loom_id=None, text=Some("c-bind3"))
+SpawnElement(e14, parent=e10, span, class=None, loom_id=None, text=Some("c-bind4"))
+SpawnElement(e15, parent=e10, span, class=None, loom_id=None, text=Some("c-bind5"))
+SpawnElement(e16, parent=e10, span, class=None, loom_id=None, text=Some("c-bind6"))
+SpawnElement(e17, parent=e10, span, class=None, loom_id=None, text=Some("c-bind7"))
+SpawnElement(e18, parent=e10, span, class=None, loom_id=None, text=None)
+SpawnRow(e19, NodeHandle(0), li, "b", before=e10)
+SpawnElement(e20, parent=e19, span, class=None, loom_id=None, text=Some("b-bind1"))
+SpawnElement(e21, parent=e19, span, class=None, loom_id=None, text=Some("b-bind2"))
+SpawnElement(e22, parent=e19, span, class=None, loom_id=None, text=Some("b-bind3"))
+SpawnElement(e23, parent=e19, span, class=None, loom_id=None, text=Some("b-bind4"))
+SpawnElement(e24, parent=e19, span, class=None, loom_id=None, text=Some("b-bind5"))
+SpawnElement(e25, parent=e19, span, class=None, loom_id=None, text=Some("b-bind6"))
+SpawnElement(e26, parent=e19, span, class=None, loom_id=None, text=Some("b-bind7"))
+SpawnElement(e27, parent=e19, span, class=None, loom_id=None, text=None)
+SpawnRow(e28, NodeHandle(0), li, "a", before=e19)
+SpawnElement(e29, parent=e28, span, class=None, loom_id=None, text=Some("a-bind1"))
+SpawnElement(e30, parent=e28, span, class=None, loom_id=None, text=Some("a-bind2"))
+SpawnElement(e31, parent=e28, span, class=None, loom_id=None, text=Some("a-bind3"))
+SpawnElement(e32, parent=e28, span, class=None, loom_id=None, text=Some("a-bind4"))
+SpawnElement(e33, parent=e28, span, class=None, loom_id=None, text=Some("a-bind5"))
+SpawnElement(e34, parent=e28, span, class=None, loom_id=None, text=Some("a-bind6"))
+SpawnElement(e35, parent=e28, span, class=None, loom_id=None, text=Some("a-bind7"))
+SpawnElement(e36, parent=e28, span, class=None, loom_id=None, text=None)
+SpawnElement(e37, parent=e36, span, class=None, loom_id=None, text=Some("0"))
+--- tick 1 (10 writes) ---
+SpawnRow(e38, NodeHandle(0), li, "e", before=None)
+SpawnElement(e39, parent=e38, span, class=None, loom_id=None, text=Some("e-bind1"))
+SpawnElement(e40, parent=e38, span, class=None, loom_id=None, text=Some("e-bind2"))
+SpawnElement(e41, parent=e38, span, class=None, loom_id=None, text=Some("e-bind3"))
+SpawnElement(e42, parent=e38, span, class=None, loom_id=None, text=Some("e-bind4"))
+SpawnElement(e43, parent=e38, span, class=None, loom_id=None, text=Some("e-bind5"))
+SpawnElement(e44, parent=e38, span, class=None, loom_id=None, text=Some("e-bind6"))
+SpawnElement(e45, parent=e38, span, class=None, loom_id=None, text=Some("e-bind7"))
+SpawnElement(e46, parent=e38, span, class=None, loom_id=None, text=None)
+SpawnElement(e47, parent=e46, span, class=None, loom_id=None, text=Some("0"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e28, before=None)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (20 writes) ---
+SpawnRow(e48, NodeHandle(0), li, "y", before=None)
+SpawnElement(e49, parent=e48, span, class=None, loom_id=None, text=Some("y-bind1"))
+SpawnElement(e50, parent=e48, span, class=None, loom_id=None, text=Some("y-bind2"))
+SpawnElement(e51, parent=e48, span, class=None, loom_id=None, text=Some("y-bind3"))
+SpawnElement(e52, parent=e48, span, class=None, loom_id=None, text=Some("y-bind4"))
+SpawnElement(e53, parent=e48, span, class=None, loom_id=None, text=Some("y-bind5"))
+SpawnElement(e54, parent=e48, span, class=None, loom_id=None, text=Some("y-bind6"))
+SpawnElement(e55, parent=e48, span, class=None, loom_id=None, text=Some("y-bind7"))
+SpawnElement(e56, parent=e48, span, class=None, loom_id=None, text=None)
+SpawnElement(e57, parent=e56, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e58, NodeHandle(0), li, "x", before=e48)
+SpawnElement(e59, parent=e58, span, class=None, loom_id=None, text=Some("x-bind1"))
+SpawnElement(e60, parent=e58, span, class=None, loom_id=None, text=Some("x-bind2"))
+SpawnElement(e61, parent=e58, span, class=None, loom_id=None, text=Some("x-bind3"))
+SpawnElement(e62, parent=e58, span, class=None, loom_id=None, text=Some("x-bind4"))
+SpawnElement(e63, parent=e58, span, class=None, loom_id=None, text=Some("x-bind5"))
+SpawnElement(e64, parent=e58, span, class=None, loom_id=None, text=Some("x-bind6"))
+SpawnElement(e65, parent=e58, span, class=None, loom_id=None, text=Some("x-bind7"))
+SpawnElement(e66, parent=e58, span, class=None, loom_id=None, text=None)
+SpawnElement(e67, parent=e66, span, class=None, loom_id=None, text=Some("0"))
+--- tick 6 (0 writes) ---
+======== E-LIS R2 ========
+--- tick 0 (38 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnElement(e1, parent=e0, span, class=None, loom_id=None, text=Some("d-bind1"))
+SpawnElement(e2, parent=e0, span, class=None, loom_id=None, text=Some("d-bind2"))
+SpawnElement(e3, parent=e0, span, class=None, loom_id=None, text=Some("d-bind3"))
+SpawnElement(e4, parent=e0, span, class=None, loom_id=None, text=Some("d-bind4"))
+SpawnElement(e5, parent=e0, span, class=None, loom_id=None, text=Some("d-bind5"))
+SpawnElement(e6, parent=e0, span, class=None, loom_id=None, text=Some("d-bind6"))
+SpawnElement(e7, parent=e0, span, class=None, loom_id=None, text=Some("d-bind7"))
+SpawnElement(e8, parent=e0, span, class=None, loom_id=None, text=None)
+SpawnElement(e9, parent=e8, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e10, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e11, parent=e10, span, class=None, loom_id=None, text=Some("c-bind1"))
+SpawnElement(e12, parent=e10, span, class=None, loom_id=None, text=Some("c-bind2"))
+SpawnElement(e13, parent=e10, span, class=None, loom_id=None, text=Some("c-bind3"))
+SpawnElement(e14, parent=e10, span, class=None, loom_id=None, text=Some("c-bind4"))
+SpawnElement(e15, parent=e10, span, class=None, loom_id=None, text=Some("c-bind5"))
+SpawnElement(e16, parent=e10, span, class=None, loom_id=None, text=Some("c-bind6"))
+SpawnElement(e17, parent=e10, span, class=None, loom_id=None, text=Some("c-bind7"))
+SpawnElement(e18, parent=e10, span, class=None, loom_id=None, text=None)
+SpawnRow(e19, NodeHandle(0), li, "b", before=e10)
+SpawnElement(e20, parent=e19, span, class=None, loom_id=None, text=Some("b-bind1"))
+SpawnElement(e21, parent=e19, span, class=None, loom_id=None, text=Some("b-bind2"))
+SpawnElement(e22, parent=e19, span, class=None, loom_id=None, text=Some("b-bind3"))
+SpawnElement(e23, parent=e19, span, class=None, loom_id=None, text=Some("b-bind4"))
+SpawnElement(e24, parent=e19, span, class=None, loom_id=None, text=Some("b-bind5"))
+SpawnElement(e25, parent=e19, span, class=None, loom_id=None, text=Some("b-bind6"))
+SpawnElement(e26, parent=e19, span, class=None, loom_id=None, text=Some("b-bind7"))
+SpawnElement(e27, parent=e19, span, class=None, loom_id=None, text=None)
+SpawnRow(e28, NodeHandle(0), li, "a", before=e19)
+SpawnElement(e29, parent=e28, span, class=None, loom_id=None, text=Some("a-bind1"))
+SpawnElement(e30, parent=e28, span, class=None, loom_id=None, text=Some("a-bind2"))
+SpawnElement(e31, parent=e28, span, class=None, loom_id=None, text=Some("a-bind3"))
+SpawnElement(e32, parent=e28, span, class=None, loom_id=None, text=Some("a-bind4"))
+SpawnElement(e33, parent=e28, span, class=None, loom_id=None, text=Some("a-bind5"))
+SpawnElement(e34, parent=e28, span, class=None, loom_id=None, text=Some("a-bind6"))
+SpawnElement(e35, parent=e28, span, class=None, loom_id=None, text=Some("a-bind7"))
+SpawnElement(e36, parent=e28, span, class=None, loom_id=None, text=None)
+SpawnElement(e37, parent=e36, span, class=None, loom_id=None, text=Some("0"))
+--- tick 1 (10 writes) ---
+SpawnRow(e38, NodeHandle(0), li, "e", before=None)
+SpawnElement(e39, parent=e38, span, class=None, loom_id=None, text=Some("e-bind1"))
+SpawnElement(e40, parent=e38, span, class=None, loom_id=None, text=Some("e-bind2"))
+SpawnElement(e41, parent=e38, span, class=None, loom_id=None, text=Some("e-bind3"))
+SpawnElement(e42, parent=e38, span, class=None, loom_id=None, text=Some("e-bind4"))
+SpawnElement(e43, parent=e38, span, class=None, loom_id=None, text=Some("e-bind5"))
+SpawnElement(e44, parent=e38, span, class=None, loom_id=None, text=Some("e-bind6"))
+SpawnElement(e45, parent=e38, span, class=None, loom_id=None, text=Some("e-bind7"))
+SpawnElement(e46, parent=e38, span, class=None, loom_id=None, text=None)
+SpawnElement(e47, parent=e46, span, class=None, loom_id=None, text=Some("0"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e19, before=e28)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (20 writes) ---
+SpawnRow(e48, NodeHandle(0), li, "y", before=None)
+SpawnElement(e49, parent=e48, span, class=None, loom_id=None, text=Some("y-bind1"))
+SpawnElement(e50, parent=e48, span, class=None, loom_id=None, text=Some("y-bind2"))
+SpawnElement(e51, parent=e48, span, class=None, loom_id=None, text=Some("y-bind3"))
+SpawnElement(e52, parent=e48, span, class=None, loom_id=None, text=Some("y-bind4"))
+SpawnElement(e53, parent=e48, span, class=None, loom_id=None, text=Some("y-bind5"))
+SpawnElement(e54, parent=e48, span, class=None, loom_id=None, text=Some("y-bind6"))
+SpawnElement(e55, parent=e48, span, class=None, loom_id=None, text=Some("y-bind7"))
+SpawnElement(e56, parent=e48, span, class=None, loom_id=None, text=None)
+SpawnElement(e57, parent=e56, span, class=None, loom_id=None, text=Some("0"))
+SpawnRow(e58, NodeHandle(0), li, "x", before=e48)
+SpawnElement(e59, parent=e58, span, class=None, loom_id=None, text=Some("x-bind1"))
+SpawnElement(e60, parent=e58, span, class=None, loom_id=None, text=Some("x-bind2"))
+SpawnElement(e61, parent=e58, span, class=None, loom_id=None, text=Some("x-bind3"))
+SpawnElement(e62, parent=e58, span, class=None, loom_id=None, text=Some("x-bind4"))
+SpawnElement(e63, parent=e58, span, class=None, loom_id=None, text=Some("x-bind5"))
+SpawnElement(e64, parent=e58, span, class=None, loom_id=None, text=Some("x-bind6"))
+SpawnElement(e65, parent=e58, span, class=None, loom_id=None, text=Some("x-bind7"))
+SpawnElement(e66, parent=e58, span, class=None, loom_id=None, text=None)
+SpawnElement(e67, parent=e66, span, class=None, loom_id=None, text=Some("0"))
+--- tick 6 (0 writes) ---
+======== C R3 ========
+--- tick 0 (6 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+SpawnElement(e1, parent=e0, em, class=None, loom_id=None, text=Some("a"))
+SpawnRow(e2, NodeHandle(0), li, "b", before=None)
+SpawnRow(e3, NodeHandle(0), li, "c", before=None)
+SpawnElement(e4, parent=e3, em, class=None, loom_id=None, text=Some("c"))
+SpawnRow(e5, NodeHandle(0), li, "d", before=None)
+--- tick 1 (2 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "e", before=None)
+SpawnElement(e7, parent=e6, em, class=None, loom_id=None, text=Some("e"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (3 writes) ---
+SetText { target: NodeHandle(100), text: "b" }
+SetText { target: NodeHandle(101), text: "a" }
+SpawnElement(e8, parent=e2, em, class=None, loom_id=None, text=Some("a"))
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(101))
+--- tick 5 (3 writes) ---
+SpawnRow(e9, NodeHandle(0), li, "x", before=None)
+SpawnRow(e10, NodeHandle(0), li, "y", before=None)
+SpawnElement(e11, parent=e10, em, class=None, loom_id=None, text=Some("y"))
+--- tick 6 (0 writes) ---
+======== K R3 ========
+--- tick 0 (7 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+SpawnElement(e1, parent=e0, em, class=None, loom_id=None, text=Some("a"))
+SpawnRow(e2, NodeHandle(0), li, "b", before=None)
+SpawnRow(e3, NodeHandle(0), li, "c", before=None)
+SpawnElement(e4, parent=e3, em, class=None, loom_id=None, text=Some("c"))
+SpawnRow(e5, NodeHandle(0), li, "d", before=None)
+--- tick 1 (2 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "e", before=None)
+SpawnElement(e7, parent=e6, em, class=None, loom_id=None, text=Some("e"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (4 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e8, NodeHandle(0), li, "b", before=None)
+SpawnRow(e9, NodeHandle(0), li, "a", before=None)
+SpawnElement(e10, parent=e9, em, class=None, loom_id=None, text=Some("a"))
+--- tick 4 (1 writes) ---
+ClearChildren(NodeHandle(0))
+--- tick 5 (3 writes) ---
+SpawnRow(e11, NodeHandle(0), li, "x", before=None)
+SpawnRow(e12, NodeHandle(0), li, "y", before=None)
+SpawnElement(e13, parent=e12, em, class=None, loom_id=None, text=Some("y"))
+--- tick 6 (0 writes) ---
+======== D R3 ========
+--- tick 0 (6 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e2, parent=e1, em, class=None, loom_id=None, text=Some("c"))
+SpawnRow(e3, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+SpawnElement(e5, parent=e4, em, class=None, loom_id=None, text=Some("a"))
+--- tick 1 (2 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "e", before=None)
+SpawnElement(e7, parent=e6, em, class=None, loom_id=None, text=Some("e"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e4, before=None)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (3 writes) ---
+SpawnRow(e8, NodeHandle(0), li, "y", before=None)
+SpawnElement(e9, parent=e8, em, class=None, loom_id=None, text=Some("y"))
+SpawnRow(e10, NodeHandle(0), li, "x", before=e8)
+--- tick 6 (0 writes) ---
+======== D-LIS R3 ========
+--- tick 0 (6 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e2, parent=e1, em, class=None, loom_id=None, text=Some("c"))
+SpawnRow(e3, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+SpawnElement(e5, parent=e4, em, class=None, loom_id=None, text=Some("a"))
+--- tick 1 (2 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "e", before=None)
+SpawnElement(e7, parent=e6, em, class=None, loom_id=None, text=Some("e"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e3, before=e4)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (3 writes) ---
+SpawnRow(e8, NodeHandle(0), li, "y", before=None)
+SpawnElement(e9, parent=e8, em, class=None, loom_id=None, text=Some("y"))
+SpawnRow(e10, NodeHandle(0), li, "x", before=e8)
+--- tick 6 (0 writes) ---
+======== E R3 ========
+--- tick 0 (6 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e2, parent=e1, em, class=None, loom_id=None, text=Some("c"))
+SpawnRow(e3, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+SpawnElement(e5, parent=e4, em, class=None, loom_id=None, text=Some("a"))
+--- tick 1 (2 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "e", before=None)
+SpawnElement(e7, parent=e6, em, class=None, loom_id=None, text=Some("e"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e4, before=None)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (3 writes) ---
+SpawnRow(e8, NodeHandle(0), li, "y", before=None)
+SpawnElement(e9, parent=e8, em, class=None, loom_id=None, text=Some("y"))
+SpawnRow(e10, NodeHandle(0), li, "x", before=e8)
+--- tick 6 (0 writes) ---
+======== E-LIS R3 ========
+--- tick 0 (6 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e2, parent=e1, em, class=None, loom_id=None, text=Some("c"))
+SpawnRow(e3, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e4, NodeHandle(0), li, "a", before=e3)
+SpawnElement(e5, parent=e4, em, class=None, loom_id=None, text=Some("a"))
+--- tick 1 (2 writes) ---
+SpawnRow(e6, NodeHandle(0), li, "e", before=None)
+SpawnElement(e7, parent=e6, em, class=None, loom_id=None, text=Some("e"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e3, before=e4)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (3 writes) ---
+SpawnRow(e8, NodeHandle(0), li, "y", before=None)
+SpawnElement(e9, parent=e8, em, class=None, loom_id=None, text=Some("y"))
+SpawnRow(e10, NodeHandle(0), li, "x", before=e8)
+--- tick 6 (0 writes) ---
+======== C W8-inner3 ========
+--- tick 0 (20 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+SpawnElement(e1, parent=e0, ul, class=None, loom_id=None, text=None)
+SpawnElement(e2, parent=e1, li, class=None, loom_id=None, text=Some("a-in0"))
+SpawnElement(e3, parent=e1, li, class=None, loom_id=None, text=Some("a-in1"))
+SpawnElement(e4, parent=e1, li, class=None, loom_id=None, text=Some("a-in2"))
+SpawnRow(e5, NodeHandle(0), li, "b", before=None)
+SpawnElement(e6, parent=e5, ul, class=None, loom_id=None, text=None)
+SpawnElement(e7, parent=e6, li, class=None, loom_id=None, text=Some("b-in0"))
+SpawnElement(e8, parent=e6, li, class=None, loom_id=None, text=Some("b-in1"))
+SpawnElement(e9, parent=e6, li, class=None, loom_id=None, text=Some("b-in2"))
+SpawnRow(e10, NodeHandle(0), li, "c", before=None)
+SpawnElement(e11, parent=e10, ul, class=None, loom_id=None, text=None)
+SpawnElement(e12, parent=e11, li, class=None, loom_id=None, text=Some("c-in0"))
+SpawnElement(e13, parent=e11, li, class=None, loom_id=None, text=Some("c-in1"))
+SpawnElement(e14, parent=e11, li, class=None, loom_id=None, text=Some("c-in2"))
+SpawnRow(e15, NodeHandle(0), li, "d", before=None)
+SpawnElement(e16, parent=e15, ul, class=None, loom_id=None, text=None)
+SpawnElement(e17, parent=e16, li, class=None, loom_id=None, text=Some("d-in0"))
+SpawnElement(e18, parent=e16, li, class=None, loom_id=None, text=Some("d-in1"))
+SpawnElement(e19, parent=e16, li, class=None, loom_id=None, text=Some("d-in2"))
+--- tick 1 (5 writes) ---
+SpawnRow(e20, NodeHandle(0), li, "e", before=None)
+SpawnElement(e21, parent=e20, ul, class=None, loom_id=None, text=None)
+SpawnElement(e22, parent=e21, li, class=None, loom_id=None, text=Some("e-in0"))
+SpawnElement(e23, parent=e21, li, class=None, loom_id=None, text=Some("e-in1"))
+SpawnElement(e24, parent=e21, li, class=None, loom_id=None, text=Some("e-in2"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (2 writes) ---
+SetText { target: NodeHandle(100), text: "b" }
+SetText { target: NodeHandle(101), text: "a" }
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(101))
+--- tick 5 (10 writes) ---
+SpawnRow(e25, NodeHandle(0), li, "x", before=None)
+SpawnElement(e26, parent=e25, ul, class=None, loom_id=None, text=None)
+SpawnElement(e27, parent=e26, li, class=None, loom_id=None, text=Some("x-in0"))
+SpawnElement(e28, parent=e26, li, class=None, loom_id=None, text=Some("x-in1"))
+SpawnElement(e29, parent=e26, li, class=None, loom_id=None, text=Some("x-in2"))
+SpawnRow(e30, NodeHandle(0), li, "y", before=None)
+SpawnElement(e31, parent=e30, ul, class=None, loom_id=None, text=None)
+SpawnElement(e32, parent=e31, li, class=None, loom_id=None, text=Some("y-in0"))
+SpawnElement(e33, parent=e31, li, class=None, loom_id=None, text=Some("y-in1"))
+SpawnElement(e34, parent=e31, li, class=None, loom_id=None, text=Some("y-in2"))
+--- tick 6 (0 writes) ---
+======== K W8-inner3 ========
+--- tick 0 (21 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+SpawnElement(e1, parent=e0, ul, class=None, loom_id=None, text=None)
+SpawnElement(e2, parent=e1, li, class=None, loom_id=None, text=Some("a-in0"))
+SpawnElement(e3, parent=e1, li, class=None, loom_id=None, text=Some("a-in1"))
+SpawnElement(e4, parent=e1, li, class=None, loom_id=None, text=Some("a-in2"))
+SpawnRow(e5, NodeHandle(0), li, "b", before=None)
+SpawnElement(e6, parent=e5, ul, class=None, loom_id=None, text=None)
+SpawnElement(e7, parent=e6, li, class=None, loom_id=None, text=Some("b-in0"))
+SpawnElement(e8, parent=e6, li, class=None, loom_id=None, text=Some("b-in1"))
+SpawnElement(e9, parent=e6, li, class=None, loom_id=None, text=Some("b-in2"))
+SpawnRow(e10, NodeHandle(0), li, "c", before=None)
+SpawnElement(e11, parent=e10, ul, class=None, loom_id=None, text=None)
+SpawnElement(e12, parent=e11, li, class=None, loom_id=None, text=Some("c-in0"))
+SpawnElement(e13, parent=e11, li, class=None, loom_id=None, text=Some("c-in1"))
+SpawnElement(e14, parent=e11, li, class=None, loom_id=None, text=Some("c-in2"))
+SpawnRow(e15, NodeHandle(0), li, "d", before=None)
+SpawnElement(e16, parent=e15, ul, class=None, loom_id=None, text=None)
+SpawnElement(e17, parent=e16, li, class=None, loom_id=None, text=Some("d-in0"))
+SpawnElement(e18, parent=e16, li, class=None, loom_id=None, text=Some("d-in1"))
+SpawnElement(e19, parent=e16, li, class=None, loom_id=None, text=Some("d-in2"))
+--- tick 1 (5 writes) ---
+SpawnRow(e20, NodeHandle(0), li, "e", before=None)
+SpawnElement(e21, parent=e20, ul, class=None, loom_id=None, text=None)
+SpawnElement(e22, parent=e21, li, class=None, loom_id=None, text=Some("e-in0"))
+SpawnElement(e23, parent=e21, li, class=None, loom_id=None, text=Some("e-in1"))
+SpawnElement(e24, parent=e21, li, class=None, loom_id=None, text=Some("e-in2"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (11 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e25, NodeHandle(0), li, "b", before=None)
+SpawnElement(e26, parent=e25, ul, class=None, loom_id=None, text=None)
+SpawnElement(e27, parent=e26, li, class=None, loom_id=None, text=Some("b-in0"))
+SpawnElement(e28, parent=e26, li, class=None, loom_id=None, text=Some("b-in1"))
+SpawnElement(e29, parent=e26, li, class=None, loom_id=None, text=Some("b-in2"))
+SpawnRow(e30, NodeHandle(0), li, "a", before=None)
+SpawnElement(e31, parent=e30, ul, class=None, loom_id=None, text=None)
+SpawnElement(e32, parent=e31, li, class=None, loom_id=None, text=Some("a-in0"))
+SpawnElement(e33, parent=e31, li, class=None, loom_id=None, text=Some("a-in1"))
+SpawnElement(e34, parent=e31, li, class=None, loom_id=None, text=Some("a-in2"))
+--- tick 4 (1 writes) ---
+ClearChildren(NodeHandle(0))
+--- tick 5 (10 writes) ---
+SpawnRow(e35, NodeHandle(0), li, "x", before=None)
+SpawnElement(e36, parent=e35, ul, class=None, loom_id=None, text=None)
+SpawnElement(e37, parent=e36, li, class=None, loom_id=None, text=Some("x-in0"))
+SpawnElement(e38, parent=e36, li, class=None, loom_id=None, text=Some("x-in1"))
+SpawnElement(e39, parent=e36, li, class=None, loom_id=None, text=Some("x-in2"))
+SpawnRow(e40, NodeHandle(0), li, "y", before=None)
+SpawnElement(e41, parent=e40, ul, class=None, loom_id=None, text=None)
+SpawnElement(e42, parent=e41, li, class=None, loom_id=None, text=Some("y-in0"))
+SpawnElement(e43, parent=e41, li, class=None, loom_id=None, text=Some("y-in1"))
+SpawnElement(e44, parent=e41, li, class=None, loom_id=None, text=Some("y-in2"))
+--- tick 6 (0 writes) ---
+======== D W8-inner3 ========
+--- tick 0 (20 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnElement(e1, parent=e0, ul, class=None, loom_id=None, text=None)
+SpawnElement(e2, parent=e1, li, class=None, loom_id=None, text=Some("d-in0"))
+SpawnElement(e3, parent=e1, li, class=None, loom_id=None, text=Some("d-in1"))
+SpawnElement(e4, parent=e1, li, class=None, loom_id=None, text=Some("d-in2"))
+SpawnRow(e5, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e6, parent=e5, ul, class=None, loom_id=None, text=None)
+SpawnElement(e7, parent=e6, li, class=None, loom_id=None, text=Some("c-in0"))
+SpawnElement(e8, parent=e6, li, class=None, loom_id=None, text=Some("c-in1"))
+SpawnElement(e9, parent=e6, li, class=None, loom_id=None, text=Some("c-in2"))
+SpawnRow(e10, NodeHandle(0), li, "b", before=e5)
+SpawnElement(e11, parent=e10, ul, class=None, loom_id=None, text=None)
+SpawnElement(e12, parent=e11, li, class=None, loom_id=None, text=Some("b-in0"))
+SpawnElement(e13, parent=e11, li, class=None, loom_id=None, text=Some("b-in1"))
+SpawnElement(e14, parent=e11, li, class=None, loom_id=None, text=Some("b-in2"))
+SpawnRow(e15, NodeHandle(0), li, "a", before=e10)
+SpawnElement(e16, parent=e15, ul, class=None, loom_id=None, text=None)
+SpawnElement(e17, parent=e16, li, class=None, loom_id=None, text=Some("a-in0"))
+SpawnElement(e18, parent=e16, li, class=None, loom_id=None, text=Some("a-in1"))
+SpawnElement(e19, parent=e16, li, class=None, loom_id=None, text=Some("a-in2"))
+--- tick 1 (5 writes) ---
+SpawnRow(e20, NodeHandle(0), li, "e", before=None)
+SpawnElement(e21, parent=e20, ul, class=None, loom_id=None, text=None)
+SpawnElement(e22, parent=e21, li, class=None, loom_id=None, text=Some("e-in0"))
+SpawnElement(e23, parent=e21, li, class=None, loom_id=None, text=Some("e-in1"))
+SpawnElement(e24, parent=e21, li, class=None, loom_id=None, text=Some("e-in2"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e15, before=None)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (10 writes) ---
+SpawnRow(e25, NodeHandle(0), li, "y", before=None)
+SpawnElement(e26, parent=e25, ul, class=None, loom_id=None, text=None)
+SpawnElement(e27, parent=e26, li, class=None, loom_id=None, text=Some("y-in0"))
+SpawnElement(e28, parent=e26, li, class=None, loom_id=None, text=Some("y-in1"))
+SpawnElement(e29, parent=e26, li, class=None, loom_id=None, text=Some("y-in2"))
+SpawnRow(e30, NodeHandle(0), li, "x", before=e25)
+SpawnElement(e31, parent=e30, ul, class=None, loom_id=None, text=None)
+SpawnElement(e32, parent=e31, li, class=None, loom_id=None, text=Some("x-in0"))
+SpawnElement(e33, parent=e31, li, class=None, loom_id=None, text=Some("x-in1"))
+SpawnElement(e34, parent=e31, li, class=None, loom_id=None, text=Some("x-in2"))
+--- tick 6 (0 writes) ---
+======== D-LIS W8-inner3 ========
+--- tick 0 (20 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnElement(e1, parent=e0, ul, class=None, loom_id=None, text=None)
+SpawnElement(e2, parent=e1, li, class=None, loom_id=None, text=Some("d-in0"))
+SpawnElement(e3, parent=e1, li, class=None, loom_id=None, text=Some("d-in1"))
+SpawnElement(e4, parent=e1, li, class=None, loom_id=None, text=Some("d-in2"))
+SpawnRow(e5, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e6, parent=e5, ul, class=None, loom_id=None, text=None)
+SpawnElement(e7, parent=e6, li, class=None, loom_id=None, text=Some("c-in0"))
+SpawnElement(e8, parent=e6, li, class=None, loom_id=None, text=Some("c-in1"))
+SpawnElement(e9, parent=e6, li, class=None, loom_id=None, text=Some("c-in2"))
+SpawnRow(e10, NodeHandle(0), li, "b", before=e5)
+SpawnElement(e11, parent=e10, ul, class=None, loom_id=None, text=None)
+SpawnElement(e12, parent=e11, li, class=None, loom_id=None, text=Some("b-in0"))
+SpawnElement(e13, parent=e11, li, class=None, loom_id=None, text=Some("b-in1"))
+SpawnElement(e14, parent=e11, li, class=None, loom_id=None, text=Some("b-in2"))
+SpawnRow(e15, NodeHandle(0), li, "a", before=e10)
+SpawnElement(e16, parent=e15, ul, class=None, loom_id=None, text=None)
+SpawnElement(e17, parent=e16, li, class=None, loom_id=None, text=Some("a-in0"))
+SpawnElement(e18, parent=e16, li, class=None, loom_id=None, text=Some("a-in1"))
+SpawnElement(e19, parent=e16, li, class=None, loom_id=None, text=Some("a-in2"))
+--- tick 1 (5 writes) ---
+SpawnRow(e20, NodeHandle(0), li, "e", before=None)
+SpawnElement(e21, parent=e20, ul, class=None, loom_id=None, text=None)
+SpawnElement(e22, parent=e21, li, class=None, loom_id=None, text=Some("e-in0"))
+SpawnElement(e23, parent=e21, li, class=None, loom_id=None, text=Some("e-in1"))
+SpawnElement(e24, parent=e21, li, class=None, loom_id=None, text=Some("e-in2"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e10, before=e15)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (10 writes) ---
+SpawnRow(e25, NodeHandle(0), li, "y", before=None)
+SpawnElement(e26, parent=e25, ul, class=None, loom_id=None, text=None)
+SpawnElement(e27, parent=e26, li, class=None, loom_id=None, text=Some("y-in0"))
+SpawnElement(e28, parent=e26, li, class=None, loom_id=None, text=Some("y-in1"))
+SpawnElement(e29, parent=e26, li, class=None, loom_id=None, text=Some("y-in2"))
+SpawnRow(e30, NodeHandle(0), li, "x", before=e25)
+SpawnElement(e31, parent=e30, ul, class=None, loom_id=None, text=None)
+SpawnElement(e32, parent=e31, li, class=None, loom_id=None, text=Some("x-in0"))
+SpawnElement(e33, parent=e31, li, class=None, loom_id=None, text=Some("x-in1"))
+SpawnElement(e34, parent=e31, li, class=None, loom_id=None, text=Some("x-in2"))
+--- tick 6 (0 writes) ---
+======== E W8-inner3 ========
+--- tick 0 (20 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnElement(e1, parent=e0, ul, class=None, loom_id=None, text=None)
+SpawnElement(e2, parent=e1, li, class=None, loom_id=None, text=Some("d-in0"))
+SpawnElement(e3, parent=e1, li, class=None, loom_id=None, text=Some("d-in1"))
+SpawnElement(e4, parent=e1, li, class=None, loom_id=None, text=Some("d-in2"))
+SpawnRow(e5, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e6, parent=e5, ul, class=None, loom_id=None, text=None)
+SpawnElement(e7, parent=e6, li, class=None, loom_id=None, text=Some("c-in0"))
+SpawnElement(e8, parent=e6, li, class=None, loom_id=None, text=Some("c-in1"))
+SpawnElement(e9, parent=e6, li, class=None, loom_id=None, text=Some("c-in2"))
+SpawnRow(e10, NodeHandle(0), li, "b", before=e5)
+SpawnElement(e11, parent=e10, ul, class=None, loom_id=None, text=None)
+SpawnElement(e12, parent=e11, li, class=None, loom_id=None, text=Some("b-in0"))
+SpawnElement(e13, parent=e11, li, class=None, loom_id=None, text=Some("b-in1"))
+SpawnElement(e14, parent=e11, li, class=None, loom_id=None, text=Some("b-in2"))
+SpawnRow(e15, NodeHandle(0), li, "a", before=e10)
+SpawnElement(e16, parent=e15, ul, class=None, loom_id=None, text=None)
+SpawnElement(e17, parent=e16, li, class=None, loom_id=None, text=Some("a-in0"))
+SpawnElement(e18, parent=e16, li, class=None, loom_id=None, text=Some("a-in1"))
+SpawnElement(e19, parent=e16, li, class=None, loom_id=None, text=Some("a-in2"))
+--- tick 1 (5 writes) ---
+SpawnRow(e20, NodeHandle(0), li, "e", before=None)
+SpawnElement(e21, parent=e20, ul, class=None, loom_id=None, text=None)
+SpawnElement(e22, parent=e21, li, class=None, loom_id=None, text=Some("e-in0"))
+SpawnElement(e23, parent=e21, li, class=None, loom_id=None, text=Some("e-in1"))
+SpawnElement(e24, parent=e21, li, class=None, loom_id=None, text=Some("e-in2"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e15, before=None)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (10 writes) ---
+SpawnRow(e25, NodeHandle(0), li, "y", before=None)
+SpawnElement(e26, parent=e25, ul, class=None, loom_id=None, text=None)
+SpawnElement(e27, parent=e26, li, class=None, loom_id=None, text=Some("y-in0"))
+SpawnElement(e28, parent=e26, li, class=None, loom_id=None, text=Some("y-in1"))
+SpawnElement(e29, parent=e26, li, class=None, loom_id=None, text=Some("y-in2"))
+SpawnRow(e30, NodeHandle(0), li, "x", before=e25)
+SpawnElement(e31, parent=e30, ul, class=None, loom_id=None, text=None)
+SpawnElement(e32, parent=e31, li, class=None, loom_id=None, text=Some("x-in0"))
+SpawnElement(e33, parent=e31, li, class=None, loom_id=None, text=Some("x-in1"))
+SpawnElement(e34, parent=e31, li, class=None, loom_id=None, text=Some("x-in2"))
+--- tick 6 (0 writes) ---
+======== E-LIS W8-inner3 ========
+--- tick 0 (20 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnElement(e1, parent=e0, ul, class=None, loom_id=None, text=None)
+SpawnElement(e2, parent=e1, li, class=None, loom_id=None, text=Some("d-in0"))
+SpawnElement(e3, parent=e1, li, class=None, loom_id=None, text=Some("d-in1"))
+SpawnElement(e4, parent=e1, li, class=None, loom_id=None, text=Some("d-in2"))
+SpawnRow(e5, NodeHandle(0), li, "c", before=e0)
+SpawnElement(e6, parent=e5, ul, class=None, loom_id=None, text=None)
+SpawnElement(e7, parent=e6, li, class=None, loom_id=None, text=Some("c-in0"))
+SpawnElement(e8, parent=e6, li, class=None, loom_id=None, text=Some("c-in1"))
+SpawnElement(e9, parent=e6, li, class=None, loom_id=None, text=Some("c-in2"))
+SpawnRow(e10, NodeHandle(0), li, "b", before=e5)
+SpawnElement(e11, parent=e10, ul, class=None, loom_id=None, text=None)
+SpawnElement(e12, parent=e11, li, class=None, loom_id=None, text=Some("b-in0"))
+SpawnElement(e13, parent=e11, li, class=None, loom_id=None, text=Some("b-in1"))
+SpawnElement(e14, parent=e11, li, class=None, loom_id=None, text=Some("b-in2"))
+SpawnRow(e15, NodeHandle(0), li, "a", before=e10)
+SpawnElement(e16, parent=e15, ul, class=None, loom_id=None, text=None)
+SpawnElement(e17, parent=e16, li, class=None, loom_id=None, text=Some("a-in0"))
+SpawnElement(e18, parent=e16, li, class=None, loom_id=None, text=Some("a-in1"))
+SpawnElement(e19, parent=e16, li, class=None, loom_id=None, text=Some("a-in2"))
+--- tick 1 (5 writes) ---
+SpawnRow(e20, NodeHandle(0), li, "e", before=None)
+SpawnElement(e21, parent=e20, ul, class=None, loom_id=None, text=None)
+SpawnElement(e22, parent=e21, li, class=None, loom_id=None, text=Some("e-in0"))
+SpawnElement(e23, parent=e21, li, class=None, loom_id=None, text=Some("e-in1"))
+SpawnElement(e24, parent=e21, li, class=None, loom_id=None, text=Some("e-in2"))
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e10, before=e15)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (10 writes) ---
+SpawnRow(e25, NodeHandle(0), li, "y", before=None)
+SpawnElement(e26, parent=e25, ul, class=None, loom_id=None, text=None)
+SpawnElement(e27, parent=e26, li, class=None, loom_id=None, text=Some("y-in0"))
+SpawnElement(e28, parent=e26, li, class=None, loom_id=None, text=Some("y-in1"))
+SpawnElement(e29, parent=e26, li, class=None, loom_id=None, text=Some("y-in2"))
+SpawnRow(e30, NodeHandle(0), li, "x", before=e25)
+SpawnElement(e31, parent=e30, ul, class=None, loom_id=None, text=None)
+SpawnElement(e32, parent=e31, li, class=None, loom_id=None, text=Some("x-in0"))
+SpawnElement(e33, parent=e31, li, class=None, loom_id=None, text=Some("x-in1"))
+SpawnElement(e34, parent=e31, li, class=None, loom_id=None, text=Some("x-in2"))
+--- tick 6 (0 writes) ---
+======== C UNCOND ========
+--- tick 0 (4 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+SpawnRow(e1, NodeHandle(0), li, "b", before=None)
+SpawnRow(e2, NodeHandle(0), li, "c", before=None)
+SpawnRow(e3, NodeHandle(0), li, "d", before=None)
+--- tick 1 (5 writes) ---
+SetText { target: NodeHandle(100), text: "a" }
+SetText { target: NodeHandle(101), text: "b" }
+SetText { target: NodeHandle(102), text: "c" }
+SetText { target: NodeHandle(103), text: "d" }
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+--- tick 2 (5 writes) ---
+SetText { target: NodeHandle(100), text: "a" }
+SetText { target: NodeHandle(101), text: "b" }
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (2 writes) ---
+SetText { target: NodeHandle(100), text: "b" }
+SetText { target: NodeHandle(101), text: "a" }
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(100))
+RemoveNode(NodeHandle(101))
+--- tick 5 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "x", before=None)
+SpawnRow(e6, NodeHandle(0), li, "y", before=None)
+--- tick 6 (2 writes) ---
+SetText { target: NodeHandle(100), text: "x" }
+SetText { target: NodeHandle(101), text: "y" }
+======== K UNCOND ========
+--- tick 0 (5 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e0, NodeHandle(0), li, "a", before=None)
+SpawnRow(e1, NodeHandle(0), li, "b", before=None)
+SpawnRow(e2, NodeHandle(0), li, "c", before=None)
+SpawnRow(e3, NodeHandle(0), li, "d", before=None)
+--- tick 1 (1 writes) ---
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (3 writes) ---
+ClearChildren(NodeHandle(0))
+SpawnRow(e5, NodeHandle(0), li, "b", before=None)
+SpawnRow(e6, NodeHandle(0), li, "a", before=None)
+--- tick 4 (1 writes) ---
+ClearChildren(NodeHandle(0))
+--- tick 5 (2 writes) ---
+SpawnRow(e7, NodeHandle(0), li, "x", before=None)
+SpawnRow(e8, NodeHandle(0), li, "y", before=None)
+--- tick 6 (0 writes) ---
+======== D UNCOND ========
+--- tick 0 (4 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "a", before=e2)
+--- tick 1 (5 writes) ---
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+SetText { target: NodeHandle(100), text: "a" }
+SetText { target: NodeHandle(101), text: "b" }
+SetText { target: NodeHandle(102), text: "c" }
+SetText { target: NodeHandle(103), text: "d" }
+--- tick 2 (5 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+SetText { target: NodeHandle(100), text: "a" }
+SetText { target: NodeHandle(101), text: "b" }
+--- tick 3 (3 writes) ---
+Reposition(NodeHandle(0), e3, before=None)
+SetText { target: NodeHandle(100), text: "a" }
+SetText { target: NodeHandle(101), text: "b" }
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "y", before=None)
+SpawnRow(e6, NodeHandle(0), li, "x", before=e5)
+--- tick 6 (2 writes) ---
+SetText { target: NodeHandle(100), text: "x" }
+SetText { target: NodeHandle(101), text: "y" }
+======== D-LIS UNCOND ========
+--- tick 0 (4 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "a", before=e2)
+--- tick 1 (5 writes) ---
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+SetText { target: NodeHandle(100), text: "a" }
+SetText { target: NodeHandle(101), text: "b" }
+SetText { target: NodeHandle(102), text: "c" }
+SetText { target: NodeHandle(103), text: "d" }
+--- tick 2 (5 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+SetText { target: NodeHandle(100), text: "a" }
+SetText { target: NodeHandle(101), text: "b" }
+--- tick 3 (3 writes) ---
+Reposition(NodeHandle(0), e2, before=e3)
+SetText { target: NodeHandle(100), text: "a" }
+SetText { target: NodeHandle(101), text: "b" }
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "y", before=None)
+SpawnRow(e6, NodeHandle(0), li, "x", before=e5)
+--- tick 6 (2 writes) ---
+SetText { target: NodeHandle(100), text: "x" }
+SetText { target: NodeHandle(101), text: "y" }
+======== E UNCOND ========
+--- tick 0 (4 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "a", before=e2)
+--- tick 1 (1 writes) ---
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e3, before=None)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "y", before=None)
+SpawnRow(e6, NodeHandle(0), li, "x", before=e5)
+--- tick 6 (0 writes) ---
+======== E-LIS UNCOND ========
+--- tick 0 (4 writes) ---
+SpawnRow(e0, NodeHandle(0), li, "d", before=None)
+SpawnRow(e1, NodeHandle(0), li, "c", before=e0)
+SpawnRow(e2, NodeHandle(0), li, "b", before=e1)
+SpawnRow(e3, NodeHandle(0), li, "a", before=e2)
+--- tick 1 (1 writes) ---
+SpawnRow(e4, NodeHandle(0), li, "e", before=None)
+--- tick 2 (3 writes) ---
+RemoveNode(NodeHandle(102))
+RemoveNode(NodeHandle(103))
+RemoveNode(NodeHandle(104))
+--- tick 3 (1 writes) ---
+Reposition(NodeHandle(0), e2, before=e3)
+--- tick 4 (2 writes) ---
+RemoveNode(NodeHandle(101))
+RemoveNode(NodeHandle(100))
+--- tick 5 (2 writes) ---
+SpawnRow(e5, NodeHandle(0), li, "y", before=None)
+SpawnRow(e6, NodeHandle(0), li, "x", before=e5)
+--- tick 6 (0 writes) ---

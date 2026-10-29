@@ -55,9 +55,42 @@ fn d_unconditional_emission_changes_only_position_and_order() {
         assert_eq!(n, m, "{sec}: SetText 총수가 달라졌다");
     }
     // 그 다음: 무조건 D 두 절은 틱별 다중집합 + 나머지 열이 같고, 다른 모든 절은 글자 그대로 같다.
+    // **예외: C 절(C12, 2026-10-30)** — C의 전량 삭제가 `ClearChildren` fast path로 바뀌었다(아래 `c12_...` 테스트가 그 차이만 허용).
     for (sec, ticks) in &old {
+        if sec.starts_with("C ") || sec == "C" {
+            continue;
+        }
         assert_eq!(&new[sec], ticks, "절 {sec}의 방출이 달라졌다");
     }
+}
+
+/// G0 재심사(C12)의 C 수리 이후 기준선(`pre-c12` = G0R1 직후)과 비교한다: C 절에서 달라진 것은 **마지막 틱의 전량 삭제**가
+/// 행별 `RemoveNode` 열에서 `ClearChildren` 한 줄로 바뀐 것뿐이고, 다른 모든 절은 글자 그대로 같다.
+#[test]
+fn c12_changes_only_the_full_clear_of_c_sections() {
+    let old = fold(include_str!("golden/list-candidate-writes-axes.pre-c12.txt"));
+    let new = fold(&recorder_axes::full_log());
+    assert_eq!(old.keys().collect::<Vec<_>>(), new.keys().collect::<Vec<_>>());
+    let mut changed_c = 0;
+    for (sec, ticks) in &old {
+        if !(sec.starts_with("C ") || sec == "C") {
+            assert_eq!(&new[sec], ticks, "C가 아닌 절 {sec}의 방출이 달라졌다");
+            continue;
+        }
+        let n = &new[sec];
+        assert_eq!(n.len(), ticks.len());
+        for (k, (ot, nt)) in ticks.iter().zip(n).enumerate() {
+            if ot == nt {
+                continue;
+            }
+            changed_c += 1;
+            assert!(ot.0.is_empty() && nt.0.is_empty(), "절 {sec} 틱 {k}: SetText가 바뀌었다");
+            assert!(!ot.1.is_empty() && ot.1.iter().all(|l| l.starts_with("RemoveNode")), "절 {sec} 틱 {k}: 옛 열이 RemoveNode 열이 아니다: {:?}", ot.1);
+            assert_eq!(nt.1, vec!["ClearChildren(NodeHandle(0))".to_string()], "절 {sec} 틱 {k}");
+        }
+    }
+    // 존재 단언: 실제로 바뀐 C 절이 있어야 이 테스트가 공허하지 않다.
+    assert!(changed_c >= 1, "C 절에서 전량 삭제 변화가 하나도 관측되지 않았다");
 }
 
 #[test]

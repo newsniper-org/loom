@@ -13,9 +13,8 @@ RemoveNode(NodeHandle(104))
 --- tick 3 (2 writes) ---
 SetText { target: NodeHandle(100), text: "b" }
 SetText { target: NodeHandle(101), text: "a" }
---- tick 4 (2 writes) ---
-RemoveNode(NodeHandle(100))
-RemoveNode(NodeHandle(101))
+--- tick 4 (1 writes) ---
+ClearChildren(NodeHandle(0))
 --- tick 5 (2 writes) ---
 SpawnRow(e5, NodeHandle(0), li, "x", before=None)
 SpawnRow(e6, NodeHandle(0), li, "y", before=None)
@@ -185,9 +184,8 @@ RemoveNode(NodeHandle(104))
 --- tick 3 (2 writes) ---
 SetText { target: NodeHandle(100), text: "b" }
 SetText { target: NodeHandle(101), text: "a" }
---- tick 4 (2 writes) ---
-RemoveNode(NodeHandle(100))
-RemoveNode(NodeHandle(101))
+--- tick 4 (1 writes) ---
+ClearChildren(NodeHandle(0))
 --- tick 5 (20 writes) ---
 SpawnRow(e48, NodeHandle(0), li, "x", before=None)
 SpawnElement(e49, parent=e48, span, class=None, loom_id=None, text=Some("x-bind1"))
@@ -658,9 +656,8 @@ RemoveNode(NodeHandle(104))
 SetText { target: NodeHandle(100), text: "b" }
 SetText { target: NodeHandle(101), text: "a" }
 SpawnElement(e8, parent=e2, em, class=None, loom_id=None, text=Some("a"))
---- tick 4 (2 writes) ---
-RemoveNode(NodeHandle(100))
-RemoveNode(NodeHandle(101))
+--- tick 4 (1 writes) ---
+ClearChildren(NodeHandle(0))
 --- tick 5 (3 writes) ---
 SpawnRow(e9, NodeHandle(0), li, "x", before=None)
 SpawnRow(e10, NodeHandle(0), li, "y", before=None)
@@ -829,9 +826,8 @@ RemoveNode(NodeHandle(104))
 --- tick 3 (2 writes) ---
 SetText { target: NodeHandle(100), text: "b" }
 SetText { target: NodeHandle(101), text: "a" }
---- tick 4 (2 writes) ---
-RemoveNode(NodeHandle(100))
-RemoveNode(NodeHandle(101))
+--- tick 4 (1 writes) ---
+ClearChildren(NodeHandle(0))
 --- tick 5 (10 writes) ---
 SpawnRow(e25, NodeHandle(0), li, "x", before=None)
 SpawnElement(e26, parent=e25, ul, class=None, loom_id=None, text=None)
@@ -1120,9 +1116,8 @@ RemoveNode(NodeHandle(104))
 --- tick 3 (2 writes) ---
 SetText { target: NodeHandle(100), text: "b" }
 SetText { target: NodeHandle(101), text: "a" }
---- tick 4 (2 writes) ---
-RemoveNode(NodeHandle(100))
-RemoveNode(NodeHandle(101))
+--- tick 4 (1 writes) ---
+ClearChildren(NodeHandle(0))
 --- tick 5 (2 writes) ---
 SpawnRow(e5, NodeHandle(0), li, "x", before=None)
 SpawnRow(e6, NodeHandle(0), li, "y", before=None)
