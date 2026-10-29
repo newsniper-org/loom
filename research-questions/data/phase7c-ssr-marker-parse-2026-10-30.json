@@ -1,0 +1,10 @@
+{
+ "what": "혼합 텍스트 SSR 주석 마커 규약 v0(`<!--lm-->값<!--/lm-->`)이 HTML 파서에서 어떤 DOM 트리가 되는가 — 마커 사이 텍스트 노드의 유무와 이스케이프",
+ "browsers": {"chromium": "149.0.7827.55", "firefox": "151.0 (Playwright 번들)"},
+ "result_identical_in_both": true,
+ "normal": ["3:\"Count: \"", "8:\"lm\"", "3:\"5\"", "8:\"/lm\"", "3:\" of \"", "8:\"lm\"", "3:\"10\"", "8:\"/lm\""],
+ "empty_value": ["3:\"Count: \"", "8:\"lm\"", "8:\"/lm\""],
+ "adjacent_dynamic": ["8:\"lm\"", "3:\"a\"", "8:\"/lm\"", "8:\"lm\"", "3:\"b\"", "8:\"/lm\""],
+ "escaped_forgery": ["3:\"x <!--lm--> y \"", "8:\"lm\"", "3:\"</b>\"", "8:\"/lm\""],
+ "note": "노드 표기 = nodeType:nodeValue (3=Text, 8=Comment). 빈 값은 마커 사이에 텍스트 노드가 없다 → resume이 빈 텍스트 노드를 만들어 끼워야 한다."
+}
