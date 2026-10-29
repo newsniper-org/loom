@@ -1,0 +1,43 @@
+{
+ "browser": "151.0",
+ "svg": {
+  "svgNs": "http://www.w3.org/2000/svg",
+  "gNs": "http://www.w3.org/2000/svg",
+  "svgClass": "icon",
+  "gClass": "grp",
+  "isSVGElement": true,
+  "fill": "red",
+  "dropped": 0
+ },
+ "checked": {
+  "after_user_click": true,
+  "after_second_user_click": false,
+  "after_setAttribute_checked_when_user_unchecked": false,
+  "after_SetBoolProp_false": false,
+  "after_SetBoolProp_true": true
+ },
+ "mutation": {
+  "toggle_on_already_on": 0,
+  "toggle_on_new": 1,
+  "toggle_off_absent": 0,
+  "remove_missing_attr": 0,
+  "set_attr_new": 1,
+  "set_attr_same_value": 1,
+  "remove_present_attr": 1
+ },
+ "adopt": {
+  "plain": "a|b",
+  "composite": "vx| w "
+ },
+ "input_value": {
+  "textarea": "hello",
+  "select": "b",
+  "optionSelectedProp": true
+ },
+ "mixed_text": {
+  "before": "Count: 5",
+  "after": "Count: 6",
+  "childNodes": 2
+ },
+ "page_errors": []
+}

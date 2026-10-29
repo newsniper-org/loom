@@ -611,3 +611,20 @@ wasm32(56)는 §5 함수 diff로 확인한다(아직 아님).
 제거된 R2 변형 `SetRowBindingTexts` doc의 앞부분이 문장 중간에서 이어 붙어 있던 것)을 7c 커밋에서 정정했다. `DomOps::set_attribute` doc의 "no `DomWrite`
 variant emits this"도 정정했다. 나머지 항목(lower.rs 모듈 문서, `compile_tsx_to_rust` 호출처, ir.rs 주석, 예제 목업 표시)은 그대로다.
 
+### 2026-10-30 — 7c 브라우저 프로브 결과 (추론이던 항목의 실측)
+
+도구 `tools/surface-probe/`(워크스페이스 밖 일회용 wasm 크레이트 + Playwright 스크립트), 원시 결과 `research-questions/data/phase7c-browser-probe-{chromium,firefox}-2026-10-30.json`.
+Chromium 149.0.7827.55와 Playwright 번들 Firefox 151.0에서 **결과가 완전히 같았다**(프로토콜 개정 #4: 번들 Firefox는 대표 빌드가 아니다 — 여기서는 DOM 의미론 확인용). **WebKit은 실행하지 못했다**(Playwright WebKit 의존 라이브러리 부재). 페이지 오류 0건.
+
+| 항목(전에는 추론) | 결과 | 의미 |
+|---|---|---|
+| SVG 네임스페이스·class (R43) | `namespaceURI` = `http://www.w3.org/2000/svg`, `instanceof SVGElement` 참, class는 `class` 속성으로 적용, 정적 attr(`fill`) 적용 | `create_element_ns` 경로는 동작한다. R43의 "기존 `SpawnElement`는 HTML 네임스페이스로 만든다"는 7b 전까지 결함으로 남는다(이 프로브는 새 경로만 검증) |
+| `checked` — 사용자가 클릭한 뒤 | 클릭 1회 true → 2회 false(사용자가 끔). 이때 `SetAttr checked`는 프로퍼티를 **바꾸지 못했다**(false 유지). `SetBoolProp`은 false/true 모두 반영 | `SetBoolProp`이 필요한 이유가 실측으로 확인됨(속성은 dirty-state 이후 프로퍼티를 못 바꾼다) |
+| `toggle_class`/`remove_attribute` no-op의 MutationRecord | 이미 켜진 class를 켜기 0건, 없는 class를 끄기 0건, 없는 속성 제거 0건. 새 class 켜기 1건, `setAttribute` 새 값 1건, **같은 값 `setAttribute` 1건**, 있는 속성 제거 1건 | 설계 §2.3의 주석("카운트가 관측값보다 클 수 있다")이 맞다. `setAttribute`는 값이 같아도 기록된다 |
+| `adopt_element_children` — 재포맷 HTML | 공백·주석이 낀 `<ul>`에서 `a|b`(공백·주석 노드 제외) | R35의 "공백 노드" 부분은 해결됨 |
+| `adopt_element_children` — 복합 row | `<li>v<span>x</span></li>` → `"vx"`, `<li> w </li>` → `" w "` | **복합 row 텍스트는 틀리게 복구된다**(자손 텍스트 이어붙임) — R35 "복합 row" 부분 미해결이 실측으로 확인됨. 공백도 보존(다듬지 않음) |
+| `<textarea>`/`<select>`에 `set_input_value` | textarea `hello`, select `b`(옵션 `selected` 프로퍼티 참) | 덕타이핑 추정이 맞다 |
+| 혼합 텍스트 | `Count: 5` → `Count: 6`, 자식 노드 2개(정적 + 동적 텍스트 노드) 유지 | 형제 정적 텍스트 보존이 실브라우저에서도 성립 |
+
+**남은 것**: WebKit 확인, 기존 `SpawnElement`의 SVG 결함(7b), 복합 row 텍스트 복구(7b + 판정례 (바)).
+

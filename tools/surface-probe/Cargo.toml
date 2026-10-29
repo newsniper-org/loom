@@ -1,0 +1,19 @@
+# 7c 브라우저 프로브 — `DomWrite::Surface`가 실제 브라우저에서 추론대로 동작하는지 확인하는 일회용 도구.
+# 워크스페이스 밖(자기 [workspace])이라 측정 산출물(loom-bench)의 Cargo.lock/메타데이터에 영향이 없다.
+[package]
+name = "loom-surface-probe"
+edition = "2024"
+version = "0.0.0"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bevy_ecs = "0.19"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+loom-runtime = { path = "../../crates/loom-runtime", features = ["browser"] }
+wasm-bindgen = "0.2.126"
+web-sys = { version = "0.3.103", features = ["Document", "Element", "Window", "Node"] }
