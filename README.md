@@ -171,6 +171,9 @@ cargo run --release -p loom-track-n -- --cases 40          → 6 arm 전부 통�
 python3 research-questions/analysis/fixtures/selfcheck.py  → 판정기 합성 픽스처 18모드 통과 (2026-10-17)
 ```
 
+**2026-10-30**: 위 명령은 루트 `justfile`에 레시피로 모여 있다(`just`로 목록, `just verify` = 툴체인 대조 + 테스트 + Verus + Lean + selfcheck).
+Verus 두 명령은 2026-10-26부터 `--rlimit 60`이 필요하다(`formal-verification/verus/README.md` 끝). 데이터 수집 스크립트는 justfile에 넣지 않았다.
+
 **측정 운영 규칙**(트랙 L 수집):
 - 셀(그룹)마다 새 브라우저를 띄운다(`bench/collect-per-cell.sh`, 개정 #10 후속 2). 한 브라우저로 여러 셀을 재면
   렌더러 프로세스 상태가 셀을 건너 오염시킨다.
