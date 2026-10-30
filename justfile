@@ -36,7 +36,7 @@ lean:
 exhaustive:
     for f in formal-verification/verus/*-exhaustive.py; do echo "== $f"; python3 "$f"; done
 
-# RQ1 판정기 합성 픽스처 자기점검(18모드 + 차분 검사)
+# RQ1 판정기 합성 픽스처 자기점검(18모드 + 차분 검사). 오래 걸린다 — 2026-10-30 실측 41분(판정기 실행 20회)
 selfcheck:
     python3 research-questions/analysis/fixtures/selfcheck.py
 
