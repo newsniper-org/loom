@@ -2597,3 +2597,37 @@ HTML과 복합 row의 `adopt_element_children`, `<textarea>`/`<select>`의 `set_
   - **고정**: 자기점검 `fixtures/selfcheck.py`에 차등 성질 둘을 추가했다. `d_stage_inert` = D·D-LIS 두 변형의 비-total 단계 시간(`systems`·`row_patch`·`sync_point`·`dom_apply`)을 1000배로 만든 픽스처의 판정기 출력이 `base`와 **바이트 단위로 같아야** 한다. `e_stage_control` = 같은 변환을 E-LIS에 걸면 출력이 **달라져야** 한다(비교가 공허하지 않다는 대조 — E 기각 (ii)가 읽는다). 둘 다 통과(2026-10-30). 앞으로 어느 절이 D의 단계 시간을 읽기 시작하면 이 성질이 실패한다.
 - **점검 2 — "write 변형이 M2를 바꾼 이중 측정 셀 존재" 단언이 D에도 성립하는가**: **성립한다.** 근거는 이미 있는 테스트 둘의 결합이다. (가) `crates/loom-runtime/tests/g0r1_uncond_patch.rs` (a): D·D-LIS × R1·R2·R3에서 retained > 0인 갱신의 `SetText`가 조건부 대비 **정확히 retained 수만큼** 더 나온다. (나) 하네스의 `make_d`·`make_d_lis`(`crates/loom-bench/src/lib.rs`)가 `WriteVariant::Unconditional` 분기에서 무조건 System과 `add_row_value_patch::<T>()`를 함께 등록한다 — **코드 열람으로 확인한 것이고 테스트가 아니다**(두 함수는 `web_sys` 전용이라 네이티브 단위 테스트 밖이다; `row_patch_window_is_registered_on_every_instance_of_a_doubled_r1_cell`은 patch를 자기 앱에 직접 등록하므로 이 결합을 검증하지 않는다 — G0 재심사 발견 9의 "타입이 아니라 하네스 관례"가 그대로 남는다). 이중 측정 셀 W1~W4는 측정 스텝에 retained 행이 구성상 존재하므로 무조건 M2 = 조건부 M2 + retained ≠ 조건부 M2. (W10 100% 교체는 retained 0이라 같을 수 있다 — 단언은 "후보마다 하나 이상"이라 무관.) 실데이터에서의 최종 확인은 판정기의 `same_cell_structure`가 v23에서 D·D-LIS 행을 찍는 것으로 한다 — (나)가 테스트로 고정돼 있지 않으므로 이 실데이터 단언이 그 결합의 유일한 기계적 확인이고, 0이면 그 단언이 무결성 문제로 잡는다.
 - **남은 선행 조건**(개정 #12 목록 기준): 동결 기록(C13 — 기반 해시·sha256·툴체인) · G1 · 트랙 N G2 재인증 · 수리 소요 시간 기록(§2.5) · 커밋 순서(§11-5).
+
+#### 개정 #12 후속 6 (2026-10-30, **v23 수집 전**) — 동결 기록(C13) · 툴체인 발견 2의 원인 정정 · 동결 빌드 절차
+
+**이 절이 개정 #12 규칙부의 "동결 기록(C13에서 후속 등재)" 빈칸을 채운다.** 성능 데이터는 여전히 0건이고, 수집은 병익님 지시 전까지 시작하지 않는다.
+
+**발견 — 기존 `target/`가 오염돼 있었다(후속 2 발견 2의 원인 정정).** 고정 아래(`rust-toolchain.toml` = 1.99.1)에서 기존 `target/`로 처음 빌드한 P1·P2(2c556d90…, 5ec1adfd…)에
+`~/.rustup/toolchains/stable-x86_64-…/lib/rustlib/src/rust/library/…` 경로가 15개 섞여 있었다. 빈 target에서 다시 빌드하면 그 자리에 `/rustc/58cf8f9c…/library/…`가 들어간다. 반사실로 원인을 갈랐다:
+- 빈 target 두 곳(서로 다른 경로) → 같은 sha256(b509135f…). **target 경로·저장소 경로는 바이트에 안 들어간다**(`loom-research` 문자열 0개).
+- 같은 소스·같은 rustc를 **`stable` 이름으로** 빈 target에서 빌드 → 0d2fbaca…, 로컬 툴체인 경로 18개.
+- `rustup component list --installed`: `stable`에는 **`rust-src`가 설치돼 있고** `1.99.1`에는 없다. rustc는 `rust-src`가 있으면 std의 `/rustc/<해시>` 경로를 로컬 sysroot 경로로 되돌린다.
+- 따라서 후속 2 발견 2의 "툴체인 **디렉터리 이름**이 wasm 바이트에 박힌다"는 관찰(바이트가 달라진다)은 맞지만 원인 진술이 부정확했다 — 바이트를 정하는 것은 **활성 툴체인에 `rust-src`가 설치돼 있는가**(있으면 그 경로까지)이고,
+  기존 `target/`에서는 cargo가 rustc 버전이 같다는 이유로 고정 이전(`stable`, rust-src 있음)에 컴파일한 의존성 산출물을 재사용해 두 형태가 섞였다. 후속 2의 B1 고정 후 해시 2b78f5d0…도 이 혼합 산출물로 보인다(재확인 안 함).
+  후속 2의 함수 단위 diff(A·B0·B1)는 같은 `target/`·같은 상태에서 만든 산출물끼리의 비교이고, 그 산출물이 `wasm-pack --release` 산출물과 구역 단위로 같음을 확인했으므로 함수 수준 결론은 그대로다. 바이트 해시는 아래 동결 산출물과 비교하지 않는다.
+- 조치: (1) `tools/toolchain-pins.env`에 `RUST_SRC="absent"`, `tools/check-toolchain.sh`가 활성 툴체인의 `rust-src` 유무를 대조한다(`stable`로 돌리면 실패함을 확인). (2) 동결 산출물은 **`tools/build-frozen-bench.sh`로만** 만든다 — 빈 `CARGO_TARGET_DIR`(mktemp), 빌드 전 `check-toolchain.sh`, 빌드 후 존재 단언(`/rustc/<해시>/library/` ≥ 1)과 부재 단언(`/toolchains/` 0). 기존 `target/`의 오염본은 폐기했다(어디에도 쓰지 않았다).
+
+**동결 기록**
+
+| 산출물 | 소스(커밋) | wasm sha256 | JS 글루 sha256 | wasm 바이트 / gzip −9 | 재현 확인 |
+|---|---|---|---|---|---|
+| v22 측정본(참고) | a55ba87 | `fb81633ab5501182222d2a3833f54d2ece3e19f2e05f6c243fdf3f0d90eadc87` | — | — | **재현 불가**(후속 2 발견 1). 파일은 `demo/pkg-bench`에 그대로 둔다 |
+| **P1** (= B0', G0R1 + C 수리, 7c 없음) | `673d286` (브랜치 `v23-p1-b0prime` = 0500448 + 1ce5476의 `list.rs` + cf8c9d3의 `rust-toolchain.toml`) | `56495615d5da66081b03d35b222b500917aebe06b0c9f1603893a9abec668427` | `42fe00f14baad098adbc6d313cbe02e764cadd04b0e4720ecbc86e1974bd6572` | 995,683 / 325,719 | 빈 target 두 번 → 동일 |
+| **P2** (G0R1 + C 수리 + 7c) | `2fa7779` | `b509135f28b8c424a52091bc31e6cce853240ab0df70ece91e2669aa6b2db717` | `994d2cb1e3698ee5bfff31c05a9dd29768a089170468c1bcc0016363fecbcb42` | 1,016,893 / 329,295 | 저장소 트리·별도 worktree(다른 경로) → 동일 |
+| **최종(v23 측정본)** | `2fa7779` (코드 = P2와 같음) | P2와 같음 | P2와 같음 | 같음 | 위와 같음 |
+
+- **기반 커밋**: `2fa7779`(브랜치 `c13-freeze-prep`). 측정 산출물에 들어가는 코드 상태 = 2779566(7c) + 1ce5476의 `list.rs`(C 수리) + cf8c9d3(`rust-toolchain.toml`). 1ce5476 이후 `crates/`의 변경은 `loom-track-n` 주석 2줄뿐이고 `loom-bench`는 그 크레이트에 의존하지 않는다(위 해시가 그 증거 — 이 기록 커밋의 도구 추가도 산출물에 안 들어간다).
+- **P1 ≠ P2**(귀속 대조 비공허 장치의 첫 조건) 성립. 두 소스의 차이는 `git diff 673d286 2fa7779 -- crates Cargo.toml Cargo.lock rust-toolchain.toml`에서 7c 파일 5개(`loom-bench/src/lib.rs`의 `cfg(test)` 구역, `counting.rs`, `lib.rs`, `surface.rs`, `web.rs`)와 테스트·골든뿐이다.
+- **툴체인**(`tools/check-toolchain.sh` 출력 그대로): `ok rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)` · `ok verus: 0.2026.10.18.7d82994`(검증은 `--rlimit 60`) · `ok wasm-pack: wasm-pack 0.14.0` · `ok wasm-bindgen: found`(0.2.126) · `ok Cargo.lock-wasm-bindgen: 0.2.126` · `ok rust-src: absent`.
+  wasm-opt는 wasm-pack 0.14.0이 받는 것(`version_117`, 후속 2와 같음).
+- **`pkg-bench`를 import하는 페이지**: `demo/list_bench.html`, `demo/track_t_freq_bench.html` — 2개(개정 #12 산출물 목록과 같다).
+- **산출물 위치**: `demo/pkg-bench-v23-{p1,p2,final}/`(`.gitignore`의 `/demo/pkg-bench-v23-*` — 저장소에 없다; 위 sha256이 정본이다). `demo/pkg-bench`(v22)는 덮어쓰지 않았다.
+  **수집 착수 시 절차**(병익님 지시 후): `demo/pkg-bench`를 `demo/pkg-bench-v22-fb81633a/`로 옮기고, `demo/pkg-bench-v23-final/`을 `demo/pkg-bench/`로 복사한 뒤 sha256을 위 표와 대조한다. A/A 귀속 대조는 P1·P2 디렉터리를 같은 세션에서 번갈아 서빙한다(드라이버는 B2 하네스 변경으로 따로 기록).
+- **B2**: 수집 전에 하네스(wasm에 들어가는 `loom-bench` 등)를 바꾸면 B1→B2를 따로 diff하고 이 표에 "최종"을 다시 등재한다(append). HTML·드라이버만 바꾸면 wasm 해시는 그대로이고 그 변경을 따로 기록한다.
+
+**남은 선행 조건**: G1 · 트랙 N G2 재인증(새 OUT_DIR) · 수리 소요 시간 기록(§2.5) · A/A 드라이버 · 커밋 순서(§11-5 — 이 절을 담은 커밋이 v23 원시 데이터보다 앞선다).

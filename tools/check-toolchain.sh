@@ -10,4 +10,6 @@ chk wasm-pack "$WASM_PACK" "$(wasm-pack --version)"
 WB=$(for d in "$HOME"/.cache/.wasm-pack/wasm-bindgen-*/; do "$d/wasm-bindgen" --version | grep -q "$WASM_BINDGEN" && echo found; done | head -1)
 chk wasm-bindgen "found" "${WB:-missing}"
 chk Cargo.lock-wasm-bindgen "$WASM_BINDGEN" "$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/version = "\(.*\)"/\1/p')"
+# rust-src 유무는 wasm 바이트를 바꾼다(toolchain-pins.env 주석). 활성 툴체인(rust-toolchain.toml) 기준.
+chk rust-src "$RUST_SRC" "$(rustup component list --installed 2>/dev/null | grep -qx 'rust-src' && echo present || echo absent)"
 exit $bad

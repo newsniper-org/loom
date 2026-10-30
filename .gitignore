@@ -22,3 +22,4 @@ __pycache__/
 /.claude/settings.local.json
 # v23 동결·귀속 대조 산출물(P1/P2/최종) — sha256은 프로토콜 개정 #12 후속 기록에 있다.
 /demo/pkg-bench-v23-*
+/demo/pkg-bench-v22-*
