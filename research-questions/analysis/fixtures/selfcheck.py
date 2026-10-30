@@ -254,6 +254,20 @@ CASES = [
 ]
 
 
+# (모드, 대조 모드, 같아야 하나) — 문구가 아니라 **출력 전체**를 비교하는 차등 성질.
+#
+# `d_stage_inert` (2026-10-30, 판정기 사전 점검 — G0 재심사 발견 6): D 무조건 변형은 SetText 방출을
+# `systems`에서 `row_patch`로 옮긴다. 그 이동이 판정을 기울이지 않으려면 **D·D-LIS의 단계 시간을 읽는
+# 절이 하나도 없어야** 한다(D의 판정은 전부 `samples_ms` = tick 전체 M1(a)다). D·D-LIS 두 변형의 단계
+# 시간을 1000배로 만들어도 출력이 `base`와 바이트 단위로 같아야 한다.
+# `e_stage_control`은 그 비교가 공허하지 않다는 대조다 — 같은 변환을 E-LIS에 걸면(E 기각 (ii)가 읽는다)
+# 출력이 **달라져야** 한다.
+DIFF_CASES = [
+    ("d_stage_inert", "base", True),
+    ("e_stage_control", "base", False),
+]
+
+
 def run(mode, tmp):
     d = os.path.join(tmp, mode)
     subprocess.run([sys.executable, GEN, d, mode], check=True,
@@ -271,7 +285,8 @@ def run(mode, tmp):
         env.pop("RQ1_FIREFOX_EXPECT_AGENT", None)
     p = subprocess.run([sys.executable, VERDICTS], env=env,
                        capture_output=True, text=True)
-    return p.returncode, p.stdout + p.stderr
+    # 데이터 경로는 모드마다 다르다 — 차등 비교가 경로 문자열에서 갈리지 않게 지운다.
+    return p.returncode, (p.stdout + p.stderr).replace(d, "<DATA>")
 
 
 def main():
@@ -281,13 +296,16 @@ def main():
     if "--only" in sys.argv:
         only = sys.argv[sys.argv.index("--only") + 1]
     cases = [c for c in CASES if only is None or c[0] == only]
-    if not cases:
-        print(f"모드 {only!r} 없음. 가능: {[c[0] for c in CASES]}")
+    diffs = [c for c in DIFF_CASES if only is None or c[0] == only]
+    if not cases and not diffs:
+        print(f"모드 {only!r} 없음. 가능: {[c[0] for c in CASES] + [c[0] for c in DIFF_CASES]}")
         sys.exit(2)
     fails = []
+    outs = {}
     with tempfile.TemporaryDirectory() as tmp:
         for mode, must, must_not in cases:
             rc, out = run(mode, tmp)
+            outs[mode] = (rc, out)
             if rc != 0:
                 fails.append(f"{mode}: 종료코드 {rc}\n{out[-2000:]}")
                 continue
@@ -298,6 +316,22 @@ def main():
                 if s in out:
                     fails.append(f"{mode}: 있으면 안 되는 문구 — {s!r}")
             print(f"  {mode}: 종료코드 0, 단언 {len(must)}+{len(must_not)}건")
+        for mode, ref, same in diffs:
+            for m in (mode, ref):
+                if m not in outs:
+                    outs[m] = run(m, tmp)
+            (rc, out), (rrc, rout) = outs[mode], outs[ref]
+            if rc != 0 or rrc != 0:
+                fails.append(f"{mode}: 종료코드 {rc} / 대조 {ref} {rrc}\n{out[-2000:]}")
+                continue
+            if (out == rout) != same:
+                if same:
+                    diff = [(a, b) for a, b in zip(out.splitlines(), rout.splitlines()) if a != b][:5]
+                    fails.append(f"{mode}: `{ref}`와 출력이 달라졌다 — 이 단계 시간을 읽는 절이 있다: {diff}")
+                else:
+                    fails.append(f"{mode}: `{ref}`와 출력이 같다 — 대조가 공허하다")
+                continue
+            print(f"  {mode}: 출력 {'= ' if same else '≠ '}{ref} (차등 성질)")
     if fails:
         print("\n실패:")
         for f in fails:

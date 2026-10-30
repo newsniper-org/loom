@@ -157,6 +157,8 @@ def cond_Q(current, target):
     호출부(`list.rs`의 `d_lis_body`)는 `match_keys`가 `removed`로 가른 것을
     `current`에서 걸러내므로 이것을 항상 만족한다 — 다만 `plan_writes`의
     `requires`에는 **적혀 있지 않다**.
+    (2026-10-30 주기: G0R1(2026-10-20) 이후 매처는 `list_key::match_by_key`(radix 병합)이고
+    반환 계약은 옛 `match_keys`와 같다 — 위 서술은 그 매처에 그대로 성립한다.)
     """
     ts = set(target)
     return all(x in ts for x in current)

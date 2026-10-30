@@ -20,3 +20,5 @@ __pycache__/
 # Claude Code 워크플로 격리용 임시 워크트리 + 로컬 권한 설정 — 프로젝트 내용이 아니다.
 /.claude/worktrees/
 /.claude/settings.local.json
+# v23 동결·귀속 대조 산출물(P1/P2/최종) — sha256은 프로토콜 개정 #12 후속 기록에 있다.
+/demo/pkg-bench-v23-*

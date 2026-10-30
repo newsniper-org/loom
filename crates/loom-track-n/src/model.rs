@@ -151,6 +151,8 @@ impl Model {
             RowIdentity::Retained => {
                 // 키(=아이템 텍스트) 매칭. 같은 키가 여러 번 나오면 앞에서부터
                 // 하나씩 소비한다 — `match_keys`가 하는 것과 같은 규칙.
+                // (2026-10-30 주기: G0R1 이후 런타임 매처는 `list_key::match_by_key` — 같은 first-match-wins 규칙,
+                // 옛 `match_keys`와의 동치는 `list_key.rs` 테스트(`legacy::match_keys` 오라클)가 고정한다.)
                 let mut pool: Vec<Option<Row>> = self.rows.iter().cloned().map(Some).collect();
                 next.iter()
                     .map(|it| {

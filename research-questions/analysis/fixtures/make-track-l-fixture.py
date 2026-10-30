@@ -348,6 +348,21 @@ if mode == "e_ii_margin":
             elif r["candidate"] == "K":
                 r["stage_samples_ms"]["dom_apply"] = [0.5] * m
                 r["stage_ms"] = dict(r["stage_ms"], dom_apply=0.5)
+# 판정기 사전 점검(2026-10-30, G0 재심사 발견 6): D 무조건 변형은 SetText 방출을 `systems`에서 `row_patch`로
+# 옮긴다. **D·D-LIS의 단계 시간을 읽는 판정 조항이 없어야** 그 이동이 판정을 기울이지 않는다. 두 변형 모두의
+# 비-total 단계 시간을 1000배로 만든다 — 어느 절이든 D의 단계 시간을 읽으면 출력이 `base`와 달라진다.
+# `e_stage_control`은 같은 변환을 E-LIS에 건다(E 기각 (ii)가 읽으므로 출력이 **달라져야** 한다 — 대조가 공허하지 않다는 증거).
+STAGE_SCALED = {"d_stage_inert": ("D", "D-LIS"), "e_stage_control": ("E-LIS",)}.get(mode)
+if STAGE_SCALED:
+    hit = 0
+    for r in rows:
+        if r["candidate"] in STAGE_SCALED:
+            hit += 1
+            for key in ("systems", "row_patch", "sync_point", "dom_apply"):
+                r["stage_ms"] = dict(r["stage_ms"], **{key: r["stage_ms"][key] * 1000})
+                r["stage_samples_ms"][key] = [v * 1000 for v in r["stage_samples_ms"][key]]
+    assert hit > 0, f"{mode}: 바꾼 레코드가 0개 — 대조가 공허하다"
+    print(f"{mode}: 단계 시간을 바꾼 레코드 {hit}개")
 if mode == "stage_median":
     for r in rows:
         if r["candidate"] == "C" and r["row_variants"] and r["workload"] == "shuffle":

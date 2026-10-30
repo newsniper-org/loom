@@ -120,6 +120,8 @@ def main():
     # (2) fresh 슬롯 섞기 — take_old 값이 old_len 이상인 슬롯이 끼어든 경우.
     #     match_keys가 실제로 내는 모양(retained는 서로 다른 옛 인덱스, fresh는
     #     old_len 이상)을 전수로 만든다.
+    #     (2026-10-30 주기: G0R1(2026-10-20) 이후 매처는 `list_key::match_by_key`(radix 병합)이고
+    #     반환 계약 `Selection::take_old`는 옛 `match_keys`와 같다 — 이 모양 그대로다.)
     for old_len in range(0, 5):
         for total in range(0, 6):
             # 각 슬롯: 옛 인덱스 0..old_len-1 중 하나이거나 fresh(=old_len)
@@ -139,7 +141,7 @@ def main():
     print(f"(3) 중복 값 열                          : {stats['n'] - m:>8}건")
 
     m = stats["n"]
-    # (4) 단사 retained + fresh 섞기 (실제 match_keys 출력 모양)
+    # (4) 단사 retained + fresh 섞기 (실제 match_keys 출력 모양 — G0R1 이후 `match_by_key`, 계약 동일)
     for old_len in range(0, 6):
         for total in range(0, 7):
             for chosen in itertools.product(
