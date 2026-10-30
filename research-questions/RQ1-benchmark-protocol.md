@@ -2631,3 +2631,21 @@ HTML과 복합 row의 `adopt_element_children`, `<textarea>`/`<select>`의 `set_
 - **B2**: 수집 전에 하네스(wasm에 들어가는 `loom-bench` 등)를 바꾸면 B1→B2를 따로 diff하고 이 표에 "최종"을 다시 등재한다(append). HTML·드라이버만 바꾸면 wasm 해시는 그대로이고 그 변경을 따로 기록한다.
 
 **남은 선행 조건**: G1 · 트랙 N G2 재인증(새 OUT_DIR) · 수리 소요 시간 기록(§2.5) · A/A 드라이버 · 커밋 순서(§11-5 — 이 절을 담은 커밋이 v23 원시 데이터보다 앞선다).
+
+#### 개정 #12 후속 7 (2026-10-30, **v23 수집 전**) — `rust-src` 설치 후 재점검 · 동결 빌드에 경로 remap
+
+**계기.** 후속 6 직후 병익님이 `stable`과 `1.99.1` 양쪽에 `rustc-dev`·`llvm-tools`·`rust-src`를 설치하고 "빌드 캐시를 완전히 지우고 다시 점검"을 지시했다. 동결 기록(후속 6 표)의 해시는 바꾸지 않는다 — 이 절은 그 해시를 **`rust-src`가 있는 환경에서** 다시 만드는 절차를 더한다.
+
+**점검(전부 2026-10-30, 저장소 `target/` 62 GB 삭제 후, 각 빌드는 새 빈 `CARGO_TARGET_DIR`).**
+- `tools/check-toolchain.sh`(후속 6 판): rustc·verus·wasm-pack·wasm-bindgen은 그대로 `ok`, `불일치 rust-src: 고정=absent 실제=present` → 실패. 예상대로다.
+- 소스 `2fa7779`, remap 없이 빌드 → wasm `e2d833ec3b6c67f63689f620d1b368fba110d2b766c10cdef1d2612b08bf448f`(동결본과 다름), 로컬 툴체인 경로 18개(`~/.rustup/toolchains/1.99.1-…/lib/rustlib/src/rust/library/…`). 후속 6의 원인 진술(`rust-src` 유무)이 1.99.1 자체에서 재현됐다 — 툴체인 이름이 아니라 컴포넌트가 원인이라는 것의 직접 확인이다.
+- 같은 소스, `RUSTFLAGS="--remap-path-prefix=<sysroot>/lib/rustlib/src/rust=/rustc/58cf8f9c35b355199727627d07ae34a4e2846d67"`, 빈 target 두 곳 → 둘 다 wasm **`b509135f…`**, JS **`994d2cb1…`** — 후속 6의 P2=최종과 같다. 로컬 경로 0개, `/rustc/<해시>/library/` 41개.
+- 소스 `673d286`(P1), 같은 remap → wasm **`56495615…`** — 후속 6의 P1과 같다.
+- 고친 `tools/build-frozen-bench.sh`로 두 소스를 다시 빌드(worktree) → P2 wasm `b509135f…`·JS `994d2cb1…`, P1 wasm `56495615…`·JS `42fe00f1…`. 네 해시 모두 후속 6 표와 같다.
+
+**조치.**
+1. `tools/build-frozen-bench.sh`가 위 remap을 항상 건다(`RUSTFLAGS`를 환경값과 무관하게 덮어씀; sysroot·커밋 해시는 SRC의 활성 rustc에서 읽음). 빌드 후 단언(`/rustc/<해시>/library/` ≥ 1, `/toolchains/` 0)은 그대로다.
+2. `tools/toolchain-pins.env`의 `RUST_SRC="absent"` 고정과 `check-toolchain.sh`의 대조는 폐기했다 — 이제 `info rust-src: present|absent`를 출력만 한다. 후속 6의 툴체인 출력(`ok rust-src: absent`)은 그때의 기록으로 둔다.
+3. remap 없는 일반 `wasm-pack build`(예: `demo/pkg`)는 `rust-src`가 있으면 여전히 바이트가 다르다 — 측정·동결 산출물엔 쓰지 않는다(후속 6의 규칙 그대로).
+
+**한계.** `rust-src`가 **없는** 툴체인에 remap을 건 경우는 이번에 빌드해 보지 않았다(병익님 설치를 되돌리지 않았다). 그 경우 remap 접두사에 맞는 경로가 없어 무작용일 것으로 보고, 후속 6의 동결본(rust-src 없음·remap 없음)과 이번 결과(rust-src 있음·remap)가 바이트 동일하다는 것이 `RUSTFLAGS` 자체는 바이트에 안 들어간다는 증거지만, 그 조합 자체는 미확인이다. 빌드 후 단언이 로컬 경로 혼입은 어느 경우든 잡는다.

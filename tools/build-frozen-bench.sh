@@ -14,9 +14,16 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # rust-toolchain.toml을 따르므로 SRC 안에서 돈다.
 (cd "$SRC" && bash "$HERE/check-toolchain.sh")
 grep -qx 'channel = "1.99.1"' "$SRC/rust-toolchain.toml" || { echo "$SRC에 툴체인 고정 파일이 없다" >&2; exit 2; }
+# 경로 remap(2026-10-30, 개정 #12 후속 7): 활성 툴체인에 rust-src가 있으면 rustc가 std의 `/rustc/<해시>` 경로를 로컬
+# sysroot 경로로 되돌려 wasm에 박는다. 그 경로를 다시 `/rustc/<해시>`로 remap하면 rust-src 유무와 무관하게 같은 바이트가 나온다
+# (rust-src 있음 + remap = 동결본 b509135f…·56495615…, 빈 target 두 곳). RUSTFLAGS는 환경값을 덮어쓴다 — 바깥 설정이 끼지 않게.
+SYSROOT=$(cd "$SRC" && rustc --print sysroot)
+HASH=$(cd "$SRC" && rustc -vV | sed -n 's/^commit-hash: //p')
+[ ${#HASH} -eq 40 ] || { echo "rustc 커밋 해시를 못 읽었다: $HASH" >&2; exit 2; }
 TGT=$(mktemp -d)
 trap 'rm -rf "$TGT"' EXIT
-(cd "$SRC" && CARGO_TARGET_DIR="$TGT" wasm-pack build crates/loom-bench --target web --release --out-dir "$OUT")
+(cd "$SRC" && CARGO_TARGET_DIR="$TGT" RUSTFLAGS="--remap-path-prefix=$SYSROOT/lib/rustlib/src/rust=/rustc/$HASH" \
+  wasm-pack build crates/loom-bench --target web --release --out-dir "$OUT")
 W="$OUT/loom_bench_bg.wasm"
 # 존재 단언 먼저: std 경로가 실제로 실려 있어야 아래 부재 단언이 공허하지 않다.
 n_rustc=$(strings -n 8 "$W" | grep -c '^/rustc/[0-9a-f]\{40\}/library/' || true)
