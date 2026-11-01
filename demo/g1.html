@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>RQ1 G1 정합성 게이트</title>
+</head>
+<body>
+<!-- G1(RQ1 프로토콜 개정 #12 후속 8) 구동 페이지. ?pkg=pkg-g1-release|pkg-g1-dev 로 G1 산출물을 고른다(측정 산출물 pkg-bench가 아니다).
+     드라이버: bench/g1/run-g1.py. 시간을 재지 않는다. -->
+<pre id="status">loading</pre>
+<script type="module">
+const q = new URLSearchParams(location.search);
+// 폴백 강제(진단용, §9 E-1): moveBefore를 지우면 런타임(web.rs)이 insertBefore 경로로 간다.
+window.g1_native_move_before = typeof Element.prototype.moveBefore === "function";
+if (q.get("fallback") === "1") { delete Element.prototype.moveBefore; Element.prototype.moveBefore = undefined; }
+const pkg = q.get("pkg") || "pkg-g1-release";
+const m = await import(`./${pkg}/loom_bench.js`);
+// G1 빌드는 같은 크레이트라 측정용 #[wasm_bindgen(start)] 진입점도 들어 있다. run_all은 #bench 요소가 없으면
+// 즉시 반환하므로(lib.rs run_all 첫 줄) 이 페이지에서는 캠페인이 돌지 않는다 — #bench를 두지 말 것.
+try { await m.default(); } catch (e) { window.g1_start_error = String(e); }
+window.g1 = m;
+document.getElementById("status").textContent = "ready";
+window.g1_ready = true;
+</script>
+</body>
+</html>

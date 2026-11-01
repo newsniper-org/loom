@@ -26,3 +26,6 @@ panic = "unwind"
 
 [profile.dev]
 panic = "unwind"
+[features]
+# G1 정합성 게이트 전용(RQ1 프로토콜 개정 #12 후속 8). 측정 빌드에서는 끈다 — 끈 빌드는 동결 산출물과 바이트가 같아야 한다.
+g1 = []

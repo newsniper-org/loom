@@ -23,3 +23,5 @@ __pycache__/
 # v23 동결·귀속 대조 산출물(P1/P2/최종) — sha256은 프로토콜 개정 #12 후속 기록에 있다.
 /demo/pkg-bench-v23-*
 /demo/pkg-bench-v22-*
+# G1 정합성 게이트 산출물(--features g1 빌드) — sha256은 G1 원장 meta에 있다.
+/demo/pkg-g1-*

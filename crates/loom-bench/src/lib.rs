@@ -3434,3 +3434,7 @@ mod tests {
         assert!(j.contains("\"systems\": [1.0000, 1.0000]") && j.contains("\"total\": [10.0000, 10.0000]"), "{j}");
     }
 }
+
+// G1 정합성 게이트(개정 #12 후속 8) — `--features g1` 빌드에만. 맨 끝에 두는 이유는 g1.rs 모듈 문서.
+#[cfg(feature = "g1")]
+mod g1;
