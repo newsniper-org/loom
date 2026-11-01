@@ -15,7 +15,12 @@ cd "$(dirname "$0")"
 IMAGE="mcr.microsoft.com/playwright:v1.61.0-noble"
 PW_VERSION="1.61.0"
 
+# 컨테이너 안 npm 캐시는 빌드 캐시 드라이브에 둔다(2026-11-01, tools/build-cache.sh) — 매 실행 재다운로드를 피한다.
+NPM_CACHE="$(bash ../../tools/build-cache.sh)/docker-webkit-npm"
+mkdir -p "$NPM_CACHE"
+
 docker run --rm --network=host \
   -v "$PWD:/work" -w /work \
+  -v "$NPM_CACHE:/root/.npm" \
   "$IMAGE" \
   bash -c "npm install @playwright/test@${PW_VERSION} --no-save >/dev/null 2>&1 && npx playwright test --project=webkit $*"

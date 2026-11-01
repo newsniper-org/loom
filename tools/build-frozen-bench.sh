@@ -20,7 +20,8 @@ grep -qx 'channel = "1.99.1"' "$SRC/rust-toolchain.toml" || { echo "$SRC에 툴�
 SYSROOT=$(cd "$SRC" && rustc --print sysroot)
 HASH=$(cd "$SRC" && rustc -vV | sed -n 's/^commit-hash: //p')
 [ ${#HASH} -eq 40 ] || { echo "rustc 커밋 해시를 못 읽었다: $HASH" >&2; exit 2; }
-TGT=$(mktemp -d)
+# 빈 target은 빌드 캐시 드라이브 아래에 만든다(2026-11-01, tools/build-cache.sh). target 경로는 바이트에 안 들어간다(후속 6).
+TGT=$(mktemp -d -p "$(bash "$HERE/build-cache.sh")" frozen-target.XXXXXX)
 trap 'rm -rf "$TGT"' EXIT
 (cd "$SRC" && CARGO_TARGET_DIR="$TGT" RUSTFLAGS="--remap-path-prefix=$SYSROOT/lib/rustlib/src/rust=/rustc/$HASH" \
   wasm-pack build crates/loom-bench --target web --release --out-dir "$OUT")

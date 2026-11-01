@@ -173,6 +173,7 @@ python3 research-questions/analysis/fixtures/selfcheck.py  → 판정기 합성 
 
 **2026-10-30**: 위 명령은 루트 `justfile`에 레시피로 모여 있다(`just`로 목록, `just verify` = 툴체인 대조 + 테스트 + Verus + Lean + selfcheck).
 Verus 두 명령은 2026-10-26부터 `--rlimit 60`이 필요하다(`formal-verification/verus/README.md` 끝). 데이터 수집 스크립트는 justfile에 넣지 않았다.
+**2026-11-01**: 빌드 캐시는 `/run/media/ybi/T9/.build-cache/loom-research/`에 있다(`target`은 링크, `just cache`로 맞춤 — `tools/build-cache.sh`). T9가 마운트돼 있지 않으면 빌드가 실패한다(잃는 것은 없다 — 전부 재생성 가능).
 
 **측정 운영 규칙**(트랙 L 수집):
 - 셀(그룹)마다 새 브라우저를 띄운다(`bench/collect-per-cell.sh`, 개정 #10 후속 2). 한 브라우저로 여러 셀을 재면

@@ -8,7 +8,8 @@ ROOT=$1; OUT=$2; MEASURED=$3
 WB=$(for d in "$HOME"/.cache/.wasm-pack/wasm-bindgen-*/; do "$d/wasm-bindgen" --version | grep -q "0.2.126" && echo "$d/wasm-bindgen"; done | head -1)
 WO=$(ls "$HOME"/.cache/.wasm-pack/wasm-opt-*/bin/wasm-opt | head -1)
 mkdir -p "$OUT"
-RAW="$ROOT/target/wasm32-unknown-unknown/release/loom_bench.wasm"
+# 2026-11-01: `target`은 빌드 캐시 드라이브로 가는 링크다(tools/build-cache.sh). CARGO_TARGET_DIR로 따로 빌드했으면 그것을 따른다.
+RAW="${CARGO_TARGET_DIR:-$ROOT/target}/wasm32-unknown-unknown/release/loom_bench.wasm"
 [ -f "$RAW" ] || { echo "cargo 산출물이 없다: $RAW" >&2; exit 2; }
 "$WB" "$RAW" --out-dir "$OUT" --typescript --target web
 "$WO" "$OUT/loom_bench_bg.wasm" -o "$OUT/loom_bench_bg.named.wasm" -O -g

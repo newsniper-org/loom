@@ -13,5 +13,7 @@
 # $G는 스크래치 아래 고정 절대경로여야 한다(base와 cand가 같은 $G/src·$G/target에서 빌드돼야
 # wasm에 박히는 OUT_DIR 경로가 같다 — design-7a 위험 1). 종료 코드: 0 통과, 1 비교 실패,
 # 2 하네스 오류(개수 단언 등), 3 재현성 전제 불충족.
+# 2026-11-01: $G(그 안의 target/·target-fic/)도 빌드 캐시이므로 빌드 캐시 드라이브 아래에 둔다 —
+# 예: G="$(tools/build-cache.sh)/compiler-gate". 고정 절대경로여야 한다는 조건은 그대로다.
 set -euo pipefail
 exec python3 "$(dirname "$(readlink -f "$0")")/gate.py" "$@"
