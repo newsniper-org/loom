@@ -97,6 +97,11 @@ struct G1Cell {
 }
 
 const OP_REPS: u32 = 20;
+/// 연속 시퀀스·연쇄에서 내용 신탁(새 마운트)을 거는 간격. 정체성·행 수·텍스트 닻·OrderKey 검사는 매 전이에서 한다.
+/// 2026-11-01 실행 조정(개정 #12 후속 8 이행 기록): 신탁 비용 대부분이 전이마다 LoomApp을 새로 만드는 고정 비용이라
+/// 매 전이 신탁이면 한 브라우저 release 실행이 8–10시간이었다. 구조가 깨진 행은 교체될 때까지 남으므로 표본 신탁도
+/// 지속 결함은 잡는다 — 놓치는 것은 10전이 안에 저절로 고쳐지는 일시 결함뿐이다.
+const SEQ_ORACLE_EVERY: u32 = 10;
 
 fn g1_cell_list() -> Vec<G1Cell> {
     let mut v = Vec::new();
@@ -197,6 +202,7 @@ fn sem_of(name: &str) -> Sem {
 struct Stats {
     transitions: u64,
     content_checked: u64,
+    content_cached: u64,
     content_mismatch: u64,
     anchor_mismatch: u64,
     count_mismatch: u64,
@@ -224,10 +230,10 @@ impl Stats {
     fn json(&self) -> String {
         let f: Vec<String> = self.failures.iter().map(|s| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))).collect();
         format!(
-            "{{\"transitions\": {}, \"content_checked\": {}, \"content_mismatch\": {}, \"anchor_mismatch\": {}, \"count_mismatch\": {}, \
+            "{{\"transitions\": {}, \"content_checked\": {}, \"content_cached\": {}, \"content_mismatch\": {}, \"anchor_mismatch\": {}, \"count_mismatch\": {}, \
              \"ident_same\": {}, \"ident_new\": {}, \"ident_mismatch\": {}, \"orderkey_checked\": {}, \"orderkey_mismatch\": {}, \"moved_ops\": {}, \
              \"k\": {{\"noop\": {}, \"append\": {}, \"truncate\": {}, \"clear\": {}, \"full\": {}}}, \"unchecked_steps\": {}, \"failures\": [{}]}}",
-            self.transitions, self.content_checked, self.content_mismatch, self.anchor_mismatch, self.count_mismatch,
+            self.transitions, self.content_checked, self.content_cached, self.content_mismatch, self.anchor_mismatch, self.count_mismatch,
             self.ident_same, self.ident_new, self.ident_mismatch, self.orderkey_checked, self.orderkey_mismatch, self.moved_ops,
             self.k_noop, self.k_append, self.k_truncate, self.k_clear, self.k_full, self.unchecked_steps, f.join(", ")
         )
@@ -244,6 +250,10 @@ struct Inst<T: Send + Sync + Clone + ToString + 'static> {
     sem: Sem,
     label: String,
     stats: Stats,
+    /// 초기 리스트와 그 마운트 직후의 `outerHTML`. 마운트는 결정적이므로 목표가 초기 리스트인 전이(측정의 "복원")는
+    /// 새 마운트 대신 이것과 비교한다(2026-11-01 실행 조정 — 신탁 비용의 대부분이 LoomApp 생성 고정 비용이다).
+    initial: Vec<T>,
+    initial_html: String,
 }
 
 fn mount<T>(document: &web_sys::Document, parent: &web_sys::Node, maker: Maker<T>, initial: Vec<T>, shape: RowShape) -> (Candidate<T>, web_sys::Element, web_sys::Element)
@@ -406,8 +416,16 @@ where
         // 1. 내용 신탁: 같은 후보를 목표 리스트로 새로 마운트
         if oracle {
             st.content_checked += 1;
-            let (fresh, holder, ul) = mount(&cx.document, &cx.scratch, self.maker, new.to_vec(), self.shape);
-            let want = ul.outer_html();
+            let want = if new == self.initial.as_slice() {
+                st.content_cached += 1;
+                self.initial_html.clone()
+            } else {
+                let (fresh, holder, ul) = mount(&cx.document, &cx.scratch, self.maker, new.to_vec(), self.shape);
+                let w = ul.outer_html();
+                drop(fresh);
+                holder.remove();
+                w
+            };
             let got = self.ul.outer_html();
             if want != got {
                 st.content_mismatch += 1;
@@ -420,8 +438,6 @@ where
                     got.get(lo..(at + 60).min(got.len())).unwrap_or("")
                 ));
             }
-            drop(fresh);
-            holder.remove();
         }
     }
 }
@@ -452,7 +468,8 @@ where
                 real
             };
             let label = format!("{}[{tag}]", cand.name);
-            out.push(Inst { cand, maker, shape, holder, ul, sem, label, stats: Stats::default() });
+            let initial_html = ul.outer_html();
+            out.push(Inst { cand, maker, shape, holder, ul, sem, label, stats: Stats::default(), initial: initial.to_vec(), initial_html });
         }
     }
     out
@@ -487,9 +504,10 @@ where
                         cur = t;
                     }
                     Shape::Sequence(k) => {
-                        for _ in 0..k {
+                        // 연속 시퀀스: 내용 신탁은 10번째 스텝마다 + 마지막 스텝(SEQ_ORACLE_EVERY). 나머지 검사는 매 스텝.
+                        for i in 0..k {
                             let t = w.apply(&cur, &mut rng, &fresh);
-                            drive(&mut insts, cx, &cur, &t, true);
+                            drive(&mut insts, cx, &cur, &t, i % SEQ_ORACLE_EVERY == SEQ_ORACLE_EVERY - 1 || i == k - 1);
                             cur = t;
                         }
                     }
@@ -510,6 +528,8 @@ where
                 Workload::Replace100,
             ];
             let mut cur = initial.clone();
+            let mut tick_no = 0u32;
+            let total_rounds = rounds;
             for r in 0..rounds {
                 let order = shuffled_indices(works.len(), &format!("{}|chain|{r}", type_name), "g1");
                 let mut rng = Pcg64::from_seed(derive_seed("g1", &format!("{}|chain", cell_label(c)), r));
@@ -525,11 +545,17 @@ where
                     };
                     for _ in 0..steps {
                         let t = w.apply(&cur, &mut rng, &fresh);
-                        drive(&mut insts, cx, &cur, &t, true);
+                        tick_no += 1;
+                        // 연쇄의 내용 신탁도 10번째 전이마다(연쇄는 하나의 긴 시퀀스다). 마지막 라운드의 마지막 워크로드 끝은 아래에서 한 번 더.
+                        drive(&mut insts, cx, &cur, &t, tick_no % SEQ_ORACLE_EVERY == 0);
                         cur = t;
                     }
                 }
+                let _ = total_rounds;
             }
+            // 연쇄 끝: 같은 리스트 재대입(전 후보에서 write 0 경로)으로 마지막 상태를 신탁과 한 번 더 대조한다.
+            let last = cur.clone();
+            drive(&mut insts, cx, &cur, &last, true);
         }
         Kind::KSeq => {
             // K의 다섯 분기를 전부 밟는 시퀀스(측정 워크로드만으로는 NoOp·Truncate가 안 나온다).

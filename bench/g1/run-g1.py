@@ -48,16 +48,18 @@ def main():
     ap.add_argument("--fallback", action="store_true")
     ap.add_argument("--only", default="")
     ap.add_argument("--port", type=int, default=8766)
+    ap.add_argument("--shard", default="0/1", help="i/N — 셀 인덱스 mod N == i 인 셀만(병렬 실행용). 원장 meta에 기록된다.")
     a = ap.parse_args()
     wasm = os.path.join(ROOT, "demo", a.pkg, "loom_bench_bg.wasm")
     sha = hashlib.sha256(open(wasm, "rb").read()).hexdigest()
     head = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     dirty = bool(subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--", "crates", "demo/g1.html", "bench/g1"], capture_output=True, text=True).stdout.strip())
     sel = parse_only(a.only)
+    shard_i, shard_n = (int(x) for x in a.shard.split("/"))
     httpd = serve(a.port)
     url = f"http://127.0.0.1:{a.port}/demo/g1.html?pkg={a.pkg}" + ("&fallback=1" if a.fallback else "")
     ledger = {"meta": {"protocol": "RQ1 개정 #12 후속 8 (G1)", "browser": a.browser, "pkg": a.pkg, "wasm_sha256": sha,
-                       "source_commit": head, "source_dirty": dirty, "fallback_forced": a.fallback, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+                       "source_commit": head, "source_dirty": dirty, "fallback_forced": a.fallback, "shard": a.shard, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
               "track_l": [], "track_t": [], "errors": []}
 
     def flush():
@@ -93,6 +95,8 @@ def main():
             key = track[-1]
             for i, label in enumerate(cells[track]):
                 if sel[key] is not None and i not in sel[key]:
+                    continue
+                if i % shard_n != shard_i:
                     continue
                 state["errs"].clear()
                 try:
