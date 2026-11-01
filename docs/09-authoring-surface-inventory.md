@@ -628,6 +628,13 @@ Chromium 149.0.7827.55와 Playwright 번들 Firefox 151.0에서 **결과가 완�
 
 **남은 것**: WebKit 확인, 기존 `SpawnElement`의 SVG 결함(7b), 복합 row 텍스트 복구(7b + 판정례 (바)).
 
+**2026-11-01 — WebKit 확인 완료.** 같은 프로브 wasm(`tools/surface-probe/pkg/loom_surface_probe_bg.wasm` sha256 `c5c5af982205d22def0088a1841ad80dfd0facbf8a399b52e4a546d6b71ce061`,
+10-30 실측과 같은 산출물 — 다시 빌드하지 않았다)을 Playwright WebKit 26.5에서 돌렸다. 호스트에서는 WebKit이 뜨지 않으므로 Playwright 공식 Ubuntu 이미지
+(`mcr.microsoft.com/playwright/python:v1.61.0-noble`, 컨테이너 안에 `playwright==1.61.0` 설치) 안에서 같은 `probe.py`를 실행했다(`tools/surface-probe/run-webkit.sh`).
+원시 결과 `research-questions/data/phase7c-browser-probe-webkit-2026-11-01.json`. **위 표의 여섯 항목 모두 Chromium·Firefox 결과와 글자 그대로 같다**(키 집합 동일,
+`browser` 외 차이 0 — 기계 비교). 페이지 오류 0건. 따라서 위 "의미" 열은 세 엔진에 대해 성립한다. 남은 것은 7b의 두 항목(기존 `SpawnElement` SVG 결함, 복합 row 텍스트 복구)이다.
+한계: Playwright WebKit은 Safari 자체가 아니라 그 대리다(§8 "WebKit(Playwright — Safari 대리)").
+
 ### 2026-10-30 — 혼합 텍스트 SSR 마커 규약 v0 (병익님 결정 B2: 주석 마커 — 확정)
 
 **문제**: SSR된 `Count: 5`는 HTML 파서가 텍스트 노드 하나로 합치므로(정적 `Count: `와 동적 `5`의 경계가 사라짐) resume은 런타임 원시 연산만으로 동적 조각의 텍스트 노드를 찾지 못한다. 클라이언트에서 새로 만드는 경로(`SpawnText`)는 영향이 없다.
