@@ -19,7 +19,13 @@ PW_VERSION="1.61.0"
 NPM_CACHE="$(bash ../../tools/build-cache.sh)/docker-webkit-npm"
 mkdir -p "$NPM_CACHE"
 
-docker run --rm --network=host \
+# 컨테이너는 podman으로 띄우되 반드시 `~/run-podman-on-t9.sh`를 거친다(2026-11-01 병익님 지시 — 컨테이너 저장소를 T9에 두는
+# CONTAINERS_STORAGE_CONF 래퍼). 이전의 `docker`는 이 호스트에서 podman-docker shim(`exec podman`)이었으므로 실행 엔진은 같다.
+# 스크립트 이름의 "docker"는 문서 참조 때문에 그대로 둔다.
+PODMAN="$HOME/run-podman-on-t9.sh"
+[ -x "$PODMAN" ] || { echo "podman 래퍼가 없다: $PODMAN" >&2; exit 2; }
+
+"$PODMAN" run --rm --network=host \
   -v "$PWD:/work" -w /work \
   -v "$NPM_CACHE:/root/.npm" \
   "$IMAGE" \
