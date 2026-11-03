@@ -134,6 +134,8 @@ def main():
                     else:
                         res = json.loads(state["pg"].evaluate(f"window.g1.{fn}({i})"))
                     res["page_errors"] = list(state["errs"])
+                    # 셀마다 새 페이지라 계수기는 셀 단위다(dev 빌드만 값, release는 null).
+                    res["key_collisions"] = json.loads(state["pg"].evaluate("window.g1.g1_meta()"))["key_collisions"]
                     ledger[track].append(res)
                 except Exception as e:  # 패닉·타임아웃 — 그 셀의 오류로 기록하고 페이지를 새로 띄운다
                     ledger["errors"].append({"track": track, "index": i, "cell": label, "error": str(e)[:2000], "page_errors": list(state["errs"])[:5]})
