@@ -48,6 +48,7 @@ def main():
     ap.add_argument("--fallback", action="store_true")
     ap.add_argument("--only", default="")
     ap.add_argument("--port", type=int, default=8766)
+    ap.add_argument("--step", type=int, default=10, help="g1_step_l 한 호출에서 돌릴 전이 수(트랙 L 분할 실행)")
     ap.add_argument("--no-page-per-cell", dest="page_per_cell", action="store_false", help="셀마다 새 페이지를 열지 않는다(기본은 연다)")
     ap.add_argument("--resume", action="store_true", help="--out 원장이 있으면 이어서: 끝난 셀은 건너뛰고 오류 셀은 다시 돈다")
     ap.add_argument("--shard", default="0/1", help="i/N — 셀 인덱스 mod N == i 인 셀만(병렬 실행용). 원장 meta에 기록된다.")
@@ -61,7 +62,7 @@ def main():
     httpd = serve(a.port)
     url = f"http://127.0.0.1:{a.port}/demo/g1.html?pkg={a.pkg}" + ("&fallback=1" if a.fallback else "")
     ledger = {"meta": {"protocol": "RQ1 개정 #12 후속 8 (G1)", "browser": a.browser, "pkg": a.pkg, "wasm_sha256": sha,
-                       "source_commit": head, "source_dirty": dirty, "fallback_forced": a.fallback, "shard": a.shard, "page_per_cell": a.page_per_cell, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+                       "source_commit": head, "source_dirty": dirty, "fallback_forced": a.fallback, "shard": a.shard, "page_per_cell": a.page_per_cell, "step": a.step, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
               "track_l": [], "track_t": [], "errors": []}
 
     done = set()
@@ -122,7 +123,16 @@ def main():
                     open_page()
                 state["errs"].clear()
                 try:
-                    res = json.loads(state["pg"].evaluate(f"window.g1.{fn}({i})"))
+                    if track == "track_l":
+                        # 분할 실행(2026-11-03): 셀 하나를 전이 STEP개씩 여러 JS 작업으로 나눠 돈다 — Firefox의 순환 수집기가
+                        # 작업 사이에 지운 노드를 회수할 수 있게. 순서·시드·검사는 한 호출 방식(g1_run_l)과 같다.
+                        pg = state["pg"]
+                        pg.evaluate(f"window.g1.g1_begin_l({i})")
+                        while not pg.evaluate(f"window.g1.g1_step_l({a.step})"):
+                            pass
+                        res = json.loads(pg.evaluate("window.g1.g1_finish_l()"))
+                    else:
+                        res = json.loads(state["pg"].evaluate(f"window.g1.{fn}({i})"))
                     res["page_errors"] = list(state["errs"])
                     ledger[track].append(res)
                 except Exception as e:  # 패닉·타임아웃 — 그 셀의 오류로 기록하고 페이지를 새로 띄운다

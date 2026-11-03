@@ -475,92 +475,124 @@ where
     out
 }
 
-fn run_list_cell<T, F>(cx: &mut Ctx, c: &G1Cell, type_name: &str, initial: Vec<T>, fresh: F) -> String
+/// 계획된 전이 하나: 목표 리스트, 내용 신탁 여부, 검사 여부(W6 표본 외 스텝은 대입·tick만).
+struct Planned<T> {
+    target: Vec<T>,
+    oracle: bool,
+    checked: bool,
+}
+
+fn checked<T>(target: Vec<T>, oracle: bool) -> Planned<T> {
+    Planned { target, oracle, checked: true }
+}
+
+const CHAIN_WORKS: [Workload; 10] = [
+    Workload::Swap,
+    Workload::Shuffle,
+    Workload::Shuffle10,
+    Workload::HeadInsert,
+    Workload::Append,
+    Workload::RemoveMiddle,
+    Workload::ValueUpdate,
+    Workload::Clear,
+    Workload::Replace50,
+    Workload::Replace100,
+];
+
+/// 셀의 전이 열을 **지연 생성**한다(2026-11-03 분할 실행). 순서·시드·신탁 표본은 분할 이전의 `run_list_cell`과 한 줄씩 같다 —
+/// 같은 셀을 두 방식으로 돌려 인스턴스 통계가 글자 그대로 같은지로 확인했다(원장 meta).
+fn plan<T>(c: G1Cell, type_name: &'static str, initial: Vec<T>, fresh: std::rc::Rc<dyn Fn(u64) -> T>) -> Box<dyn Iterator<Item = Planned<T>>>
 where
-    T: Send + Sync + Clone + ToString + PartialEq + Ord + Eq + std::hash::Hash + 'static,
-    F: Fn(u64) -> T,
+    T: Clone + 'static,
 {
-    let mut insts = instances::<T>(cx, c.row, &initial, c.kind == Kind::Neg);
-    // 초기 마운트 자체도 신탁과 대조한다(전이 0개로 세지 않는다).
-    let drive = |insts: &mut Vec<Inst<T>>, cx: &mut Ctx, old: &[T], new: &[T], oracle: bool| {
-        for inst in insts.iter_mut() {
-            inst.step(cx, old, new, oracle);
-        }
-    };
-    let cid_of = |w: &Workload| cell_id(type_name, c.n, c.row.bindings(), c.row.inner(), c.row.variants(), w.name());
+    let cid_of = move |w: &Workload| cell_id(type_name, c.n, c.row.bindings(), c.row.inner(), c.row.variants(), w.name());
     match c.kind {
         Kind::Op(w, band) => {
             let cid = cid_of(&w);
+            let (k, seq) = match w.shape() {
+                Shape::Single => (1u32, false),
+                Shape::Sequence(k) => (k, true),
+            };
+            let (mut rep, mut i) = (0u32, 0u32);
             let mut cur = initial.clone();
-            for rep in 0..OP_REPS {
-                // 측정의 "각 반복 전 초기 상태 복원"
-                drive(&mut insts, cx, &cur, &initial, true);
-                cur = initial.clone();
-                let mut rng = Pcg64::from_seed(derive_seed(band, &cid, rep));
-                match w.shape() {
-                    Shape::Single => {
-                        let t = w.apply(&cur, &mut rng, &fresh);
-                        drive(&mut insts, cx, &cur, &t, true);
-                        cur = t;
-                    }
-                    Shape::Sequence(k) => {
-                        // 연속 시퀀스: 내용 신탁은 10번째 스텝마다 + 마지막 스텝(SEQ_ORACLE_EVERY). 나머지 검사는 매 스텝.
-                        for i in 0..k {
-                            let t = w.apply(&cur, &mut rng, &fresh);
-                            drive(&mut insts, cx, &cur, &t, i % SEQ_ORACLE_EVERY == SEQ_ORACLE_EVERY - 1 || i == k - 1);
-                            cur = t;
-                        }
-                    }
+            let mut rng = Pcg64::from_seed(0);
+            Box::new(std::iter::from_fn(move || {
+                if rep >= OP_REPS {
+                    return None;
                 }
-            }
+                if i == 0 {
+                    // 측정의 "각 반복 전 초기 상태 복원"
+                    cur = initial.clone();
+                    rng = Pcg64::from_seed(derive_seed(band, &cid, rep));
+                    i = 1;
+                    return Some(checked(initial.clone(), true));
+                }
+                let step = i - 1;
+                let t = w.apply(&cur, &mut rng, &*fresh);
+                // 연속 시퀀스: 내용 신탁은 10번째 스텝마다 + 마지막 스텝(SEQ_ORACLE_EVERY). 나머지 검사는 매 스텝.
+                let oracle = !seq || step % SEQ_ORACLE_EVERY == SEQ_ORACLE_EVERY - 1 || step == k - 1;
+                cur = t.clone();
+                i += 1;
+                if i > k {
+                    i = 0;
+                    rep += 1;
+                }
+                Some(checked(t, oracle))
+            }))
         }
         Kind::Chain(rounds) => {
-            let works = [
-                Workload::Swap,
-                Workload::Shuffle,
-                Workload::Shuffle10,
-                Workload::HeadInsert,
-                Workload::Append,
-                Workload::RemoveMiddle,
-                Workload::ValueUpdate,
-                Workload::Clear,
-                Workload::Replace50,
-                Workload::Replace100,
-            ];
+            let label = cell_label(&c);
             let mut cur = initial.clone();
-            let mut tick_no = 0u32;
-            let total_rounds = rounds;
-            for r in 0..rounds {
-                let order = shuffled_indices(works.len(), &format!("{}|chain|{r}", type_name), "g1");
-                let mut rng = Pcg64::from_seed(derive_seed("g1", &format!("{}|chain", cell_label(c)), r));
-                for &wi in &order {
-                    let w = works[wi];
-                    if cur.is_empty() {
-                        drive(&mut insts, cx, &cur, &initial, true);
-                        cur = initial.clone();
+            let (mut r, mut oi, mut step, mut tick_no) = (0u32, 0usize, 0u32, 0u32);
+            let mut order: Vec<usize> = Vec::new();
+            let mut rng = Pcg64::from_seed(0);
+            let (mut need_round, mut final_done) = (true, false);
+            Box::new(std::iter::from_fn(move || loop {
+                if r >= rounds {
+                    if final_done {
+                        return None;
                     }
-                    let steps = match w.shape() {
-                        Shape::Single => 1,
-                        Shape::Sequence(k) => k,
-                    };
-                    for _ in 0..steps {
-                        let t = w.apply(&cur, &mut rng, &fresh);
-                        tick_no += 1;
-                        // 연쇄의 내용 신탁도 10번째 전이마다(연쇄는 하나의 긴 시퀀스다). 마지막 라운드의 마지막 워크로드 끝은 아래에서 한 번 더.
-                        drive(&mut insts, cx, &cur, &t, tick_no % SEQ_ORACLE_EVERY == 0);
-                        cur = t;
-                    }
+                    // 연쇄 끝: 같은 리스트 재대입(전 후보에서 write 0 경로)으로 마지막 상태를 신탁과 한 번 더 대조한다.
+                    final_done = true;
+                    return Some(checked(cur.clone(), true));
                 }
-                let _ = total_rounds;
-            }
-            // 연쇄 끝: 같은 리스트 재대입(전 후보에서 write 0 경로)으로 마지막 상태를 신탁과 한 번 더 대조한다.
-            let last = cur.clone();
-            drive(&mut insts, cx, &cur, &last, true);
+                if need_round {
+                    order = shuffled_indices(CHAIN_WORKS.len(), &format!("{}|chain|{r}", type_name), "g1");
+                    rng = Pcg64::from_seed(derive_seed("g1", &format!("{label}|chain"), r));
+                    oi = 0;
+                    step = 0;
+                    need_round = false;
+                }
+                if oi >= order.len() {
+                    r += 1;
+                    need_round = true;
+                    continue;
+                }
+                let w = CHAIN_WORKS[order[oi]];
+                if step == 0 && cur.is_empty() {
+                    cur = initial.clone();
+                    return Some(checked(initial.clone(), true));
+                }
+                let steps = match w.shape() {
+                    Shape::Single => 1,
+                    Shape::Sequence(k) => k,
+                };
+                let t = w.apply(&cur, &mut rng, &*fresh);
+                tick_no += 1;
+                step += 1;
+                if step >= steps {
+                    step = 0;
+                    oi += 1;
+                }
+                cur = t.clone();
+                // 연쇄의 내용 신탁도 10번째 전이마다(연쇄는 하나의 긴 시퀀스다).
+                return Some(checked(t, tick_no % SEQ_ORACLE_EVERY == 0));
+            }))
         }
         Kind::KSeq => {
             // K의 다섯 분기를 전부 밟는 시퀀스(측정 워크로드만으로는 NoOp·Truncate가 안 나온다).
-            let mut cur = initial.clone();
-            let mut rng = Pcg64::from_seed(derive_seed("g1", &cell_label(c), 0));
+            let cur = initial.clone();
+            let mut rng = Pcg64::from_seed(derive_seed("g1", &cell_label(&c), 0));
             let mut seq: Vec<Vec<T>> = Vec::new();
             seq.push(cur.clone()); // NoOp
             seq.push(cur[..cur.len() - 10].to_vec()); // Truncate
@@ -578,90 +610,161 @@ where
             Workload::fisher_yates(&mut sh, &mut rng);
             seq.push(sh); // Full
             seq.push(initial.clone()); // Full
-            for t in seq {
-                drive(&mut insts, cx, &cur, &t, true);
-                cur = t;
-            }
+            Box::new(seq.into_iter().map(|t| checked(t, true)))
         }
         Kind::Small => {
             // n = 3: [A,B,C] → [B,C,A](E 반례) → [C,A,B] → [C,B,A] → [A,B,C] → [A,C] → [C,A,B]
             let a = initial.clone();
             let p = |ix: &[usize]| ix.iter().map(|&i| a[i].clone()).collect::<Vec<T>>();
-            let seq = [p(&[1, 2, 0]), p(&[2, 0, 1]), p(&[2, 1, 0]), p(&[0, 1, 2]), p(&[0, 2]), p(&[2, 0, 1])];
-            let mut cur = initial.clone();
-            for t in seq {
-                drive(&mut insts, cx, &cur, &t, true);
-                cur = t;
-            }
+            let seq = vec![p(&[1, 2, 0]), p(&[2, 0, 1]), p(&[2, 1, 0]), p(&[0, 1, 2]), p(&[0, 2]), p(&[2, 0, 1])];
+            Box::new(seq.into_iter().map(|t| checked(t, true)))
         }
         Kind::W6(every) => {
-            // 측정 W6과 같은 민팅: 빈 리스트에서 head-insert 10^4회.
+            // 측정 W6과 같은 민팅: 빈 리스트에서 head-insert 10^4회. 매 스텝 전수 검사(표식 O(n))는 O(n²)라 표본 스텝만
+            // 검사한다 — 나머지 스텝은 측정과 똑같이 대입·tick만 하고 `unchecked_steps`로 센다(원장에 그대로 실린다).
             let mut rng = Pcg64::from_seed(derive_seed("g1", "w6", 0));
             let mut cur: Vec<T> = initial.clone();
-            for i in 0..10_000u32 {
+            let mut i = 0u32;
+            Box::new(std::iter::from_fn(move || {
+                if i >= 10_000 {
+                    return None;
+                }
                 let mut t = cur.clone();
                 t.insert(0, fresh(rng.next()));
-                // 매 스텝 전수 검사(표식 O(n))는 10^4 스텝에서 O(n²)라 표본 스텝만 검사한다 — 나머지 스텝은
-                // 측정과 똑같이 대입·tick만 하고 `unchecked_steps`로 센다(원장에 그대로 실린다).
-                if i % every == every - 1 {
-                    drive(&mut insts, cx, &cur, &t, true);
-                } else {
-                    for inst in insts.iter_mut() {
-                        inst.cand.set_and_tick(t.clone());
-                        inst.stats.unchecked_steps += 1;
-                    }
-                }
-                cur = t;
-            }
+                let chk = i % every == every - 1;
+                i += 1;
+                cur = t.clone();
+                Some(Planned { target: t, oracle: chk, checked: chk })
+            }))
         }
         Kind::Neg => {
             let w = Workload::Shuffle;
             let cid = cid_of(&w);
+            let mut v = Vec::new();
             let mut cur = initial.clone();
             for rep in 0..3 {
-                drive(&mut insts, cx, &cur, &initial, false);
+                v.push(checked(initial.clone(), false));
                 cur = initial.clone();
                 let mut rng = Pcg64::from_seed(derive_seed("g1", &cid, rep));
-                let t = w.apply(&cur, &mut rng, &fresh);
-                drive(&mut insts, cx, &cur, &t, false);
-                cur = t;
+                let t = w.apply(&cur, &mut rng, &*fresh);
+                cur = t.clone();
+                v.push(checked(t, false));
             }
+            let _ = cur;
+            Box::new(v.into_iter())
         }
     }
-    let mut out = format!("{{\"cell\": \"{}\", \"instances\": {{", cell_label(c));
-    for (i, inst) in insts.iter().enumerate() {
-        if i > 0 {
-            out.push_str(", ");
-        }
-        let _ = write!(out, "\"{}\": {{\"sem\": \"{:?}\", \"stats\": {}}}", inst.label, inst.sem, inst.stats.json());
-    }
-    out.push_str("}}");
-    for inst in insts {
-        inst.holder.remove();
-    }
-    out
 }
 
-/// 트랙 L 셀 하나를 돌리고 결과 JSON을 낸다. 인덱스는 `g1_cells().track_l`의 순서.
-#[wasm_bindgen]
-pub fn g1_run_l(index: usize) -> String {
-    console_error_panic_hook::set_once();
-    let cells = g1_cell_list();
-    let c = cells[index];
+/// 진행 중인 트랙 L 셀 하나(분할 실행). 상태는 wasm 안에 남고, 드라이버는 `g1_step_l`을 여러 번(= 여러 JS 작업) 부른다 —
+/// Firefox는 DOM·래퍼를 순환 수집기로 회수하는데 그것이 작업 사이에만 돌아서, 셀 하나를 한 호출로 돌리면 셀이 끝날 때까지
+/// 지운 노드가 쌓였다(탭 RSS+스왑 수 GB, 2026-11-03).
+trait LJob {
+    fn step(&mut self, budget: u32) -> bool;
+    fn finish(self: Box<Self>) -> String;
+}
+
+struct ListJob<T: Send + Sync + Clone + ToString + 'static> {
+    cx: Ctx,
+    scratch: web_sys::Element,
+    label: String,
+    insts: Vec<Inst<T>>,
+    cur: Vec<T>,
+    plan: Box<dyn Iterator<Item = Planned<T>>>,
+}
+
+impl<T> LJob for ListJob<T>
+where
+    T: Send + Sync + Clone + ToString + PartialEq + Ord + Eq + std::hash::Hash + 'static,
+{
+    fn step(&mut self, budget: u32) -> bool {
+        for _ in 0..budget {
+            let Some(p) = self.plan.next() else { return true };
+            if p.checked {
+                for inst in self.insts.iter_mut() {
+                    inst.step(&mut self.cx, &self.cur, &p.target, p.oracle);
+                }
+            } else {
+                for inst in self.insts.iter_mut() {
+                    inst.cand.set_and_tick(p.target.clone());
+                    inst.stats.unchecked_steps += 1;
+                }
+            }
+            self.cur = p.target;
+        }
+        false
+    }
+
+    fn finish(self: Box<Self>) -> String {
+        let mut out = format!("{{\"cell\": \"{}\", \"instances\": {{", self.label);
+        for (i, inst) in self.insts.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            let _ = write!(out, "\"{}\": {{\"sem\": \"{:?}\", \"stats\": {}}}", inst.label, inst.sem, inst.stats.json());
+        }
+        out.push_str("}}");
+        for inst in self.insts {
+            inst.holder.remove();
+        }
+        self.scratch.remove();
+        out
+    }
+}
+
+fn new_job<T>(c: G1Cell, type_name: &'static str, initial: Vec<T>, fresh: std::rc::Rc<dyn Fn(u64) -> T>) -> Box<dyn LJob>
+where
+    T: Send + Sync + Clone + ToString + PartialEq + Ord + Eq + std::hash::Hash + 'static,
+{
     let document = web_sys::window().unwrap().document().unwrap();
     let scratch = document.create_element("div").unwrap();
     document.body().unwrap().append_child(&scratch).unwrap();
-    let mut cx = Ctx { document: document.clone(), scratch: scratch.clone().into(), next_tag: 0 };
-    let out = if c.pod {
-        let initial: Vec<ItemId> = (0..c.n as u32).map(ItemId).collect();
-        let init = if matches!(c.kind, Kind::W6(_)) { Vec::new() } else { initial };
-        run_list_cell(&mut cx, &c, "ItemId(POD u32)", init, |seed| ItemId(1_000_000 + (seed as u32 % 1_000_000)))
+    let cx = Ctx { document, scratch: scratch.clone().into(), next_tag: 0 };
+    let insts = instances::<T>(&cx, c.row, &initial, c.kind == Kind::Neg);
+    let plan = plan(c, type_name, initial.clone(), fresh);
+    Box::new(ListJob { cx, scratch, label: cell_label(&c), insts, cur: initial, plan })
+}
+
+thread_local! {
+    static JOB: std::cell::RefCell<Option<Box<dyn LJob>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// 트랙 L 셀 하나를 시작한다(분할 실행). 인덱스는 `g1_cells().track_l`의 순서.
+#[wasm_bindgen]
+pub fn g1_begin_l(index: usize) {
+    console_error_panic_hook::set_once();
+    let c = g1_cell_list()[index];
+    let job = if c.pod {
+        let init: Vec<ItemId> = if matches!(c.kind, Kind::W6(_)) { Vec::new() } else { (0..c.n as u32).map(ItemId).collect() };
+        new_job(c, "ItemId(POD u32)", init, std::rc::Rc::new(|seed: u64| ItemId(1_000_000 + (seed as u32 % 1_000_000))))
     } else {
-        let initial: Vec<String> = (0..c.n).map(heap_item).collect();
-        run_list_cell(&mut cx, &c, "String(heap 128B)", initial, |seed| heap_item(1_000_000 + (seed as usize % 1_000_000)))
+        let init: Vec<String> = (0..c.n).map(heap_item).collect();
+        new_job(c, "String(heap 128B)", init, std::rc::Rc::new(|seed: u64| heap_item(1_000_000 + (seed as usize % 1_000_000))))
     };
-    scratch.remove();
-    out
+    JOB.with(|j| {
+        assert!(j.borrow().is_none(), "이전 셀이 끝나지 않았다");
+        *j.borrow_mut() = Some(job);
+    });
+}
+
+/// 진행 중인 셀의 전이를 최대 `budget`개 실행한다. 셀이 끝났으면 true.
+#[wasm_bindgen]
+pub fn g1_step_l(budget: u32) -> bool {
+    JOB.with(|j| j.borrow_mut().as_mut().expect("시작한 셀이 없다").step(budget))
+}
+
+/// 진행 중인 셀을 닫고 결과 JSON을 낸다.
+#[wasm_bindgen]
+pub fn g1_finish_l() -> String {
+    JOB.with(|j| j.borrow_mut().take().expect("시작한 셀이 없다").finish())
+}
+
+/// 트랙 L 셀 하나를 한 호출로 돌린다(분할 이전 방식과 같은 결과 — 동치 확인용).
+#[wasm_bindgen]
+pub fn g1_run_l(index: usize) -> String {
+    g1_begin_l(index);
+    while !g1_step_l(u32::MAX) {}
+    g1_finish_l()
 }
 
 // ---------------------------------------------------------------------------

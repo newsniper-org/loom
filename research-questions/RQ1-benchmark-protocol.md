@@ -2684,3 +2684,9 @@ E 이동 발생 조작 > 0 · 트랙 T arm마다 참→거짓·거짓→참·참
 (2) **dev 빌드 = `debug_assertions` 켬 + 최적화 켬**(`CARGO_PROFILE_DEV_OPT_LEVEL=3`으로 `wasm-pack --dev`): dev 빌드를 두는 이유는 `debug_assert`·`KEY_COLLISIONS`를 살리는 것이고
 최적화 0의 wasm은 같은 검사에 수십 시간이 든다. 원장 meta에 빌드 방식을 적는다. 셀은 `--shard i/N`으로 나눠 병렬 실행한다(시간을 재지 않으므로 병렬이 결과에 영향이 없다).
 첫 시험 실행(4bb3512 하네스, Chromium·Firefox release 일부 셀)은 이 조정 때문에 중단했고 원장은 남기지 않았다 — 중단 전 불일치는 0건이었다(트랙 L 50·20셀).
+**후속 8 이행 기록 2 (2026-11-03)**: Firefox에서 트랙 L 셀 하나를 한 JS 호출로 돌리면 셀이 끝날 때까지 지운 노드가 회수되지 않아(순환 수집기는 작업 사이에만 돈다는
+추정 — 확인하지 않음) 탭이 RSS+스왑 수 GB로 커지고 셀 하나에 수 시간이 걸렸다. 병익님 결정(2번 안)으로 **셀 분할 실행**으로 바꾼다: `g1_begin_l` → `g1_step_l(10)` 반복 → `g1_finish_l`,
+상태는 wasm 안에 두고 전이 열은 기존 코드를 그대로 옮긴 지연 생성기가 만든다(순서·시드·신탁 표본 불변). 드라이버는 셀마다 새 페이지를 연다. **동치 확인**: 분할 실행으로
+Chromium 11셀(append·연쇄·R3·heap R2·K 시퀀스 3·E 반례·W6·음성 대조)을 돌려 r0 Chromium 원장(1a11d517… 산출물)과 인스턴스 통계가 글자 그대로 같았다
+(`research-questions/data/rq1-g1-2026-11-03-chunk-equivalence-chromium.json`). Chromium release r0 원장은 그대로 쓴다. Firefox release는 이전 산출물로 돌던 부분 원장(분할마다 44–122셀,
+불일치 분류는 Chromium과 같음)을 버리고 새 산출물로 처음부터 다시 돈다 — `--resume`은 산출물 sha가 같아야 하므로 섞지 않는다.
