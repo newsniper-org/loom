@@ -96,8 +96,21 @@ def main():
             state["errs"] = []
             pg.on("pageerror", lambda e: state["errs"].append(str(e)))
             pg.on("console", lambda m: state["errs"].append(m.text) if m.type == "error" else None)
-            pg.goto(url)
-            pg.wait_for_function("window.g1_ready === true", timeout=60000)
+            # I/O가 몰린 시간대에는 페이지 적재가 30초 기본 제한을 넘는다(2026-11-04 WebKit s1이 goto 시간 초과로 드라이버째
+            # 죽었다) — 제한을 늘리고 몇 번 다시 시도한다. 검사 내용과는 무관하다.
+            for attempt in range(5):
+                try:
+                    pg.goto(url, timeout=300000)
+                    pg.wait_for_function("window.g1_ready === true", timeout=300000)
+                    break
+                except Exception as e:
+                    if attempt == 4:
+                        raise
+                    print(f"페이지 적재 재시도 {attempt + 1}: {str(e)[:120]}", flush=True)
+                    pg.close()
+                    pg = b.new_page()
+                    pg.on("pageerror", lambda e: state["errs"].append(str(e)))
+                    pg.on("console", lambda m: state["errs"].append(m.text) if m.type == "error" else None)
             state["pg"] = pg
             return pg
 
