@@ -48,6 +48,7 @@ def main():
     ap.add_argument("--fallback", action="store_true")
     ap.add_argument("--only", default="")
     ap.add_argument("--port", type=int, default=8766)
+    ap.add_argument("--no-page-per-cell", dest="page_per_cell", action="store_false", help="셀마다 새 페이지를 열지 않는다(기본은 연다)")
     ap.add_argument("--resume", action="store_true", help="--out 원장이 있으면 이어서: 끝난 셀은 건너뛰고 오류 셀은 다시 돈다")
     ap.add_argument("--shard", default="0/1", help="i/N — 셀 인덱스 mod N == i 인 셀만(병렬 실행용). 원장 meta에 기록된다.")
     a = ap.parse_args()
@@ -60,7 +61,7 @@ def main():
     httpd = serve(a.port)
     url = f"http://127.0.0.1:{a.port}/demo/g1.html?pkg={a.pkg}" + ("&fallback=1" if a.fallback else "")
     ledger = {"meta": {"protocol": "RQ1 개정 #12 후속 8 (G1)", "browser": a.browser, "pkg": a.pkg, "wasm_sha256": sha,
-                       "source_commit": head, "source_dirty": dirty, "fallback_forced": a.fallback, "shard": a.shard, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+                       "source_commit": head, "source_dirty": dirty, "fallback_forced": a.fallback, "shard": a.shard, "page_per_cell": a.page_per_cell, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
               "track_l": [], "track_t": [], "errors": []}
 
     done = set()
@@ -70,7 +71,8 @@ def main():
             sys.exit(f"이어 돌릴 원장의 산출물({prev['meta']['wasm_sha256']})이 지금 산출물({sha})과 다르다")
         resumes = prev["meta"].get("resumes", [])
         resumes.append({"at": ledger["meta"]["started"], "source_commit": head, "source_dirty": dirty,
-                        "done_l": len(prev["track_l"]), "done_t": len(prev["track_t"]), "prev_errors": len(prev["errors"])})
+                        "done_l": len(prev["track_l"]), "done_t": len(prev["track_t"]), "prev_errors": len(prev["errors"]),
+                        "page_per_cell": a.page_per_cell})
         ledger["meta"] = dict(prev["meta"], resumes=resumes)
         ledger["track_l"], ledger["track_t"] = prev["track_l"], prev["track_t"]
         ledger["errors_before_resume"] = prev.get("errors_before_resume", []) + prev["errors"]
@@ -114,6 +116,10 @@ def main():
                     continue
                 if label in done:
                     continue
+                # 셀마다 새 페이지(2026-11-03): 한 페이지를 수백 셀에 재사용하면 Firefox 탭이 셀을 거듭하며 메모리를 쌓아
+                # (탭 RSS 4.5GB + 스왑 9GB) 스왑으로 밀려 셀 하나에 수십 분이 걸렸다. 검사 내용은 같다.
+                if a.page_per_cell:
+                    open_page()
                 state["errs"].clear()
                 try:
                     res = json.loads(state["pg"].evaluate(f"window.g1.{fn}({i})"))
